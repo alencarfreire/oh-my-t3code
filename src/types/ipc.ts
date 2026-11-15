@@ -125,6 +125,30 @@ export interface ProjectSummary {
   activeSubagentCount: number;
 }
 
+export interface ResyncedProjectReport {
+  projectId: string;
+  title: string;
+  workspaceRoot: string;
+  presetId: string;
+  writtenFiles: string[];
+}
+
+export interface FailedProjectResync {
+  projectId: string;
+  title: string;
+  workspaceRoot: string;
+  error: string;
+}
+
+export interface GlobalSwapReport {
+  includeRoles: boolean;
+  resyncInherited: boolean;
+  rebalancedRolesCount: number;
+  rebalancedRoles: string[];
+  resyncedProjects: ResyncedProjectReport[];
+  failedProjects: FailedProjectResync[];
+}
+
 export interface DashboardSnapshot {
   globalConfig: GlobalAppConfig;
   projects: ProjectSummary[];
@@ -136,6 +160,7 @@ export interface DashboardSnapshot {
   fallbackModelSelection: T3ModelSelection | null;
   sqliteAvailable: boolean;
   settingsAvailable: boolean;
+  lastGlobalSwapReport?: GlobalSwapReport | null;
 }
 
 export interface ResolvedProjectPreset {
@@ -186,6 +211,8 @@ export interface SyncResult {
   backupPath: string | null;
   activeInstanceId: string;
   activeModel: string;
+  rebalancedRolesCount?: number;
+  rebalancedRoles?: string[];
 }
 
 /**
@@ -240,6 +267,7 @@ export interface IpcCommandArgs {
   swap_project_instance: {
     projectId: string;
     workspaceRoot: string;
+    includeRoles?: boolean;
   };
   import_project_squad: {
     projectId: string;
@@ -249,7 +277,12 @@ export interface IpcCommandArgs {
     activePresetId: string;
     enabled: boolean;
   };
-  swap_global_instance: Record<string, never> | undefined;
+  swap_global_instance:
+    | {
+        includeRoles?: boolean;
+        resyncInherited?: boolean;
+      }
+    | undefined;
   set_project_preset_enabled: {
     projectId: string;
     workspaceRoot: string;

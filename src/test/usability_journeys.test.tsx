@@ -66,6 +66,7 @@ function dispatchMockCommand<K extends IpcCommandName>(
       return store.swapProjectInstance(
         a.projectId,
         a.workspaceRoot,
+        a.includeRoles,
       ) as IpcCommandReturns[K];
     }
     case "import_project_squad": {
@@ -82,8 +83,13 @@ function dispatchMockCommand<K extends IpcCommandName>(
         a.enabled,
       ) as IpcCommandReturns[K];
     }
-    case "swap_global_instance":
-      return store.swapGlobalInstance() as IpcCommandReturns[K];
+    case "swap_global_instance": {
+      const a = args as IpcCommandArgs["swap_global_instance"];
+      return store.swapGlobalInstance(
+        a?.includeRoles,
+        a?.resyncInherited,
+      ) as IpcCommandReturns[K];
+    }
     case "set_project_preset_enabled": {
       const a = args as IpcCommandArgs["set_project_preset_enabled"];
       return store.setProjectPresetEnabled(
@@ -123,19 +129,50 @@ describe("Jornadas Reais de Usabilidade (Popover & Preset Studio)", () => {
 
     render(<App />);
 
-    // 1. Verifica card Global Default e projetos iniciais com override (oh-my-t3code e cabrito)
+    // 1. Verifica card Global Default, faixa de subagentes ativos (VTECH-121) e projetos iniciais com override (oh-my-t3code e cabrito)
     const globalCard = await screen.findByRole("region", {
       name: /Preset Global \(Default\)/i,
     });
     expect(globalCard).toBeInTheDocument();
+    expect(
+      screen.getByText(/Swaps aplicam-se a novas threads no T3 Code\./i),
+    ).toBeInTheDocument();
+
+    const activeStrip = screen.getByLabelText("Subagentes ativos agora");
+    expect(activeStrip).toHaveTextContent("2 subagentes ativos");
+    expect(activeStrip).toHaveTextContent("Agy Principal · 1");
+    expect(activeStrip).toHaveTextContent("Agy Veca · 1");
+
+    // cabrito ("Squad s/ preset") exibe CTA seguro "Importar Squad" (VTECH-122)
+    const importCabritoBtn = screen.getByRole("button", {
+      name: "Importar squad de cabrito",
+    });
+    expect(importCabritoBtn).toBeInTheDocument();
+    await user.click(importCabritoBtn);
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "Importar squad de cabrito" }),
+      ).not.toBeInTheDocument();
+    });
 
     const searchInput = screen.getByRole("searchbox", {
       name: "Filtrar projetos",
     });
 
-    // Atalho ⌘K foca o input de busca quando há > 1 projeto com override
+    // Atalho ⌘K foca o input de busca e descobre projeto seguindo Global Default (VTECH-122)
     await user.keyboard("{Meta>}k{/Meta}");
     expect(searchInput).toHaveFocus();
+
+    await user.type(searchInput, "landing");
+    const followingSection = await screen.findByLabelText(
+      "Projetos seguindo Global Default",
+    );
+    expect(within(followingSection).getByText("landing-page")).toBeInTheDocument();
+
+    // Esc com filtro preenchido limpa o filtro sem fechar o Popover
+    await user.keyboard("{Escape}");
+    expect(searchInput).toHaveValue("");
+    expect(screen.getByText("oh-my-t3code")).toBeInTheDocument();
 
     await user.type(searchInput, "cabrito");
     expect(screen.getByText("cabrito")).toBeInTheDocument();
@@ -148,7 +185,7 @@ describe("Jornadas Reais de Usabilidade (Popover & Preset Studio)", () => {
     expect(searchInput).toHaveValue("");
     expect(screen.getByText("oh-my-t3code")).toBeInTheDocument();
 
-    // 2. Troca Preset Global para Agy Dual e usa o Swap Global (⇄)
+    // 2. Troca Preset Global para Agy Dual e usa o Swap Global (⇄) e Swap Squad (VTECH-124)
     const globalSelect = within(globalCard).getByLabelText(
       "Preset Global Default",
     ) as HTMLSelectElement;
@@ -165,6 +202,17 @@ describe("Jornadas Reais de Usabilidade (Popover & Preset Studio)", () => {
     await waitFor(() => {
       expect(globalSwapBtn).toHaveTextContent("Agy Veca");
     });
+
+    const globalSwapSquadBtn = within(globalCard).getByRole("button", {
+      name: "Swap completo da squad global",
+    });
+    await user.click(globalSwapSquadBtn);
+    await waitFor(() => {
+      expect(globalSwapBtn).toHaveTextContent("Agy Principal");
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /Alteração vale para novas threads no T3 Code\./i,
+    );
 
     // 3. Usa o Swap individual (⇄) no projeto oh-my-t3code quando a cota aperta
     const ohMySwapBtn = screen.getByRole("button", {

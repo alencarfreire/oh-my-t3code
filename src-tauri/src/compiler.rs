@@ -1,20 +1,24 @@
 use crate::models::{
     AppError, AppPaths, AppResult, CompilePreviewResult, CompiledFilePreview, DashboardSnapshot,
-    GlobalAppConfig, PresetConfig, RoleConfig, SyncResult,
+    FailedProjectResync, GlobalAppConfig, GlobalSwapReport, PresetConfig, ResyncedProjectReport,
+    RoleConfig, SyncResult,
 };
 use crate::preset_engine::{
     atomic_write_file, derive_project_slug, ensure_seed_presets_unlocked,
     get_project_preset_unlocked, load_global_config_unlocked, local_preset_path, lock_config_state,
-    normalize_disabled_roles, resolve_global_preset_unlocked, resolve_preset_inheritance_unlocked,
+    normalize_disabled_roles, resolve_global_preset_unlocked,
+    resolve_jsonc_against_globals_unlocked, resolve_preset_inheritance_unlocked,
     save_global_config_unlocked, save_global_preset_unlocked, save_project_preset_unlocked,
-    validate_safe_id,
+    strip_jsonc_comments, validate_safe_id,
 };
 use crate::settings_sync::{
     compute_unified_diff, preview_settings_override, remove_global_settings_override,
     remove_project_settings_override, sync_global_settings, sync_project_settings,
 };
-use crate::t3_reader::{build_dashboard_snapshot_unlocked, read_t3_settings};
-use std::collections::BTreeMap;
+use crate::t3_reader::{
+    build_dashboard_snapshot_unlocked, list_known_projects_readonly, read_t3_settings,
+};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -426,6 +430,110 @@ pub fn apply_preset_to_project(
     )
 }
 
+fn compile_resolved_project_unlocked(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    resolved: &PresetConfig,
+    local_preset_file: Option<CompiledFilePreview>,
+) -> AppResult<SyncResult> {
+    let ws_root = Path::new(workspace_root);
+    if !ws_root.exists() {
+        return Err(AppError::NotFound(format!(
+            "Workspace root does not exist: {workspace_root}"
+        )));
+    }
+    validate_safe_id(&resolved.id, "preset id")?;
+    for role_id in resolved.roles.keys() {
+        validate_safe_id(role_id, "role id")?;
+    }
+
+    let project_slug = derive_project_slug(workspace_root);
+    let squad_dir = ws_root
+        .join(".agents")
+        .join("skills")
+        .join(format!("{project_slug}-squad"));
+
+    let mut files = Vec::new();
+    if let Some(local_file) = local_preset_file {
+        files.push(local_file);
+    }
+
+    let skill_md = render_squad_skill_md(&project_slug, resolved);
+    files.push(build_file_preview(
+        ws_root,
+        squad_dir.join("SKILL.md"),
+        skill_md,
+    )?);
+
+    for (role_id, role) in &resolved.roles {
+        validate_safe_id(role_id, "role id")?;
+        let role_md = render_role_md(&project_slug, role);
+        files.push(build_file_preview(
+            ws_root,
+            squad_dir.join("roles").join(format!("{role_id}.md")),
+            role_md,
+        )?);
+    }
+
+    let mut written_files = Vec::new();
+    for file in &files {
+        if file.changed {
+            atomic_write_file(Path::new(&file.path), file.new_content.as_bytes())?;
+            written_files.push(file.path.clone());
+        }
+    }
+
+    let roles_dir = squad_dir.join("roles");
+    if roles_dir.exists() && roles_dir.is_dir() {
+        ensure_within_workspace(ws_root, &roles_dir)?;
+        let mut orphan_paths = Vec::new();
+        for entry in fs::read_dir(&roles_dir)? {
+            let entry = entry?;
+            let file_path = entry.path();
+            if !file_path.is_file() {
+                continue;
+            }
+            if file_path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                if !resolved.roles.contains_key(stem) {
+                    ensure_within_workspace(ws_root, &file_path)?;
+                    orphan_paths.push(file_path);
+                }
+            }
+        }
+        orphan_paths.sort();
+        for orphan_path in orphan_paths {
+            fs::remove_file(&orphan_path)?;
+            written_files.push(orphan_path.display().to_string());
+        }
+    }
+
+    let (backup_path, _) = if resolved.enabled {
+        sync_project_settings(&paths.settings_path(), project_id, resolved)?
+    } else {
+        (
+            remove_project_settings_override(&paths.settings_path(), project_id)?,
+            serde_json::Value::Null,
+        )
+    };
+
+    Ok(SyncResult {
+        project_id: project_id.to_string(),
+        workspace_root: workspace_root.to_string(),
+        preset_id: resolved.id.clone(),
+        written_files,
+        settings_path: paths.settings_path().display().to_string(),
+        backup_path: backup_path.map(|p| p.display().to_string()),
+        active_instance_id: resolved.orchestrator.provider_instance_id.clone(),
+        active_model: resolved.orchestrator.model.clone(),
+        rebalanced_roles_count: 0,
+        rebalanced_roles: Vec::new(),
+    })
+}
+
 fn apply_preset_to_project_unlocked(
     paths: &AppPaths,
     project_id: &str,
@@ -455,6 +563,10 @@ fn apply_preset_to_project_unlocked(
             .unwrap_or(resolved_proj.resolved_preset)
     };
 
+    validate_safe_id(&target_preset.id, "preset id")?;
+    for role_id in target_preset.roles.keys() {
+        validate_safe_id(role_id, "role id")?;
+    }
     target_preset.disabled_roles = normalize_disabled_roles(&target_preset.disabled_roles)?;
     for disabled_id in &target_preset.disabled_roles {
         target_preset.roles.remove(disabled_id);
@@ -462,69 +574,56 @@ fn apply_preset_to_project_unlocked(
 
     let resolved =
         resolve_preset_inheritance_unlocked(&paths.presets_dir, target_preset.clone())?;
-    let preview =
-        compile_preset_preview_unlocked(paths, project_id, workspace_root, &target_preset)?;
-
-    let mut written_files = Vec::new();
-    for file in &preview.files {
-        if file.changed {
-            atomic_write_file(Path::new(&file.path), file.new_content.as_bytes())?;
-            written_files.push(file.path.clone());
-        }
-    }
-
     let ws_root = Path::new(workspace_root);
-    let project_slug = derive_project_slug(workspace_root);
-    let roles_dir = ws_root
-        .join(".agents")
-        .join("skills")
-        .join(format!("{project_slug}-squad"))
-        .join("roles");
-    if roles_dir.exists() && roles_dir.is_dir() {
-        ensure_within_workspace(ws_root, &roles_dir)?;
-        let mut orphan_paths = Vec::new();
-        for entry in fs::read_dir(&roles_dir)? {
-            let entry = entry?;
-            let file_path = entry.path();
-            if !file_path.is_file() {
-                continue;
-            }
-            if file_path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
-            if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
-                if !resolved.roles.contains_key(stem) {
-                    ensure_within_workspace(ws_root, &file_path)?;
-                    orphan_paths.push(file_path);
-                }
-            }
-        }
-        orphan_paths.sort();
-        for orphan_path in orphan_paths {
-            fs::remove_file(&orphan_path)?;
-            written_files.push(orphan_path.display().to_string());
-        }
+    if !ws_root.exists() {
+        return Err(AppError::NotFound(format!(
+            "Workspace root does not exist: {workspace_root}"
+        )));
     }
+    let preset_json_content = format!(
+        "// Oh My T3Code project preset\n{}\n",
+        serde_json::to_string_pretty(&target_preset)?
+    );
+    let local_preset_file = build_file_preview(
+        ws_root,
+        local_preset_path(ws_root),
+        preset_json_content,
+    )?;
 
-    let (backup_path, _) = if resolved.enabled {
-        sync_project_settings(&paths.settings_path(), project_id, &resolved)?
-    } else {
-        (
-            remove_project_settings_override(&paths.settings_path(), project_id)?,
-            serde_json::Value::Null,
-        )
-    };
+    compile_resolved_project_unlocked(
+        paths,
+        project_id,
+        workspace_root,
+        &resolved,
+        Some(local_preset_file),
+    )
+}
 
-    Ok(SyncResult {
-        project_id: project_id.to_string(),
-        workspace_root: workspace_root.to_string(),
-        preset_id: resolved.id,
-        written_files,
-        settings_path: paths.settings_path().display().to_string(),
-        backup_path: backup_path.map(|p| p.display().to_string()),
-        active_instance_id: resolved.orchestrator.provider_instance_id,
-        active_model: resolved.orchestrator.model,
-    })
+fn migrate_role_to_codex_model(role: &mut RoleConfig, next_model: &str) {
+    role.provider_instance_id = "codex".to_string();
+    role.model = next_model.to_string();
+    role.options.remove("thinkingLevel");
+    role.options.remove("thinking_level");
+    role.options
+        .entry("reasoningEffort".to_string())
+        .or_insert_with(|| "medium".to_string());
+    role.options
+        .entry("serviceTier".to_string())
+        .or_insert_with(|| "default".to_string());
+}
+
+fn migrate_role_to_agy_instance(role: &mut RoleConfig, next_instance: &str) {
+    role.provider_instance_id = next_instance.to_string();
+    if let Some(legacy_val) = role.options.remove("thinkingLevel") {
+        role.options
+            .entry("thinking_level".to_string())
+            .or_insert(legacy_val);
+    }
+    if !role.model.starts_with("gemini-4-") {
+        role.model = "gemini-4-hydrogen".to_string();
+        role.options
+            .insert("thinking_level".to_string(), "high".to_string());
+    }
 }
 
 /// Quick toggle between `antigravity` ↔ `antigravity_2` or `gpt-6.1-sol` ↔ `gpt-6.1-terra` (for `codex`) for a project.
@@ -532,6 +631,17 @@ pub fn swap_project_primary_instance(
     paths: &AppPaths,
     project_id: &str,
     workspace_root: &str,
+) -> AppResult<SyncResult> {
+    swap_project_primary_instance_with_options(paths, project_id, workspace_root, false)
+}
+
+/// Quick toggle between `antigravity` ↔ `antigravity_2` or `gpt-6.1-sol` ↔ `gpt-6.1-terra` (for `codex`) for a project,
+/// optionally migrating matching squad worker roles as well.
+pub fn swap_project_primary_instance_with_options(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    include_roles: bool,
 ) -> AppResult<SyncResult> {
     let _guard = lock_config_state();
     let settings = read_t3_settings(&paths.settings_path());
@@ -565,18 +675,40 @@ pub fn swap_project_primary_instance(
         .map(|s| s.model.clone())
         .unwrap_or_else(|| current_resolved.resolved_preset.orchestrator.model.clone());
 
+    let resolved_for_roles = current_resolved.resolved_preset.clone();
     let mut updated = current_resolved
         .raw_local_preset
-        .unwrap_or(current_resolved.resolved_preset);
+        .unwrap_or_else(|| current_resolved.resolved_preset.clone());
+
+    if updated.orchestrator.provider_instance_id.is_empty() {
+        updated.orchestrator.provider_instance_id = resolved_for_roles
+            .orchestrator
+            .provider_instance_id
+            .clone();
+    }
+    if updated.orchestrator.model.is_empty() {
+        updated.orchestrator.model = resolved_for_roles.orchestrator.model.clone();
+    }
+    if updated.orchestrator.options.is_empty() {
+        updated.orchestrator.options = resolved_for_roles.orchestrator.options.clone();
+    }
+
+    let disabled_set: HashSet<String> = normalize_disabled_roles(&resolved_for_roles.disabled_roles)?
+        .into_iter()
+        .chain(normalize_disabled_roles(&updated.disabled_roles)?)
+        .collect();
+
+    let mut rebalanced_roles = Vec::new();
 
     if current_instance == "codex" {
-        let next_model = if current_model == "gpt-6.1-sol" {
+        let previous_model = current_model;
+        let next_model = if previous_model == "gpt-6.1-sol" {
             "gpt-6.1-terra".to_string()
         } else {
             "gpt-6.1-sol".to_string()
         };
         updated.orchestrator.provider_instance_id = "codex".to_string();
-        updated.orchestrator.model = next_model;
+        updated.orchestrator.model = next_model.clone();
         updated.orchestrator.options.remove("thinkingLevel");
         updated.orchestrator.options.remove("thinking_level");
         updated
@@ -589,14 +721,35 @@ pub fn swap_project_primary_instance(
             .options
             .entry("serviceTier".to_string())
             .or_insert_with(|| "default".to_string());
+
+        if include_roles {
+            for (role_id, resolved_role) in &resolved_for_roles.roles {
+                if disabled_set.contains(role_id) {
+                    continue;
+                }
+                if resolved_role.provider_instance_id == "codex"
+                    && resolved_role.model == previous_model
+                {
+                    let mut migrated = resolved_role.clone();
+                    migrate_role_to_codex_model(&mut migrated, &next_model);
+                    updated.roles.insert(role_id.clone(), migrated);
+                    rebalanced_roles.push(role_id.clone());
+                }
+            }
+        }
     } else {
-        let next_instance = if current_instance == "antigravity_2" {
+        let previous_instance = if current_instance.is_empty() {
+            "antigravity".to_string()
+        } else {
+            current_instance
+        };
+        let next_instance = if previous_instance == "antigravity_2" {
             "antigravity".to_string()
         } else {
             "antigravity_2".to_string()
         };
 
-        updated.orchestrator.provider_instance_id = next_instance;
+        updated.orchestrator.provider_instance_id = next_instance.clone();
         if let Some(legacy_val) = updated.orchestrator.options.remove("thinkingLevel") {
             updated
                 .orchestrator
@@ -611,9 +764,27 @@ pub fn swap_project_primary_instance(
                 .options
                 .insert("thinking_level".to_string(), "high".to_string());
         }
+
+        if include_roles {
+            for (role_id, resolved_role) in &resolved_for_roles.roles {
+                if disabled_set.contains(role_id) {
+                    continue;
+                }
+                if resolved_role.provider_instance_id == previous_instance {
+                    let mut migrated = resolved_role.clone();
+                    migrate_role_to_agy_instance(&mut migrated, &next_instance);
+                    updated.roles.insert(role_id.clone(), migrated);
+                    rebalanced_roles.push(role_id.clone());
+                }
+            }
+        }
     }
 
-    apply_preset_to_project_unlocked(paths, project_id, workspace_root, None, Some(updated))
+    let mut result =
+        apply_preset_to_project_unlocked(paths, project_id, workspace_root, None, Some(updated))?;
+    result.rebalanced_roles_count = rebalanced_roles.len();
+    result.rebalanced_roles = rebalanced_roles;
+    Ok(result)
 }
 
 /// Saves a global preset and, when it is the active global preset and global sync is enabled,
@@ -660,10 +831,115 @@ pub fn set_global_preset_config(
     build_dashboard_snapshot_unlocked(paths)
 }
 
+fn extends_chain_reaches(presets_dir: &Path, start_id: &str, target_id: &str) -> bool {
+    const MAX_DEPTH: usize = 16;
+    let mut visited = HashSet::new();
+    let mut current = start_id.to_string();
+
+    for _ in 0..MAX_DEPTH {
+        if current == target_id {
+            return true;
+        }
+        if validate_safe_id(&current, "extends preset id").is_err() || !visited.insert(current.clone()) {
+            return false;
+        }
+        let jsonc = presets_dir.join(format!("{current}.jsonc"));
+        let json = presets_dir.join(format!("{current}.json"));
+        let path = if jsonc.exists() {
+            jsonc
+        } else if json.exists() {
+            json
+        } else {
+            return false;
+        };
+        let Ok(raw) = fs::read_to_string(&path) else {
+            return false;
+        };
+        let clean = strip_jsonc_comments(&raw);
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&clean) else {
+            return false;
+        };
+        match val.get("extends").and_then(|v| v.as_str()) {
+            Some(parent_id) if !parent_id.is_empty() => current = parent_id.to_string(),
+            _ => return false,
+        }
+    }
+
+    false
+}
+
+fn is_active_inherited_project(
+    presets_dir: &Path,
+    workspace_root: &str,
+    active_global_preset_id: &str,
+) -> bool {
+    let local_path = local_preset_path(Path::new(workspace_root));
+    if !local_path.is_file() {
+        return false;
+    }
+    let Ok(raw) = fs::read_to_string(&local_path) else {
+        return false;
+    };
+    let clean = strip_jsonc_comments(&raw);
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(&clean) else {
+        return false;
+    };
+    let enabled = val.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    if !enabled {
+        return false;
+    }
+    match val.get("extends").and_then(|v| v.as_str()) {
+        Some(parent_id) if !parent_id.is_empty() => {
+            extends_chain_reaches(presets_dir, parent_id, active_global_preset_id)
+        }
+        _ => false,
+    }
+}
+
+fn resync_inherited_project_unlocked(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+) -> AppResult<SyncResult> {
+    let ws_root = Path::new(workspace_root);
+    if !ws_root.exists() {
+        return Err(AppError::NotFound(format!(
+            "Workspace root does not exist: {workspace_root}"
+        )));
+    }
+    let local_path = local_preset_path(ws_root);
+    ensure_within_workspace(ws_root, &local_path)?;
+    let raw = fs::read_to_string(&local_path)?;
+    let project_slug = derive_project_slug(workspace_root);
+    let mut resolved =
+        resolve_jsonc_against_globals_unlocked(&paths.presets_dir, &raw, &project_slug)?;
+    if !resolved.enabled {
+        return Err(AppError::InvalidInput(
+            "Override do projeto está pausado; re-sync ignorado.".into(),
+        ));
+    }
+    resolved.disabled_roles = normalize_disabled_roles(&resolved.disabled_roles)?;
+    for disabled_id in &resolved.disabled_roles {
+        resolved.roles.remove(disabled_id);
+    }
+
+    compile_resolved_project_unlocked(paths, project_id, workspace_root, &resolved, None)
+}
+
 /// Quick toggle on the active global preset:
 /// - For Agy presets (`antigravity` / `antigravity_2`): toggles `antigravity` ↔ `antigravity_2`.
 /// - For Codex presets (`codex`, such as `default`): toggles orchestrator model `gpt-6.1-sol` ↔ `gpt-6.1-terra`.
 pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
+    swap_global_instance_with_options(paths, false, false)
+}
+
+/// Quick toggle on the active global preset with optional worker role rebalancing
+/// and optional re-compilation of active projects inheriting from the active global preset.
+pub fn swap_global_instance_with_options(
+    paths: &AppPaths,
+    include_roles: bool,
+    resync_inherited: bool,
+) -> AppResult<DashboardSnapshot> {
     let _guard = lock_config_state();
     ensure_seed_presets_unlocked(&paths.presets_dir)?;
     let global_cfg = load_global_config_unlocked(&paths.global_config_path());
@@ -675,8 +951,11 @@ pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let mut preset =
         resolve_global_preset_unlocked(&paths.presets_dir, &global_cfg.active_global_preset_id)?;
 
+    let mut rebalanced_roles = Vec::new();
+
     if preset.orchestrator.provider_instance_id == "codex" {
-        let next_model = if preset.orchestrator.model == "gpt-6.1-sol" {
+        let previous_model = preset.orchestrator.model.clone();
+        let next_model = if previous_model == "gpt-6.1-sol" {
             "gpt-6.1-terra".to_string()
         } else {
             "gpt-6.1-sol".to_string()
@@ -706,8 +985,22 @@ pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
                 first_fb.model = opposite_model;
             }
         }
+
+        if include_roles {
+            for (role_id, role) in &mut preset.roles {
+                if role.provider_instance_id == "codex" && role.model == previous_model {
+                    migrate_role_to_codex_model(role, &next_model);
+                    rebalanced_roles.push(role_id.clone());
+                }
+            }
+        }
     } else {
-        let next_instance = if preset.orchestrator.provider_instance_id == "antigravity_2" {
+        let previous_instance = if preset.orchestrator.provider_instance_id.is_empty() {
+            "antigravity".to_string()
+        } else {
+            preset.orchestrator.provider_instance_id.clone()
+        };
+        let next_instance = if previous_instance == "antigravity_2" {
             "antigravity".to_string()
         } else {
             "antigravity_2".to_string()
@@ -739,6 +1032,15 @@ pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
                 first_fb.provider_instance_id = opposite_instance;
             }
         }
+
+        if include_roles {
+            for (role_id, role) in &mut preset.roles {
+                if role.provider_instance_id == previous_instance {
+                    migrate_role_to_agy_instance(role, &next_instance);
+                    rebalanced_roles.push(role_id.clone());
+                }
+            }
+        }
     }
 
     let saved = save_global_preset_unlocked(&paths.presets_dir, preset)?;
@@ -748,7 +1050,47 @@ pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
         sync_global_settings(&paths.settings_path(), &saved)?;
     }
 
-    build_dashboard_snapshot_unlocked(paths)
+    let mut resynced_projects = Vec::new();
+    let mut failed_projects = Vec::new();
+
+    if resync_inherited {
+        let known_projects = list_known_projects_readonly(&paths.sqlite_path())?;
+        for (project_id, title, workspace_root) in known_projects {
+            if !is_active_inherited_project(&paths.presets_dir, &workspace_root, &saved.id) {
+                continue;
+            }
+            match resync_inherited_project_unlocked(paths, &project_id, &workspace_root) {
+                Ok(sync_res) => {
+                    resynced_projects.push(ResyncedProjectReport {
+                        project_id,
+                        title,
+                        workspace_root,
+                        preset_id: sync_res.preset_id,
+                        written_files: sync_res.written_files,
+                    });
+                }
+                Err(err) => {
+                    failed_projects.push(FailedProjectResync {
+                        project_id,
+                        title,
+                        workspace_root,
+                        error: err.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    let mut snapshot = build_dashboard_snapshot_unlocked(paths)?;
+    snapshot.last_global_swap_report = Some(GlobalSwapReport {
+        include_roles,
+        resync_inherited,
+        rebalanced_roles_count: rebalanced_roles.len(),
+        rebalanced_roles,
+        resynced_projects,
+        failed_projects,
+    });
+    Ok(snapshot)
 }
 
 /// Enables or disables a project's preset without deleting `.t3code/preset.jsonc`.
@@ -789,6 +1131,8 @@ pub fn set_project_preset_enabled(
         backup_path: backup_path.map(|p| p.display().to_string()),
         active_instance_id: saved.resolved_preset.orchestrator.provider_instance_id,
         active_model: saved.resolved_preset.orchestrator.model,
+        rebalanced_roles_count: 0,
+        rebalanced_roles: Vec::new(),
     })
 }
 
@@ -1622,4 +1966,475 @@ mod tests {
         );
         assert!(manual_role.exists());
     }
+
+    fn seed_projects_sqlite(db_path: &Path, projects: &[(&str, &str, &Path)]) {
+        let conn = rusqlite::Connection::open(db_path).expect("create test sqlite db");
+        conn.execute_batch(
+            "
+            CREATE TABLE projection_projects (
+                project_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                default_model_selection_json TEXT,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE projection_threads (
+                thread_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE orchestration_v2_projection_subagents (
+                subagent_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                child_thread_id TEXT,
+                provider TEXT NOT NULL,
+                provider_instance_id TEXT,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            ",
+        )
+        .expect("create schema");
+
+        for (project_id, title, ws) in projects {
+            conn.execute(
+                "INSERT INTO projection_projects VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                rusqlite::params![
+                    project_id,
+                    title,
+                    ws.to_str().unwrap(),
+                    r#"{"instanceId":"antigravity_2","model":"gemini-4-hydrogen"}"#,
+                    "2026-11-15T01:00:00Z",
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn swap_project_primary_instance_default_leaves_roles_untouched() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws = dir.path().join("proj-default-swap");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        apply_preset_to_project(
+            &paths,
+            "proj-default",
+            ws.to_str().unwrap(),
+            Some("agy-dual".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let res = swap_project_primary_instance(&paths, "proj-default", ws.to_str().unwrap())
+            .unwrap();
+        assert_eq!(res.active_instance_id, "antigravity");
+        assert_eq!(res.rebalanced_roles_count, 0);
+        assert!(res.rebalanced_roles.is_empty());
+
+        let after = get_project_preset(&paths, "proj-default", ws.to_str().unwrap(), None).unwrap();
+        assert_eq!(after.resolved_preset.roles["oracle"].provider_instance_id, "antigravity_2");
+        assert_eq!(after.resolved_preset.roles["fixer"].provider_instance_id, "antigravity");
+    }
+
+    #[test]
+    fn swap_project_primary_instance_with_options_rebalances_agy_inherited_roles_selectively() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws = dir.path().join("proj-agy-rebalance");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+        ensure_seed_presets(&paths.presets_dir).unwrap();
+
+        // Create a global parent preset with mixed providers (agy_2, agy_1, codex) and an incompatible-model worker
+        let mut parent = resolve_global_preset(&paths.presets_dir, "hybrid-agy-codex").unwrap();
+        parent.id = "hybrid-mixed".to_string();
+        parent.roles.insert(
+            "legacy-worker".to_string(),
+            RoleConfig {
+                id: "legacy-worker".to_string(),
+                title: "Legacy Worker".to_string(),
+                provider_instance_id: "antigravity_2".to_string(),
+                model: "gpt-6.1-sol".to_string(),
+                options: BTreeMap::from([("thinkingLevel".to_string(), "low".to_string())]),
+                ..Default::default()
+            },
+        );
+        save_global_preset_and_sync(&paths, parent).unwrap();
+
+        // Project inherits from hybrid-mixed with sparse JSONC (no explicit override for qa-reviewer or legacy-worker)
+        // and disables designer via disabled_roles.
+        let local_jsonc = r#"{
+            "id": "proj-agy-rebalance",
+            "name": "Proj Agy Rebalance",
+            "extends": "hybrid-mixed",
+            "enabled": true,
+            "disabledRoles": ["designer"],
+            "roles": {
+                "explorer": {
+                    "whenToUse": "Custom local note"
+                }
+            }
+        }"#;
+        fs::create_dir_all(ws.join(".t3code")).unwrap();
+        fs::write(local_preset_path(&ws), local_jsonc).unwrap();
+        apply_preset_to_project(&paths, "proj-inh", ws.to_str().unwrap(), None, None).unwrap();
+
+        let swapped = swap_project_primary_instance_with_options(
+            &paths,
+            "proj-inh",
+            ws.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(swapped.active_instance_id, "antigravity");
+        assert_eq!(swapped.active_model, "gemini-4-hydrogen");
+        assert_eq!(swapped.rebalanced_roles_count, 2);
+        assert_eq!(
+            swapped.rebalanced_roles,
+            vec!["legacy-worker".to_string(), "qa-reviewer".to_string()]
+        );
+
+        let after = get_project_preset(&paths, "proj-inh", ws.to_str().unwrap(), None).unwrap();
+        assert_eq!(after.resolved_preset.orchestrator.provider_instance_id, "antigravity");
+        // Inherited qa-reviewer was written into raw local preset and migrated to antigravity keeping gemini-4-argon
+        let raw_local = after.raw_local_preset.expect("raw local preset present");
+        assert!(raw_local.roles.contains_key("qa-reviewer"));
+        assert!(!raw_local.roles.contains_key("designer"));
+        assert_eq!(after.resolved_preset.roles["qa-reviewer"].provider_instance_id, "antigravity");
+        assert_eq!(after.resolved_preset.roles["qa-reviewer"].model, "gemini-4-argon");
+        // Incompatible model normalized to gemini-4-hydrogen + thinking_level = high
+        assert_eq!(after.resolved_preset.roles["legacy-worker"].provider_instance_id, "antigravity");
+        assert_eq!(after.resolved_preset.roles["legacy-worker"].model, "gemini-4-hydrogen");
+        assert_eq!(
+            after.resolved_preset.roles["legacy-worker"].options.get("thinking_level").map(String::as_str),
+            Some("high")
+        );
+        assert!(!after.resolved_preset.roles["legacy-worker"].options.contains_key("thinkingLevel"));
+        // Explorer (antigravity) and Oracle/Fixer (codex) remained untouched
+        assert_eq!(after.resolved_preset.roles["explorer"].provider_instance_id, "antigravity");
+        assert_eq!(after.resolved_preset.roles["oracle"].provider_instance_id, "codex");
+        assert_eq!(after.resolved_preset.roles["fixer"].provider_instance_id, "codex");
+
+        let qa_md = fs::read_to_string(
+            ws.join(".agents/skills/proj-agy-rebalance-squad/roles/qa-reviewer.md"),
+        )
+        .unwrap();
+        assert!(qa_md.contains("- **Instância:** `antigravity`"));
+    }
+
+    #[test]
+    fn swap_project_primary_instance_with_options_rebalances_codex_matching_model_only() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws = dir.path().join("proj-codex-rebalance");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+        ensure_seed_presets(&paths.presets_dir).unwrap();
+
+        let mut custom = resolve_global_preset(&paths.presets_dir, "default").unwrap();
+        custom.id = "proj-codex-rebalance".to_string();
+        custom.roles.insert(
+            "agy-helper".to_string(),
+            RoleConfig {
+                id: "agy-helper".to_string(),
+                title: "Agy Helper".to_string(),
+                provider_instance_id: "antigravity_2".to_string(),
+                model: "gemini-4-hydrogen".to_string(),
+                options: BTreeMap::from([("thinking_level".to_string(), "medium".to_string())]),
+                ..Default::default()
+            },
+        );
+        apply_preset_to_project(&paths, "proj-codex", ws.to_str().unwrap(), None, Some(custom))
+            .unwrap();
+
+        let swapped = swap_project_primary_instance_with_options(
+            &paths,
+            "proj-codex",
+            ws.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(swapped.active_instance_id, "codex");
+        assert_eq!(swapped.active_model, "gpt-6.1-terra");
+        assert_eq!(swapped.rebalanced_roles_count, 2);
+        assert_eq!(
+            swapped.rebalanced_roles,
+            vec!["fixer".to_string(), "oracle".to_string()]
+        );
+
+        let after = get_project_preset(&paths, "proj-codex", ws.to_str().unwrap(), None).unwrap();
+        assert_eq!(after.resolved_preset.roles["fixer"].model, "gpt-6.1-terra");
+        assert_eq!(after.resolved_preset.roles["oracle"].model, "gpt-6.1-terra");
+        assert_eq!(after.resolved_preset.roles["explorer"].model, "gpt-6-luna");
+        assert_eq!(after.resolved_preset.roles["designer"].model, "gpt-6-luna");
+        assert_eq!(after.resolved_preset.roles["qa-reviewer"].model, "gpt-6-astra");
+        assert_eq!(after.resolved_preset.roles["agy-helper"].provider_instance_id, "antigravity_2");
+    }
+
+    #[test]
+    fn swap_global_instance_with_options_rebalances_global_roles_agy_and_codex() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        // 1. Codex default preset: gpt-6.1-sol -> gpt-6.1-terra, only fixer + oracle migrate
+        set_global_preset_config(&paths, "default".to_string(), true).unwrap();
+        let codex_snap = swap_global_instance_with_options(&paths, true, false).unwrap();
+        let codex_report = codex_snap
+            .last_global_swap_report
+            .as_ref()
+            .expect("global swap report present");
+        assert!(codex_report.include_roles);
+        assert!(!codex_report.resync_inherited);
+        assert_eq!(codex_report.rebalanced_roles_count, 2);
+        assert_eq!(
+            codex_report.rebalanced_roles,
+            vec!["fixer".to_string(), "oracle".to_string()]
+        );
+        assert!(codex_report.resynced_projects.is_empty());
+        assert!(codex_report.failed_projects.is_empty());
+
+        let updated_default = resolve_global_preset(&paths.presets_dir, "default").unwrap();
+        assert_eq!(updated_default.orchestrator.model, "gpt-6.1-terra");
+        assert_eq!(updated_default.fallback_chain[0].model, "gpt-6.1-sol");
+        assert_eq!(updated_default.roles["fixer"].model, "gpt-6.1-terra");
+        assert_eq!(updated_default.roles["oracle"].model, "gpt-6.1-terra");
+        assert_eq!(updated_default.roles["explorer"].model, "gpt-6-luna");
+        assert_eq!(updated_default.roles["qa-reviewer"].model, "gpt-6-astra");
+
+        // 2. Agy agy-dual preset: antigravity_2 -> antigravity, designer + oracle + qa-reviewer migrate
+        set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+        let agy_snap = swap_global_instance_with_options(&paths, true, false).unwrap();
+        let agy_report = agy_snap
+            .last_global_swap_report
+            .as_ref()
+            .expect("agy global swap report present");
+        assert_eq!(agy_report.rebalanced_roles_count, 3);
+        assert_eq!(
+            agy_report.rebalanced_roles,
+            vec![
+                "designer".to_string(),
+                "oracle".to_string(),
+                "qa-reviewer".to_string()
+            ]
+        );
+        let updated_agy = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        assert_eq!(updated_agy.orchestrator.provider_instance_id, "antigravity");
+        assert_eq!(
+            updated_agy.fallback_chain[0].provider_instance_id,
+            "antigravity_2"
+        );
+        assert_eq!(updated_agy.roles["designer"].provider_instance_id, "antigravity");
+        assert_eq!(updated_agy.roles["oracle"].provider_instance_id, "antigravity");
+        assert_eq!(updated_agy.roles["qa-reviewer"].provider_instance_id, "antigravity");
+        assert_eq!(updated_agy.roles["explorer"].provider_instance_id, "antigravity");
+        assert_eq!(updated_agy.roles["fixer"].provider_instance_id, "antigravity");
+    }
+
+    #[test]
+    fn swap_global_instance_with_options_resyncs_direct_and_transitive_inherited_projects_with_partial_failure() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let userdata = t3_home.join("userdata");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+
+        let ws_direct = dir.path().join("proj-direct");
+        let ws_transitive = dir.path().join("proj-transitive");
+        let ws_paused = dir.path().join("proj-paused");
+        let ws_no_local = dir.path().join("proj-no-local");
+        let ws_broken = dir.path().join("proj-broken");
+
+        fs::create_dir_all(&userdata).unwrap();
+        for ws in [&ws_direct, &ws_transitive, &ws_paused, &ws_no_local, &ws_broken] {
+            fs::create_dir_all(ws).unwrap();
+        }
+        fs::write(userdata.join("settings.json"), "{}").unwrap();
+        seed_projects_sqlite(
+            &userdata.join("statev2.sqlite"),
+            &[
+                ("proj-direct", "Direct App", &ws_direct),
+                ("proj-transitive", "Transitive App", &ws_transitive),
+                ("proj-paused", "Paused App", &ws_paused),
+                ("proj-no-local", "Global Follower App", &ws_no_local),
+                ("proj-broken", "Broken App", &ws_broken),
+            ],
+        );
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+        set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+
+        // Global preset extending agy-dual sparsely for transitive inheritance test
+        fs::write(
+            paths.presets_dir.join("team-agy.jsonc"),
+            r#"{"id":"team-agy","name":"Team Agy","extends":"agy-dual"}"#,
+        )
+        .unwrap();
+
+        // 1. Direct active inherited project with sparse JSONC + custom role
+        fs::create_dir_all(ws_direct.join(".t3code")).unwrap();
+        let direct_jsonc = r#"{
+            "id": "proj-direct",
+            "name": "Direct App",
+            "extends": "agy-dual",
+            "enabled": true,
+            "roles": {
+                "observabilidade": {
+                    "id": "observabilidade",
+                    "title": "Observabilidade",
+                    "providerInstanceId": "codex",
+                    "model": "gpt-6-luna"
+                }
+            }
+        }"#;
+        fs::write(local_preset_path(&ws_direct), direct_jsonc).unwrap();
+        apply_preset_to_project(&paths, "proj-direct", ws_direct.to_str().unwrap(), None, None)
+            .unwrap();
+        // Re-write sparse local JSONC so we verify resync preserves .t3code/preset.jsonc untouched
+        fs::write(local_preset_path(&ws_direct), direct_jsonc).unwrap();
+
+        // 2. Transitive active inherited project (extends team-agy -> agy-dual)
+        fs::create_dir_all(ws_transitive.join(".t3code")).unwrap();
+        fs::write(
+            local_preset_path(&ws_transitive),
+            r#"{"id":"proj-transitive","name":"Transitive App","extends":"team-agy","enabled":true}"#,
+        )
+        .unwrap();
+        apply_preset_to_project(
+            &paths,
+            "proj-transitive",
+            ws_transitive.to_str().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 3. Paused project extending agy-dual -> must NEVER be reactivated or resynced
+        apply_preset_to_project(
+            &paths,
+            "proj-paused",
+            ws_paused.to_str().unwrap(),
+            Some("agy-dual".to_string()),
+            None,
+        )
+        .unwrap();
+        set_project_preset_enabled(&paths, "proj-paused", ws_paused.to_str().unwrap(), false)
+            .unwrap();
+        let paused_preset_before = fs::read_to_string(local_preset_path(&ws_paused)).unwrap();
+
+        // 5. Broken project extending agy-dual where `.agents` is a file blocking dir creation
+        fs::create_dir_all(ws_broken.join(".t3code")).unwrap();
+        fs::write(
+            local_preset_path(&ws_broken),
+            r#"{"id":"proj-broken","name":"Broken App","extends":"agy-dual","enabled":true}"#,
+        )
+        .unwrap();
+        fs::write(ws_broken.join(".agents"), "blocker file").unwrap();
+
+        let snap = swap_global_instance_with_options(&paths, true, true).unwrap();
+        let report = snap
+            .last_global_swap_report
+            .as_ref()
+            .expect("swap report present");
+
+        assert!(report.include_roles);
+        assert!(report.resync_inherited);
+        assert_eq!(report.rebalanced_roles_count, 3);
+        let resynced_ids: Vec<&str> = report
+            .resynced_projects
+            .iter()
+            .map(|p| p.project_id.as_str())
+            .collect();
+        assert_eq!(resynced_ids, vec!["proj-direct", "proj-transitive"]);
+
+        assert_eq!(report.failed_projects.len(), 1);
+        assert_eq!(report.failed_projects[0].project_id, "proj-broken");
+        assert!(!report.failed_projects[0].error.is_empty());
+
+        // Direct & transitive projects compiled with antigravity & updated settings.json
+        assert_eq!(
+            fs::read_to_string(local_preset_path(&ws_direct)).unwrap(),
+            direct_jsonc
+        );
+        let direct_oracle_md = fs::read_to_string(
+            ws_direct.join(".agents/skills/proj-direct-squad/roles/oracle.md"),
+        )
+        .unwrap();
+        assert!(direct_oracle_md.contains("- **Instância:** `antigravity`"));
+        assert!(ws_direct
+            .join(".agents/skills/proj-direct-squad/roles/observabilidade.md")
+            .exists());
+        let trans_skill_md = fs::read_to_string(
+            ws_transitive.join(".agents/skills/proj-transitive-squad/SKILL.md"),
+        )
+        .unwrap();
+        assert!(trans_skill_md.contains("- **Orquestrador:** `antigravity` / `gemini-4-hydrogen`"));
+
+        let settings_after = read_t3_settings(&paths.settings_path());
+        assert_eq!(
+            settings_after.project_overrides["proj-direct"].instance_id,
+            "antigravity"
+        );
+        assert_eq!(
+            settings_after.project_overrides["proj-transitive"].instance_id,
+            "antigravity"
+        );
+
+        // Paused project and no-local project remain untouched
+        assert_eq!(
+            fs::read_to_string(local_preset_path(&ws_paused)).unwrap(),
+            paused_preset_before
+        );
+        assert!(!settings_after.project_overrides.contains_key("proj-paused"));
+        assert!(!local_preset_path(&ws_no_local).exists());
+        assert!(!settings_after.project_overrides.contains_key("proj-no-local"));
+    }
 }
+

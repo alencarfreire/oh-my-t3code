@@ -289,6 +289,36 @@ pub struct ProjectSummary {
     pub active_subagent_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResyncedProjectReport {
+    pub project_id: String,
+    pub title: String,
+    pub workspace_root: String,
+    pub preset_id: String,
+    pub written_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedProjectResync {
+    pub project_id: String,
+    pub title: String,
+    pub workspace_root: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSwapReport {
+    pub include_roles: bool,
+    pub resync_inherited: bool,
+    pub rebalanced_roles_count: usize,
+    pub rebalanced_roles: Vec<String>,
+    pub resynced_projects: Vec<ResyncedProjectReport>,
+    pub failed_projects: Vec<FailedProjectResync>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
@@ -302,6 +332,8 @@ pub struct DashboardSnapshot {
     pub fallback_model_selection: Option<T3ModelSelection>,
     pub sqlite_available: bool,
     pub settings_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_global_swap_report: Option<GlobalSwapReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -362,4 +394,8 @@ pub struct SyncResult {
     pub backup_path: Option<String>,
     pub active_instance_id: String,
     pub active_model: String,
+    #[serde(default)]
+    pub rebalanced_roles_count: usize,
+    #[serde(default)]
+    pub rebalanced_roles: Vec<String>,
 }

@@ -122,7 +122,7 @@ export function RolesMatrixTab({
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
       {/* Left column: Role cards with instant routing & counts summary */}
-      <div className="lg:col-span-4 space-y-3">
+      <div className="min-w-0 lg:col-span-4 space-y-3">
         <div className="flex items-center justify-between px-0.5">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
             Papéis (`roles/`) ·{" "}
@@ -272,21 +272,21 @@ export function RolesMatrixTab({
       </div>
 
       {/* Right column: Selected role editor split into 4 focused cards */}
-      <div className="lg:col-span-8">
+      <div className="min-w-0 lg:col-span-8">
         {activeRole ? (
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             {/* Card 1: Identity & When to use */}
-            <section className="surface-panel rounded-2xl p-4 space-y-4">
+            <section className="surface-panel min-w-0 rounded-2xl p-4 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/8 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex size-8 items-center justify-center rounded-lg border border-indigo-400/25 bg-indigo-500/15 text-indigo-300">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-indigo-400/25 bg-indigo-500/15 text-indigo-300">
                     <UserCog className="size-4" aria-hidden="true" />
                   </div>
-                  <div>
-                    <h4 className="text-sm font-semibold text-zinc-100">
+                  <div className="min-w-0">
+                    <h4 className="truncate text-sm font-semibold text-zinc-100">
                       {activeRole.title || activeRole.id}
                     </h4>
-                    <p className="font-mono text-[11px] text-zinc-400">
+                    <p className="truncate font-mono text-[11px] text-zinc-400">
                       roles/{activeRole.id}.md
                     </p>
                   </div>
@@ -303,7 +303,7 @@ export function RolesMatrixTab({
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div>
+                <div className="min-w-0">
                   <label
                     htmlFor="role-title-input"
                     className="block text-xs font-medium text-zinc-200"
@@ -317,11 +317,11 @@ export function RolesMatrixTab({
                     onChange={(e) =>
                       updateRole(activeRole.id, { title: e.target.value })
                     }
-                    className="mt-1.5 h-8.5 w-full rounded-lg border border-white/12 bg-zinc-950/90 px-3 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="mt-1.5 h-8.5 w-full min-w-0 rounded-lg border border-white/12 bg-zinc-950/90 px-3 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   />
                 </div>
 
-                <div>
+                <div className="min-w-0">
                   <label
                     htmlFor="role-when-input"
                     className="block text-xs font-medium text-zinc-200"
@@ -335,12 +335,12 @@ export function RolesMatrixTab({
                     onChange={(e) =>
                       updateRole(activeRole.id, { whenToUse: e.target.value })
                     }
-                    className="mt-1.5 h-8.5 w-full rounded-lg border border-white/12 bg-zinc-950/90 px-3 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="mt-1.5 h-8.5 w-full min-w-0 rounded-lg border border-white/12 bg-zinc-950/90 px-3 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   />
                 </div>
               </div>
 
-              <div>
+              <div className="min-w-0">
                 <label
                   htmlFor="role-description-input"
                   className="block text-xs font-medium text-zinc-200"
@@ -354,13 +354,13 @@ export function RolesMatrixTab({
                   onChange={(e) =>
                     updateRole(activeRole.id, { description: e.target.value })
                   }
-                  className="mt-1.5 w-full rounded-lg border border-white/12 bg-zinc-950/90 px-3 py-2 text-xs leading-relaxed text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  className="mt-1.5 w-full min-w-0 rounded-lg border border-white/12 bg-zinc-950/90 px-3 py-2 text-xs leading-relaxed text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 />
               </div>
             </section>
 
             {/* Card 2: Model & Instance Routing with 1-Click Quick-Picks */}
-            <section className="surface-panel rounded-2xl p-4 space-y-3">
+            <section className="surface-panel min-w-0 rounded-2xl p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <Cpu className="size-4 text-indigo-300" aria-hidden="true" />
                 <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
@@ -381,7 +381,7 @@ export function RolesMatrixTab({
             </section>
 
             {/* Card 3: File Scope (allowedPaths / forbiddenPaths as crisp monospace chips) */}
-            <section className="surface-panel rounded-2xl p-4 space-y-3">
+            <section className="surface-panel min-w-0 rounded-2xl p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <FolderLock className="size-4 text-amber-300" aria-hidden="true" />
                 <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
@@ -389,7 +389,7 @@ export function RolesMatrixTab({
                 </h5>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
                 <StringListEditor
                   label="Caminhos Permitidos (`allowedPaths`)"
                   items={activeRole.allowedPaths}
@@ -416,7 +416,7 @@ export function RolesMatrixTab({
             </section>
 
             {/* Card 4: Invariants & Verification Commands */}
-            <section className="surface-panel rounded-2xl p-4 space-y-4">
+            <section className="surface-panel min-w-0 rounded-2xl p-4 space-y-4">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="size-4 text-emerald-300" aria-hidden="true" />
                 <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">

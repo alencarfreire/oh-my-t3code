@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertCircle,
   ArrowLeftRight,
   Check,
+  ChevronDown,
+  ChevronRight,
   Cpu,
+  Download,
   FolderGit2,
   Globe,
   Layers,
@@ -19,8 +23,17 @@ import { Badge, getInstanceBadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Select";
 import { StatusToggle } from "../components/ui/StatusToggle";
-import { invokeIpc } from "../lib/ipc-client";
-import { resolveInstanceShortLabel } from "../lib/preset-utils";
+import { invokeIpc, listenSnapshotUpdated } from "../lib/ipc-client";
+import {
+  formatGlobalSwapFeedback,
+  formatProjectSwapFeedback,
+  formatRelativeTime,
+  formatSubagentStatusLabel,
+  getSubagentStatusTone,
+  isSubagentActive,
+  resolveInstanceShortLabel,
+  summarizeActiveSubagentsByInstance,
+} from "../lib/preset-utils";
 import {
   IPC_COMMANDS,
   type DashboardSnapshot,
@@ -80,7 +93,7 @@ export function PopoverView() {
   const [projectQuery, setProjectQuery] = useState("");
   const [selectedPresets, setSelectedPresets] = useState<Record<string, string>>({});
   const [busyProjectAction, setBusyProjectAction] = useState<
-    Record<string, "sync" | "swap" | "toggle" | "remove">
+    Record<string, "sync" | "swap" | "toggle" | "remove" | "import">
   >({});
   const [busyGlobalAction, setBusyGlobalAction] = useState<"config" | "swap" | null>(
     null,
@@ -90,7 +103,11 @@ export function PopoverView() {
   const [newOverrideProjectId, setNewOverrideProjectId] = useState("");
   const [newOverridePresetId, setNewOverridePresetId] = useState("");
   const [applyingNewOverride, setApplyingNewOverride] = useState(false);
+  const [subagentsExpanded, setSubagentsExpanded] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const configureFormRef = useRef<HTMLFormElement | null>(null);
+  const projectQueryRef = useRef(projectQuery);
+  projectQueryRef.current = projectQuery;
   const snapshotRef = useRef<DashboardSnapshot | null>(null);
   snapshotRef.current = snapshot;
   const busyGlobalRef = useRef<"config" | "swap" | null>(null);
@@ -172,6 +189,29 @@ export function PopoverView() {
     void loadSnapshot(false);
   }, [loadSnapshot]);
 
+  // Listen for live snapshot updates (subagent activity, SQLite/settings changes)
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listenSnapshotUpdated(() => {
+      if (cancelled) return;
+      if (busyGlobalRef.current !== null || busyProjectRef.current.size > 0) {
+        return;
+      }
+      void loadSnapshot(true);
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [loadSnapshot]);
+
   const handleOpenStudio = useCallback(
     async (projectId?: string | null, presetId?: string | null) => {
       try {
@@ -186,10 +226,16 @@ export function PopoverView() {
     [],
   );
 
-  // Keyboard shortcuts: Escape closes popover, Cmd+K or '/' focuses search, Cmd+, opens Studio
+  // Keyboard shortcuts: Escape clears non-empty search before closing popover, Cmd+K or '/' focuses search, Cmd+, opens Studio
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (projectQueryRef.current.length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          setProjectQuery("");
+          return;
+        }
         void invokeIpc(IPC_COMMANDS.togglePopoverWindow);
         return;
       }
@@ -274,13 +320,11 @@ export function PopoverView() {
 
   const normalizedQuery = projectQuery.trim().toLowerCase();
 
-  const filteredOverrideProjects = useMemo(() => {
-    if (!snapshot) return [];
-    if (!normalizedQuery) return overrideProjects;
-    return overrideProjects.filter((project) => {
+  const matchesProjectQuery = useCallback(
+    (project: ProjectSummary, snap: DashboardSnapshot) => {
       const instanceLabel = resolveInstanceShortLabel(
         project.activeInstanceId,
-        snapshot.providerInstances,
+        snap.providerInstances,
       );
       return (
         project.title.toLowerCase().includes(normalizedQuery) ||
@@ -290,8 +334,45 @@ export function PopoverView() {
         (project.detectedSquadSlug?.toLowerCase().includes(normalizedQuery) ?? false) ||
         instanceLabel.toLowerCase().includes(normalizedQuery)
       );
+    },
+    [normalizedQuery],
+  );
+
+  const filteredOverrideProjects = useMemo(() => {
+    if (!snapshot) return [];
+    if (!normalizedQuery) return overrideProjects;
+    return overrideProjects.filter((project) => matchesProjectQuery(project, snapshot));
+  }, [matchesProjectQuery, normalizedQuery, overrideProjects, snapshot]);
+
+  const filteredUnconfiguredProjects = useMemo(() => {
+    if (!snapshot || !normalizedQuery) return [];
+    return unconfiguredProjects.filter((project) =>
+      matchesProjectQuery(project, snapshot),
+    );
+  }, [matchesProjectQuery, normalizedQuery, snapshot, unconfiguredProjects]);
+
+  const activeSubagents = useMemo(() => {
+    if (!snapshot) return [];
+    return snapshot.subagents.filter((sub) => isSubagentActive(sub.status));
+  }, [snapshot]);
+
+  const instanceSubagentSummaries = useMemo(() => {
+    if (!snapshot) return [];
+    return summarizeActiveSubagentsByInstance(
+      snapshot.subagents,
+      snapshot.providerInstances,
+    );
+  }, [snapshot]);
+
+  const orderedSubagents = useMemo(() => {
+    if (!snapshot) return [];
+    return [...snapshot.subagents].sort((a, b) => {
+      const aActive = isSubagentActive(a.status) ? 0 : 1;
+      const bActive = isSubagentActive(b.status) ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
     });
-  }, [normalizedQuery, overrideProjects, snapshot]);
+  }, [snapshot]);
 
   const handleToggleGlobalEnabled = async () => {
     const currentSnapshot = snapshotRef.current;
@@ -350,7 +431,7 @@ export function PopoverView() {
     }
   };
 
-  const handleSwapGlobalInstance = async () => {
+  const handleSwapGlobalInstance = async (includeFullSquad = false) => {
     const currentSnapshot = snapshotRef.current;
     if (
       !currentSnapshot ||
@@ -363,7 +444,12 @@ export function PopoverView() {
     setBusyGlobalAction("swap");
     setErrorMsg(null);
     try {
-      const updated = await invokeIpc(IPC_COMMANDS.swapGlobalInstance);
+      const updated = await invokeIpc(
+        IPC_COMMANDS.swapGlobalInstance,
+        includeFullSquad
+          ? { includeRoles: true, resyncInherited: true }
+          : undefined,
+      );
       snapshotSeqRef.current += 1;
       snapshotRef.current = updated;
       setSnapshot(updated);
@@ -372,15 +458,16 @@ export function PopoverView() {
         updated.globalPresets.find(
           (p) => p.id === updated.globalConfig.activeGlobalPresetId,
         ) ?? updated.globalPresets[0];
-      const nextLabel = resolveInstanceShortLabel(
-        nextPreset?.orchestrator.providerInstanceId,
-        updated.providerInstances,
-      );
-      setStatusMessage(
-        nextPreset?.orchestrator.providerInstanceId === "codex"
-          ? `Modelo global alternado: ${nextLabel} (${nextPreset.orchestrator.model}).`
-          : `Instância global invertida: ${nextLabel} (${nextPreset?.orchestrator.model ?? "gemini-4-hydrogen"}).`,
-      );
+      const feedback = formatGlobalSwapFeedback({
+        instanceId: nextPreset?.orchestrator.providerInstanceId ?? "codex",
+        model: nextPreset?.orchestrator.model ?? "gpt-6.1-sol",
+        instances: updated.providerInstances,
+        report: updated.lastGlobalSwapReport,
+      });
+      setStatusMessage(feedback.status);
+      if (feedback.partialError) {
+        setErrorMsg(feedback.partialError);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -550,7 +637,34 @@ export function PopoverView() {
     }
   };
 
-  const handleSwapInstance = async (project: ProjectSummary) => {
+  const handleImportProjectSquad = async (project: ProjectSummary) => {
+    if (!snapshotRef.current || busyProjectRef.current.has(project.projectId)) return;
+    busyProjectRef.current.add(project.projectId);
+    setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "import" }));
+    setErrorMsg(null);
+    try {
+      const imported = await invokeIpc(IPC_COMMANDS.importProjectSquad, {
+        projectId: project.projectId,
+        workspaceRoot: project.workspaceRoot,
+      });
+      snapshotSeqRef.current += 1;
+      setStatusMessage(
+        `Squad de ${project.title} importada com segurança para ${imported.localPresetPath}.`,
+      );
+      await loadSnapshot(true);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      busyProjectRef.current.delete(project.projectId);
+      setBusyProjectAction((prev) => {
+        const next = { ...prev };
+        delete next[project.projectId];
+        return next;
+      });
+    }
+  };
+
+  const handleSwapInstance = async (project: ProjectSummary, includeRoles = false) => {
     const currentSnapshot = snapshotRef.current;
     if (
       !currentSnapshot ||
@@ -563,19 +677,26 @@ export function PopoverView() {
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "swap" }));
     setErrorMsg(null);
     try {
-      const result = await invokeIpc(IPC_COMMANDS.swapProjectInstance, {
-        projectId: project.projectId,
-        workspaceRoot: project.workspaceRoot,
-      });
-      const latestSnapshot = snapshotRef.current ?? currentSnapshot;
-      const label = resolveInstanceShortLabel(
-        result.activeInstanceId,
-        latestSnapshot.providerInstances,
+      const result = await invokeIpc(
+        IPC_COMMANDS.swapProjectInstance,
+        includeRoles
+          ? {
+              projectId: project.projectId,
+              workspaceRoot: project.workspaceRoot,
+              includeRoles: true,
+            }
+          : {
+              projectId: project.projectId,
+              workspaceRoot: project.workspaceRoot,
+            },
       );
+      const latestSnapshot = snapshotRef.current ?? currentSnapshot;
       setStatusMessage(
-        result.activeInstanceId === "codex"
-          ? `Modelo alternado em ${project.title}: ${label} (${result.activeModel}).`
-          : `Instância alternada em ${project.title}: ${label} (${result.activeModel}).`,
+        formatProjectSwapFeedback({
+          projectTitle: project.title,
+          result,
+          instances: latestSnapshot.providerInstances,
+        }),
       );
       await loadSnapshot(true);
     } catch (err) {
@@ -670,6 +791,38 @@ export function PopoverView() {
         </div>
       </header>
 
+      {/* Live Active Subagents Strip */}
+      {snapshot && activeSubagents.length > 0 ? (
+        <div
+          aria-label="Subagentes ativos agora"
+          className="flex shrink-0 flex-wrap items-center justify-between gap-1.5 border-b border-emerald-500/20 bg-emerald-500/[0.07] px-3.5 py-1.5 text-[10px]"
+        >
+          <div className="flex min-w-0 items-center gap-1.5 font-medium text-emerald-200">
+            <span
+              aria-hidden="true"
+              className="size-1.5 shrink-0 rounded-full bg-emerald-400 motion-safe:animate-pulse"
+            />
+            <span className="truncate tabular-nums">
+              {activeSubagents.length}{" "}
+              {activeSubagents.length === 1
+                ? "subagente ativo"
+                : "subagentes ativos"}
+            </span>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {instanceSubagentSummaries.map((item) => (
+              <Badge
+                key={item.instanceId}
+                tone={getInstanceBadgeTone(item.instanceId)}
+                className="tabular-nums"
+              >
+                {item.label} · {item.count}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {/* Live polite status region rendered stably */}
       <div
         role="status"
@@ -683,7 +836,7 @@ export function PopoverView() {
         {statusMessage ? (
           <>
             <Check className="size-3.5 shrink-0 text-emerald-400" aria-hidden="true" />
-            <span className="min-w-0 truncate">{statusMessage}</span>
+            <span className="min-w-0 break-words">{statusMessage}</span>
           </>
         ) : null}
       </div>
@@ -719,7 +872,7 @@ export function PopoverView() {
               {/* Row 1: Title + Global Active/Disabled Toggle */}
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1 space-y-0.5">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <Globe
                       className={`size-3.5 shrink-0 ${
                         snapshot.globalConfig.enabled
@@ -755,7 +908,7 @@ export function PopoverView() {
                 />
               </div>
 
-              {/* Row 2: Global Select + Instance Pill / Swap + Studio Button */}
+              {/* Row 2: Global Select + Instance Pill / Swap + Swap Squad + Studio Button */}
               <div className="flex flex-wrap items-center gap-1.5">
                 <label htmlFor="popover-global-preset-select" className="sr-only">
                   Preset Global Default
@@ -767,7 +920,7 @@ export function PopoverView() {
                   value={snapshot.globalConfig.activeGlobalPresetId}
                   disabled={busyGlobalAction !== null}
                   onChange={(e) => void handleChangeGlobalPreset(e.target.value)}
-                  wrapperClassName="min-w-0 flex-1"
+                  wrapperClassName="min-w-[160px] flex-1"
                 >
                   {sortedGlobalPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
@@ -779,29 +932,44 @@ export function PopoverView() {
                 </Select>
 
                 {canSwapGlobal ? (
-                  <button
-                    type="button"
-                    disabled={busyGlobalAction !== null || !snapshot.globalConfig.enabled}
-                    onClick={() => void handleSwapGlobalInstance()}
-                    aria-label="Inverter instância global"
-                    title={globalSwapTitle}
-                    className={[
-                      "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
-                      "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
-                      "enabled:active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
-                      SWAP_PILL_CLASSES[globalInstanceTone] ?? SWAP_PILL_CLASSES.neutral,
-                    ].join(" ")}
-                  >
-                    <Cpu className="size-3 shrink-0" aria-hidden="true" />
-                    <span>{globalSwapLabel}</span>
-                    <ArrowLeftRight
-                      className={`size-3 shrink-0 opacity-85 ${
-                        busyGlobalAction === "swap" ? "motion-safe:animate-pulse" : ""
-                      }`}
-                      aria-hidden="true"
-                    />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={busyGlobalAction !== null || !snapshot.globalConfig.enabled}
+                      onClick={() => void handleSwapGlobalInstance(false)}
+                      aria-label="Inverter instância global"
+                      title={globalSwapTitle}
+                      className={[
+                        "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
+                        "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
+                        "enabled:active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                        SWAP_PILL_CLASSES[globalInstanceTone] ?? SWAP_PILL_CLASSES.neutral,
+                      ].join(" ")}
+                    >
+                      <Cpu className="size-3 shrink-0" aria-hidden="true" />
+                      <span>{globalSwapLabel}</span>
+                      <ArrowLeftRight
+                        className={`size-3 shrink-0 opacity-85 ${
+                          busyGlobalAction === "swap" ? "motion-safe:animate-pulse" : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      disabled={busyGlobalAction !== null || !snapshot.globalConfig.enabled}
+                      onClick={() => void handleSwapGlobalInstance(true)}
+                      aria-label="Swap completo da squad global"
+                      title="Alternar orquestrador, rebalancear papéis e ressincronizar projetos herdados (vale para novas threads no T3 Code)"
+                      className="shrink-0"
+                    >
+                      <ArrowLeftRight className="size-3" aria-hidden="true" />
+                      <span>Swap Squad</span>
+                    </Button>
+                  </>
                 ) : (
                   <span
                     className={[
@@ -830,6 +998,12 @@ export function PopoverView() {
                   <SlidersHorizontal className="size-3.5" aria-hidden="true" />
                 </Button>
               </div>
+
+              {snapshot.globalConfig.enabled && canSwapGlobal ? (
+                <p className="text-[10px] text-zinc-500">
+                  Swaps aplicam-se a novas threads no T3 Code.
+                </p>
+              ) : null}
             </section>
 
             {/* Strict Overrides Section */}
@@ -858,6 +1032,7 @@ export function PopoverView() {
 
               {configuringProject ? (
                 <form
+                  ref={configureFormRef}
                   onSubmit={(e) => void handleApplyNewProjectOverride(e)}
                   className="surface-card rounded-xl border border-indigo-400/30 bg-zinc-900/95 p-2.5 space-y-2"
                 >
@@ -942,7 +1117,7 @@ export function PopoverView() {
                 </form>
               ) : null}
 
-              {overrideProjects.length > 1 ? (
+              {snapshot.projects.length > 1 ? (
                 <div className="relative">
                   <label htmlFor="popover-project-filter" className="sr-only">
                     Filtrar projetos
@@ -957,7 +1132,7 @@ export function PopoverView() {
                     type="search"
                     value={projectQuery}
                     onChange={(e) => setProjectQuery(e.target.value)}
-                    placeholder="Filtrar overrides, preset ou instância…"
+                    placeholder="Filtrar projetos, overrides ou instância…"
                     className="h-8 w-full rounded-lg border border-white/10 bg-zinc-900/90 ps-8 pe-12 text-xs text-zinc-100 placeholder:text-zinc-500 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] transition-[border-color,background-color] duration-150 hover:border-white/18 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   />
                   {projectQuery ? (
@@ -980,7 +1155,7 @@ export function PopoverView() {
                 </div>
               ) : null}
 
-              {overrideProjects.length === 0 ? (
+              {overrideProjects.length === 0 && !normalizedQuery ? (
                 <div className="surface-card rounded-xl border-dashed px-3 py-4 text-center space-y-1">
                   <p className="text-xs font-medium text-zinc-300">
                     Nenhum projeto com override configurado.
@@ -990,10 +1165,12 @@ export function PopoverView() {
                     Default.
                   </p>
                 </div>
-              ) : filteredOverrideProjects.length === 0 ? (
+              ) : normalizedQuery &&
+                filteredOverrideProjects.length === 0 &&
+                filteredUnconfiguredProjects.length === 0 ? (
                 <div className="surface-card rounded-xl px-3 py-4 text-center space-y-2">
                   <p className="text-xs text-zinc-400">
-                    Nenhum override corresponde a &ldquo;{projectQuery.trim()}&rdquo;.
+                    Nenhum projeto ou override corresponde a &ldquo;{projectQuery.trim()}&rdquo;.
                   </p>
                   <Button
                     variant="ghost"
@@ -1004,211 +1181,452 @@ export function PopoverView() {
                   </Button>
                 </div>
               ) : (
-                <ul className="space-y-2">
-                  {filteredOverrideProjects.map((project) => {
-                    const selectedPresetId =
-                      selectedPresets[project.projectId] ??
-                      defaultPresetForProject(project, snapshot);
-                    const busy = busyProjectAction[project.projectId];
-                    const isSynced = Boolean(syncedProjectIds[project.projectId]);
-                    const activeInstanceLabel = resolveInstanceShortLabel(
-                      project.activeInstanceId,
-                      snapshot.providerInstances,
-                    );
-                    const instanceTone = getInstanceBadgeTone(project.activeInstanceId);
+                <>
+                  {filteredOverrideProjects.length > 0 ? (
+                    <ul className="space-y-2">
+                      {filteredOverrideProjects.map((project) => {
+                        const selectedPresetId =
+                          selectedPresets[project.projectId] ??
+                          defaultPresetForProject(project, snapshot);
+                        const busy = busyProjectAction[project.projectId];
+                        const isSynced = Boolean(syncedProjectIds[project.projectId]);
+                        const activeInstanceLabel = resolveInstanceShortLabel(
+                          project.activeInstanceId,
+                          snapshot.providerInstances,
+                        );
+                        const instanceTone = getInstanceBadgeTone(project.activeInstanceId);
+                        const needsImport = Boolean(
+                          project.detectedSquadSlug && !project.hasLocalPreset,
+                        );
 
-                    return (
-                      <li
-                        key={project.projectId}
-                        className={[
-                          "surface-card-interactive rounded-xl p-2.5 space-y-2",
-                          !project.presetEnabled ? "opacity-85" : "",
-                        ].join(" ")}
-                      >
-                        {/* Row 1: Project identity + Active/Disabled Toggle */}
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1 space-y-1">
-                            <div className="flex items-center gap-1.5">
-                              <FolderGit2
-                                className={`size-3.5 shrink-0 ${
-                                  project.presetEnabled
-                                    ? "text-indigo-300"
-                                    : "text-zinc-500"
-                                }`}
-                                aria-hidden="true"
-                              />
-                              <span className="truncate text-xs font-semibold text-zinc-100">
-                                {project.title}
-                              </span>
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-400">
-                              {!project.presetEnabled ? (
-                                <span className="text-amber-300/90">
-                                  Seguindo Global Default (override pausado)
-                                </span>
-                              ) : (
-                                <>
-                                  {project.hasLocalPreset ? (
-                                    <Badge tone="emerald" dot>
-                                      Sincronizado
-                                    </Badge>
-                                  ) : project.detectedSquadSlug ? (
-                                    <Badge tone="amber" dot>
-                                      Squad s/ preset
-                                    </Badge>
-                                  ) : (
-                                    <Badge tone="neutral" dot>
-                                      Override
-                                    </Badge>
-                                  )}
-                                  {project.activeModel ? (
-                                    <span className="truncate font-mono text-zinc-300/90">
-                                      {project.activeModel}
-                                    </span>
-                                  ) : null}
-                                  {project.detectedSquadSlug ? (
-                                    <span className="truncate font-mono text-zinc-500">
-                                      · .{project.detectedSquadSlug}
-                                    </span>
-                                  ) : null}
-                                </>
-                              )}
-                            </div>
-                          </div>
-
-                          <StatusToggle
-                            enabled={project.presetEnabled}
-                            disabled={Boolean(busy)}
-                            onClick={() => void handleToggleProjectEnabled(project)}
-                            aria-label={`Alternar preset de ${project.title}`}
-                          />
-                        </div>
-
-                        {/* Row 2: Active Instance Swap Pill + Quick Actions */}
-                        <div className="flex items-center justify-between gap-1.5">
-                          <button
-                            type="button"
-                            disabled={Boolean(busy) || !project.presetEnabled}
-                            onClick={() => void handleSwapInstance(project)}
-                            aria-label={
-                              project.activeInstanceId === "codex"
-                                ? `Alternar modelo Codex em ${project.title}`
-                                : `Alternar instância Agy em ${project.title}`
-                            }
-                            title={
-                              !project.presetEnabled
-                                ? "Ative o override do projeto para inverter a instância"
-                                : project.activeInstanceId === "codex"
-                                  ? "Alternar gpt-6.1-sol ⇄ gpt-6.1-terra (1 clique)"
-                                  : "Alternar Agy Veca ⇄ Agy Principal (1 clique)"
-                            }
+                        return (
+                          <li
+                            key={project.projectId}
                             className={[
-                              "inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
-                              "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
-                              "enabled:active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50",
-                              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
-                              SWAP_PILL_CLASSES[instanceTone] ?? SWAP_PILL_CLASSES.neutral,
+                              "surface-card-interactive rounded-xl p-2.5 space-y-2",
+                              !project.presetEnabled ? "opacity-85" : "",
                             ].join(" ")}
                           >
-                            <Cpu className="size-3 shrink-0" aria-hidden="true" />
-                            <span>
-                              {project.activeInstanceId === "codex"
-                                ? `${activeInstanceLabel} · ${project.activeModel ?? "gpt-6.1-sol"}`
-                                : activeInstanceLabel}
-                            </span>
-                            <ArrowLeftRight
-                              className={`size-3 shrink-0 opacity-85 ${
-                                busy === "swap" ? "motion-safe:animate-pulse" : ""
-                              }`}
-                              aria-hidden="true"
-                            />
-                          </button>
+                            {/* Row 1: Project identity + Active Subagents Badge + Toggle */}
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <FolderGit2
+                                    className={`size-3.5 shrink-0 ${
+                                      project.presetEnabled
+                                        ? "text-indigo-300"
+                                        : "text-zinc-500"
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                  <span className="truncate text-xs font-semibold text-zinc-100">
+                                    {project.title}
+                                  </span>
+                                  {project.activeSubagentCount > 0 ? (
+                                    <Badge
+                                      tone="emerald"
+                                      dot
+                                      className="shrink-0 tabular-nums"
+                                    >
+                                      {project.activeSubagentCount}{" "}
+                                      {project.activeSubagentCount === 1
+                                        ? "subagente"
+                                        : "subagentes"}
+                                    </Badge>
+                                  ) : null}
+                                </div>
 
-                          <button
-                            type="button"
-                            disabled={Boolean(busy)}
-                            onClick={() => void handleRemoveProjectOverride(project)}
-                            aria-label={`Remover override de ${project.title}`}
-                            title="Remover override e voltar ao Global Default"
-                            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border border-transparent px-1.5 text-[10px] text-zinc-400 transition-colors hover:border-white/10 hover:bg-white/[0.06] hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-50"
-                          >
-                            <RotateCcw className="size-3" aria-hidden="true" />
-                            <span>Global</span>
-                          </button>
-                        </div>
+                                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-400">
+                                  {!project.presetEnabled ? (
+                                    <span className="text-amber-300/90">
+                                      Seguindo Global Default (override pausado)
+                                    </span>
+                                  ) : (
+                                    <>
+                                      {project.hasLocalPreset ? (
+                                        <Badge tone="emerald" dot>
+                                          Sincronizado
+                                        </Badge>
+                                      ) : project.detectedSquadSlug ? (
+                                        <Badge tone="amber" dot>
+                                          Squad s/ preset
+                                        </Badge>
+                                      ) : (
+                                        <Badge tone="neutral" dot>
+                                          Override
+                                        </Badge>
+                                      )}
+                                      {project.activeModel ? (
+                                        <span className="truncate font-mono text-zinc-300/90">
+                                          {project.activeModel}
+                                        </span>
+                                      ) : null}
+                                      {project.detectedSquadSlug ? (
+                                        <span className="truncate font-mono text-zinc-500">
+                                          · .{project.detectedSquadSlug}
+                                        </span>
+                                      ) : null}
+                                    </>
+                                  )}
+                                </div>
+                              </div>
 
-                        {/* Row 3: Unified Action Bar (Preset Select + Sync + Open in Studio) */}
-                        <div className="flex items-center gap-1.5">
-                          <label
-                            htmlFor={`preset-select-${project.projectId}`}
-                            className="sr-only"
-                          >
-                            Preset para {project.title}
-                          </label>
-                          <Select
-                            id={`preset-select-${project.projectId}`}
-                            sizeVariant="xs"
-                            value={selectedPresetId}
-                            disabled={Boolean(busy)}
-                            onChange={(e) =>
-                              setSelectedPresets((prev) => ({
-                                ...prev,
-                                [project.projectId]: e.target.value,
-                              }))
-                            }
-                            wrapperClassName="min-w-0 flex-1"
-                          >
-                            {sortedGlobalPresets.map((preset) => (
-                              <option key={preset.id} value={preset.id}>
-                                {preset.id} — {preset.name}
-                              </option>
-                            ))}
-                          </Select>
+                              <StatusToggle
+                                enabled={project.presetEnabled}
+                                disabled={Boolean(busy)}
+                                onClick={() => void handleToggleProjectEnabled(project)}
+                                aria-label={`Alternar preset de ${project.title}`}
+                              />
+                            </div>
 
-                          <Button
-                            variant={isSynced ? "secondary" : "primary"}
-                            size="xs"
-                            disabled={Boolean(busy)}
-                            onClick={() => void handleSyncProject(project)}
-                            aria-label={`Sync ${project.title}`}
-                          >
-                            {isSynced ? (
-                              <>
-                                <Check
-                                  className="size-3.5 text-emerald-400"
-                                  aria-hidden="true"
-                                />
-                                Sincronizado!
-                              </>
-                            ) : busy === "sync" ? (
-                              <>
-                                <RefreshCw
-                                  className="size-3 motion-safe:animate-spin"
-                                  aria-hidden="true"
-                                />
-                                Sync…
-                              </>
-                            ) : (
-                              "Sync"
-                            )}
-                          </Button>
+                            {/* Row 2: Active Instance Swap Pill + Swap Squad + Global */}
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={Boolean(busy) || !project.presetEnabled}
+                                  onClick={() => void handleSwapInstance(project, false)}
+                                  aria-label={
+                                    project.activeInstanceId === "codex"
+                                      ? `Alternar modelo Codex em ${project.title}`
+                                      : `Alternar instância Agy em ${project.title}`
+                                  }
+                                  title={
+                                    !project.presetEnabled
+                                      ? "Ative o override do projeto para inverter a instância"
+                                      : project.activeInstanceId === "codex"
+                                        ? "Alternar gpt-6.1-sol ⇄ gpt-6.1-terra (1 clique)"
+                                        : "Alternar Agy Veca ⇄ Agy Principal (1 clique)"
+                                  }
+                                  className={[
+                                    "inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
+                                    "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
+                                    "enabled:active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50",
+                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                                    SWAP_PILL_CLASSES[instanceTone] ?? SWAP_PILL_CLASSES.neutral,
+                                  ].join(" ")}
+                                >
+                                  <Cpu className="size-3 shrink-0" aria-hidden="true" />
+                                  <span>
+                                    {project.activeInstanceId === "codex"
+                                      ? `${activeInstanceLabel} · ${project.activeModel ?? "gpt-6.1-sol"}`
+                                      : activeInstanceLabel}
+                                  </span>
+                                  <ArrowLeftRight
+                                    className={`size-3 shrink-0 opacity-85 ${
+                                      busy === "swap" ? "motion-safe:animate-pulse" : ""
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                </button>
 
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => void handleOpenStudio(project.projectId, null)}
-                            aria-label={`Editar ${project.title} no Studio`}
-                            title="Editar no Preset Studio"
-                          >
-                            <SlidersHorizontal className="size-3.5" aria-hidden="true" />
-                          </Button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(busy) || !project.presetEnabled}
+                                  onClick={() => void handleSwapInstance(project, true)}
+                                  aria-label={`Swap completo da squad em ${project.title}`}
+                                  title="Alternar orquestrador e rebalancear papéis da squad (vale para novas threads no T3 Code)"
+                                  className="inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-zinc-800/70 px-1.5 text-[10px] font-medium text-zinc-200 transition-colors hover:border-white/20 hover:bg-zinc-700/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <ArrowLeftRight className="size-2.5" aria-hidden="true" />
+                                  <span>Swap Squad</span>
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                disabled={Boolean(busy)}
+                                onClick={() => void handleRemoveProjectOverride(project)}
+                                aria-label={`Remover override de ${project.title}`}
+                                title="Remover override e voltar ao Global Default"
+                                className="inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border border-transparent px-1.5 text-[10px] text-zinc-400 transition-colors hover:border-white/10 hover:bg-white/[0.06] hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:opacity-50"
+                              >
+                                <RotateCcw className="size-3" aria-hidden="true" />
+                                <span>Global</span>
+                              </button>
+                            </div>
+
+                            {/* Safe Import CTA for external manual squads without .t3code/preset.jsonc */}
+                            {needsImport && project.presetEnabled ? (
+                              <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/25 bg-amber-500/[0.08] px-2 py-1.5">
+                                <p className="min-w-0 flex-1 text-[10px] leading-snug text-amber-200/90">
+                                  Squad manual detectada. Importe antes de sincronizar.
+                                </p>
+                                <Button
+                                  variant="caramel"
+                                  size="xs"
+                                  disabled={Boolean(busy)}
+                                  onClick={() => void handleImportProjectSquad(project)}
+                                  aria-label={`Importar squad de ${project.title}`}
+                                  className="shrink-0"
+                                >
+                                  <Download className="size-3" aria-hidden="true" />
+                                  <span>
+                                    {busy === "import" ? "Importando…" : "Importar Squad"}
+                                  </span>
+                                </Button>
+                              </div>
+                            ) : null}
+
+                            {/* Row 3: Unified Action Bar (Preset Select + Sync + Open in Studio) */}
+                            <div className="flex items-center gap-1.5">
+                              <label
+                                htmlFor={`preset-select-${project.projectId}`}
+                                className="sr-only"
+                              >
+                                Preset para {project.title}
+                              </label>
+                              <Select
+                                id={`preset-select-${project.projectId}`}
+                                sizeVariant="xs"
+                                value={selectedPresetId}
+                                disabled={Boolean(busy)}
+                                onChange={(e) =>
+                                  setSelectedPresets((prev) => ({
+                                    ...prev,
+                                    [project.projectId]: e.target.value,
+                                  }))
+                                }
+                                wrapperClassName="min-w-0 flex-1"
+                              >
+                                {sortedGlobalPresets.map((preset) => (
+                                  <option key={preset.id} value={preset.id}>
+                                    {preset.id} — {preset.name}
+                                  </option>
+                                ))}
+                              </Select>
+
+                              <Button
+                                variant={isSynced || needsImport ? "secondary" : "primary"}
+                                size="xs"
+                                disabled={Boolean(busy)}
+                                onClick={() => void handleSyncProject(project)}
+                                aria-label={`Sync ${project.title}`}
+                              >
+                                {isSynced ? (
+                                  <>
+                                    <Check
+                                      className="size-3.5 text-emerald-400"
+                                      aria-hidden="true"
+                                    />
+                                    Sincronizado!
+                                  </>
+                                ) : busy === "sync" ? (
+                                  <>
+                                    <RefreshCw
+                                      className="size-3 motion-safe:animate-spin"
+                                      aria-hidden="true"
+                                    />
+                                    Sync…
+                                  </>
+                                ) : (
+                                  "Sync"
+                                )}
+                              </Button>
+
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                onClick={() => void handleOpenStudio(project.projectId, null)}
+                                aria-label={`Editar ${project.title} no Studio`}
+                                title="Editar no Preset Studio"
+                              >
+                                <SlidersHorizontal className="size-3.5" aria-hidden="true" />
+                              </Button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
+
+                  {normalizedQuery && filteredUnconfiguredProjects.length > 0 ? (
+                    <div
+                      aria-label="Projetos seguindo Global Default"
+                      className="space-y-1.5 pt-1"
+                    >
+                      <p className="px-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        Seguindo Global Default ({filteredUnconfiguredProjects.length})
+                      </p>
+                      <ul className="space-y-1.5">
+                        {filteredUnconfiguredProjects.map((project) => {
+                          const instanceLabel = resolveInstanceShortLabel(
+                            project.activeInstanceId,
+                            snapshot.providerInstances,
+                          );
+                          return (
+                            <li
+                              key={project.projectId}
+                              className="surface-card flex items-center justify-between gap-2 rounded-xl px-2.5 py-2"
+                            >
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <FolderGit2
+                                    className="size-3.5 shrink-0 text-zinc-500"
+                                    aria-hidden="true"
+                                  />
+                                  <span className="truncate text-xs font-medium text-zinc-200">
+                                    {project.title}
+                                  </span>
+                                </div>
+                                <p className="truncate text-[10px] text-zinc-500">
+                                  Seguindo Global Default · {instanceLabel}
+                                </p>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <Button
+                                  variant="secondary"
+                                  size="xs"
+                                  onClick={() => {
+                                    setNewOverrideProjectId(project.projectId);
+                                    setConfiguringProject(true);
+                                    configureFormRef.current?.scrollIntoView?.({
+                                      block: "nearest",
+                                    });
+                                  }}
+                                  aria-label={`Configurar ${project.title}`}
+                                >
+                                  <Plus className="size-3" aria-hidden="true" />
+                                  <span>Configurar</span>
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  onClick={() =>
+                                    void handleOpenStudio(project.projectId, null)
+                                  }
+                                  aria-label={`Abrir ${project.title} no Studio`}
+                                  title="Abrir no Preset Studio"
+                                >
+                                  <SlidersHorizontal
+                                    className="size-3.5"
+                                    aria-hidden="true"
+                                  />
+                                </Button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : null}
+                </>
               )}
+            </section>
+
+            {/* Collapsible Subagents Activity Monitor (below Global & Overrides) */}
+            <section
+              aria-labelledby="popover-subagents-heading"
+              className="surface-card rounded-xl p-2.5 space-y-2"
+            >
+              <button
+                type="button"
+                onClick={() => setSubagentsExpanded((v) => !v)}
+                aria-expanded={subagentsExpanded}
+                aria-controls="popover-subagents-panel"
+                className="flex w-full items-center justify-between gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              >
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <Activity
+                    className={`size-3.5 shrink-0 ${
+                      activeSubagents.length > 0 ? "text-emerald-400" : "text-zinc-500"
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <h2
+                    id="popover-subagents-heading"
+                    className="truncate text-[11px] font-semibold uppercase tracking-wider text-zinc-300"
+                  >
+                    Monitor de Subagentes
+                  </h2>
+                  <Badge
+                    tone={activeSubagents.length > 0 ? "emerald" : "neutral"}
+                    dot={activeSubagents.length > 0}
+                    className="tabular-nums"
+                  >
+                    {activeSubagents.length}{" "}
+                    {activeSubagents.length === 1 ? "ativo" : "ativos"}
+                  </Badge>
+                </div>
+                {subagentsExpanded ? (
+                  <ChevronDown
+                    className="size-3.5 shrink-0 text-zinc-400"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ChevronRight
+                    className="size-3.5 shrink-0 text-zinc-400"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+
+              {subagentsExpanded ? (
+                <div id="popover-subagents-panel" className="space-y-1.5 pt-1">
+                  {orderedSubagents.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-white/10 px-2.5 py-3 text-center text-[11px] text-zinc-500">
+                      Nenhum subagente ativo ou recente.
+                    </p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {orderedSubagents.map((sub) => {
+                        const instanceLabel = resolveInstanceShortLabel(
+                          sub.providerInstanceId,
+                          snapshot.providerInstances,
+                        );
+                        const modelLabel =
+                          sub.resolvedModel ?? sub.requestedModel ?? "auto";
+                        const statusTone = getSubagentStatusTone(sub.status);
+                        return (
+                          <li
+                            key={sub.subagentId}
+                            className="min-w-0 rounded-lg border border-white/[0.07] bg-zinc-950/60 px-2.5 py-2 space-y-1"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <span className="truncate text-[11px] font-semibold text-zinc-100">
+                                  {sub.role ?? "worker"}
+                                </span>
+                                {sub.projectTitle ? (
+                                  <span className="truncate text-[10px] text-zinc-400">
+                                    · {sub.projectTitle}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <Badge
+                                tone={statusTone}
+                                dot={isSubagentActive(sub.status)}
+                              >
+                                {formatSubagentStatusLabel(sub.status)}
+                              </Badge>
+                            </div>
+
+                            {sub.title ? (
+                              <p className="truncate text-[10px] text-zinc-300">
+                                {sub.title}
+                              </p>
+                            ) : null}
+
+                            <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-400">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <Badge tone={getInstanceBadgeTone(sub.providerInstanceId)}>
+                                  {instanceLabel}
+                                </Badge>
+                                <span className="truncate font-mono text-zinc-400">
+                                  {modelLabel}
+                                </span>
+                              </div>
+                              <span className="shrink-0 tabular-nums text-zinc-500">
+                                {formatRelativeTime(sub.updatedAt)}
+                              </span>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
             </section>
           </>
         ) : null}

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertCircle,
+  ArrowLeftRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Cpu,
   FileDiff,
   GitBranch,
@@ -30,14 +34,22 @@ import { Button } from "../components/ui/Button";
 import { StatusToggle } from "../components/ui/StatusToggle";
 import {
   invokeIpc,
+  listenSnapshotUpdated,
   listenStudioNavigate,
   type StudioNavigatePayload,
 } from "../lib/ipc-client";
 import {
   clonePreset,
   createEmptyPreset,
+  formatGlobalSwapFeedback,
   formatPrimaryOptionSummary,
+  formatProjectSwapFeedback,
+  formatRelativeTime,
+  formatSubagentStatusLabel,
+  getSubagentStatusTone,
+  isSubagentActive,
   resolveInstanceShortLabel,
+  summarizeActiveSubagentsByInstance,
 } from "../lib/preset-utils";
 import {
   IPC_COMMANDS,
@@ -69,11 +81,21 @@ type PendingSwitchAction =
   | { kind: "create-global"; id: string; extendsId: string | null }
   | { kind: "configure-override"; project: ProjectSummary; presetId: string }
   | { kind: "import-squad"; project: ProjectSummary }
+  | { kind: "swap-global"; includeFullSquad: boolean }
+  | { kind: "swap-project"; project: ProjectSummary; includeRoles: boolean }
   | {
       kind: "navigate";
       payload: StudioNavigatePayload;
       snapshot: DashboardSnapshot;
     };
+
+function canSwapOrchestrator(instanceId: string | null | undefined): boolean {
+  return (
+    instanceId === "antigravity" ||
+    instanceId === "antigravity_2" ||
+    instanceId === "codex"
+  );
+}
 
 interface StudioViewProps {
   initialProjectId?: string | null;
@@ -100,6 +122,7 @@ export function StudioView({
   const [saving, setSaving] = useState(false);
   const [importingProjectId, setImportingProjectId] = useState<string | null>(null);
   const [pendingSwitch, setPendingSwitch] = useState<PendingSwitchAction | null>(null);
+  const [subagentsExpanded, setSubagentsExpanded] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -385,6 +408,92 @@ export function StudioView({
     deferredNavigateDuringSaveRef.current = null;
     void handleNavigationEvent(deferred, () => false);
   }, [handleNavigationEvent, saving]);
+
+  // Listen for live snapshot updates (subagent activity, SQLite/settings changes)
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listenSnapshotUpdated(async () => {
+      if (cancelled || !snapshotRef.current) return;
+      try {
+        const fresh = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+        if (cancelled) return;
+        snapshotRef.current = fresh;
+        setSnapshot(fresh);
+
+        if (dirtyRef.current || savingRef.current) return;
+        const currentSel = selectionRef.current;
+        if (currentSel?.kind === "global") {
+          const freshGlobal = fresh.globalPresets.find(
+            (p) => p.id === currentSel.presetId,
+          );
+          if (freshGlobal) {
+            const nextDraft = clonePreset(freshGlobal);
+            if (freshGlobal.id === fresh.globalConfig.activeGlobalPresetId) {
+              nextDraft.enabled = fresh.globalConfig.enabled;
+            }
+            setDraftPreset(nextDraft);
+          }
+        } else if (currentSel?.kind === "project") {
+          const freshProj = fresh.projects.find(
+            (p) => p.projectId === currentSel.projectId,
+          );
+          if (freshProj) {
+            const seq = ++selectionSeqRef.current;
+            const resolved = await invokeIpc(IPC_COMMANDS.getProjectPreset, {
+              projectId: freshProj.projectId,
+              workspaceRoot: freshProj.workspaceRoot,
+            });
+            if (
+              cancelled ||
+              seq !== selectionSeqRef.current ||
+              dirtyRef.current ||
+              savingRef.current
+            ) {
+              return;
+            }
+            setProjectMeta(resolved);
+            setDraftPreset(clonePreset(resolved.resolvedPreset));
+          }
+        }
+      } catch {
+        // Ignore transient background refresh failures
+      }
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const activeSubagents = useMemo(() => {
+    if (!snapshot) return [];
+    return snapshot.subagents.filter((sub) => isSubagentActive(sub.status));
+  }, [snapshot]);
+
+  const instanceSubagentSummaries = useMemo(() => {
+    if (!snapshot) return [];
+    return summarizeActiveSubagentsByInstance(
+      snapshot.subagents,
+      snapshot.providerInstances,
+    );
+  }, [snapshot]);
+
+  const orderedSubagents = useMemo(() => {
+    if (!snapshot) return [];
+    return [...snapshot.subagents].sort((a, b) => {
+      const aActive = isSubagentActive(a.status) ? 0 : 1;
+      const bActive = isSubagentActive(b.status) ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    });
+  }, [snapshot]);
 
   const activePreviewProject = useMemo(() => {
     if (!snapshot || !previewTargetProjectId) return null;
@@ -890,6 +999,122 @@ export function StudioView({
     void executeImportSquad(project);
   };
 
+  const executeSwapGlobal = async (includeFullSquad: boolean) => {
+    if (savingRef.current) return;
+    const seq = ++selectionSeqRef.current;
+    updateSaving(true);
+    setErrorMsg(null);
+    try {
+      const updated = await invokeIpc(
+        IPC_COMMANDS.swapGlobalInstance,
+        includeFullSquad
+          ? { includeRoles: true, resyncInherited: true }
+          : undefined,
+      );
+      snapshotRef.current = updated;
+      setSnapshot(updated);
+      const activePreset =
+        updated.globalPresets.find(
+          (p) => p.id === updated.globalConfig.activeGlobalPresetId,
+        ) ?? updated.globalPresets[0];
+      if (seq === selectionSeqRef.current && activePreset) {
+        const nextDraft = clonePreset(activePreset);
+        nextDraft.enabled = updated.globalConfig.enabled;
+        setDraftPreset(nextDraft);
+        updateDirty(false);
+        if (activeTab === "preview" && activePreviewProject) {
+          await runPreview(activePreviewProject, nextDraft, { clearError: false });
+        }
+      }
+      const feedback = formatGlobalSwapFeedback({
+        instanceId: activePreset?.orchestrator.providerInstanceId ?? "codex",
+        model: activePreset?.orchestrator.model ?? "gpt-6.1-sol",
+        instances: updated.providerInstances,
+        report: updated.lastGlobalSwapReport,
+      });
+      setStatusMessage(feedback.status);
+      if (feedback.partialError) {
+        setErrorMsg(feedback.partialError);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      updateSaving(false);
+    }
+  };
+
+  const executeSwapProject = async (
+    project: ProjectSummary,
+    includeRoles: boolean,
+  ) => {
+    if (savingRef.current) return;
+    const seq = ++selectionSeqRef.current;
+    updateSaving(true);
+    setErrorMsg(null);
+    try {
+      const result = await invokeIpc(
+        IPC_COMMANDS.swapProjectInstance,
+        includeRoles
+          ? {
+              projectId: project.projectId,
+              workspaceRoot: project.workspaceRoot,
+              includeRoles: true,
+            }
+          : {
+              projectId: project.projectId,
+              workspaceRoot: project.workspaceRoot,
+            },
+      );
+      const [refreshedSnap, resolvedProj] = await Promise.all([
+        invokeIpc(IPC_COMMANDS.getDashboardSnapshot),
+        invokeIpc(IPC_COMMANDS.getProjectPreset, {
+          projectId: project.projectId,
+          workspaceRoot: project.workspaceRoot,
+        }),
+      ]);
+      snapshotRef.current = refreshedSnap;
+      setSnapshot(refreshedSnap);
+      if (seq === selectionSeqRef.current) {
+        setProjectMeta(resolvedProj);
+        const nextDraft = clonePreset(resolvedProj.resolvedPreset);
+        setDraftPreset(nextDraft);
+        updateDirty(false);
+        if (activeTab === "preview") {
+          await runPreview(project, nextDraft, { clearError: false });
+        }
+      }
+      setStatusMessage(
+        formatProjectSwapFeedback({
+          projectTitle: project.title,
+          result,
+          instances: refreshedSnap.providerInstances,
+        }),
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      updateSaving(false);
+    }
+  };
+
+  const requestSwapGlobal = (includeFullSquad: boolean) => {
+    if (savingRef.current || !snapshotRef.current?.globalConfig.enabled) return;
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "swap-global", includeFullSquad });
+      return;
+    }
+    void executeSwapGlobal(includeFullSquad);
+  };
+
+  const requestSwapProject = (project: ProjectSummary, includeRoles: boolean) => {
+    if (savingRef.current || !project.presetEnabled) return;
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "swap-project", project, includeRoles });
+      return;
+    }
+    void executeSwapProject(project, includeRoles);
+  };
+
   const confirmPendingSwitch = async () => {
     if (savingRef.current) return;
     const action = pendingSwitch;
@@ -911,6 +1136,12 @@ export function StudioView({
         break;
       case "import-squad":
         await executeImportSquad(action.project);
+        break;
+      case "swap-global":
+        await executeSwapGlobal(action.includeFullSquad);
+        break;
+      case "swap-project":
+        await executeSwapProject(action.project, action.includeRoles);
         break;
       case "navigate":
         await applyNavigationPayload(action.payload, action.snapshot);
@@ -1017,6 +1248,12 @@ export function StudioView({
   const projectOverrideEnabled =
     activeProjectSummary?.presetEnabled ?? Boolean(draftPreset?.enabled);
 
+  const canSwapDraftOrchestrator = canSwapOrchestrator(
+    draftPreset?.orchestrator.providerInstanceId,
+  );
+  const isCodexOrchestrator =
+    draftPreset?.orchestrator.providerInstanceId === "codex";
+
   return (
     <div className="surface-backdrop flex h-full w-full overflow-hidden text-zinc-100">
       <StudioSidebar
@@ -1103,6 +1340,39 @@ export function StudioView({
                     }
                   />
 
+                  {isActiveGlobalDefault && canSwapDraftOrchestrator ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={saving || !globalOrPresetEnabled}
+                        onClick={() => requestSwapGlobal(false)}
+                        aria-label="Inverter instância global"
+                        title={
+                          !globalOrPresetEnabled
+                            ? "Ative o Preset Global para inverter a instância"
+                            : "Alternar instância/modelo do orquestrador (vale para novas threads no T3 Code)"
+                        }
+                      >
+                        <ArrowLeftRight className="size-3.5" aria-hidden="true" />
+                        {isCodexOrchestrator
+                          ? "Alternar Modelo"
+                          : "Inverter Instância"}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={saving || !globalOrPresetEnabled}
+                        onClick={() => requestSwapGlobal(true)}
+                        aria-label="Swap completo da squad global"
+                        title="Alternar orquestrador, rebalancear papéis e ressincronizar projetos herdados (vale para novas threads no T3 Code)"
+                      >
+                        <ArrowLeftRight className="size-3.5" aria-hidden="true" />
+                        Swap Squad
+                      </Button>
+                    </>
+                  ) : null}
+
                   {!isActiveGlobalDefault ? (
                     <Button
                       variant="secondary"
@@ -1134,6 +1404,47 @@ export function StudioView({
                     onClick={() => void handleToggleProjectEnabled()}
                     aria-label={`Alternar preset de ${projectMeta.projectSlug}`}
                   />
+
+                  {canSwapDraftOrchestrator && activeProjectSummary ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={saving || !projectOverrideEnabled}
+                        onClick={() =>
+                          requestSwapProject(activeProjectSummary, false)
+                        }
+                        aria-label={
+                          isCodexOrchestrator
+                            ? `Alternar modelo Codex em ${projectMeta.projectSlug}`
+                            : `Alternar instância Agy em ${projectMeta.projectSlug}`
+                        }
+                        title={
+                          !projectOverrideEnabled
+                            ? "Ative o override do projeto para inverter a instância"
+                            : "Alternar instância/modelo do orquestrador (vale para novas threads no T3 Code)"
+                        }
+                      >
+                        <ArrowLeftRight className="size-3.5" aria-hidden="true" />
+                        {isCodexOrchestrator
+                          ? "Alternar Modelo"
+                          : "Inverter Instância"}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={saving || !projectOverrideEnabled}
+                        onClick={() =>
+                          requestSwapProject(activeProjectSummary, true)
+                        }
+                        aria-label={`Swap completo da squad em ${projectMeta.projectSlug}`}
+                        title="Alternar orquestrador e rebalancear papéis da squad (vale para novas threads no T3 Code)"
+                      >
+                        <ArrowLeftRight className="size-3.5" aria-hidden="true" />
+                        Swap Squad
+                      </Button>
+                    </>
+                  ) : null}
 
                   <Button
                     variant="ghost"
@@ -1168,41 +1479,167 @@ export function StudioView({
             </div>
           </div>
 
-          {/* Visual Architecture Summary Strip */}
+          {/* Visual Architecture Summary Strip + Subagents Activity Toggle */}
           {draftPreset && snapshot ? (
-            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-              <Badge
-                tone={getInstanceBadgeTone(
-                  draftPreset.orchestrator.providerInstanceId,
-                )}
-              >
-                <Cpu className="size-3" aria-hidden="true" />
-                <span>
-                  Orquestrador: {orchLabel} ·{" "}
-                  <span className="font-mono">
-                    {draftPreset.orchestrator.model}
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <Badge
+                  tone={getInstanceBadgeTone(
+                    draftPreset.orchestrator.providerInstanceId,
+                  )}
+                >
+                  <Cpu className="size-3" aria-hidden="true" />
+                  <span>
+                    Orquestrador: {orchLabel} ·{" "}
+                    <span className="font-mono">
+                      {draftPreset.orchestrator.model}
+                    </span>
+                    {orchOption ? ` (${orchOption})` : ""}
                   </span>
-                  {orchOption ? ` (${orchOption})` : ""}
-                </span>
-              </Badge>
+                </Badge>
 
-              <Badge tone="neutral">
-                <Network className="size-3 text-zinc-400" aria-hidden="true" />
-                <span>Topologia: {topologyLabel}</span>
-              </Badge>
+                <Badge tone="neutral">
+                  <Network className="size-3 text-zinc-400" aria-hidden="true" />
+                  <span>Topologia: {topologyLabel}</span>
+                </Badge>
 
-              <Badge tone="neutral" className="tabular-nums">
-                <GitBranch className="size-3 text-amber-300" aria-hidden="true" />
-                <span>
-                  Fallback: {fallbackCount}{" "}
-                  {fallbackCount === 1 ? "nível" : "níveis"}
-                </span>
-              </Badge>
+                <Badge tone="neutral" className="tabular-nums">
+                  <GitBranch className="size-3 text-amber-300" aria-hidden="true" />
+                  <span>
+                    Fallback: {fallbackCount}{" "}
+                    {fallbackCount === 1 ? "nível" : "níveis"}
+                  </span>
+                </Badge>
 
-              <Badge tone="neutral" className="tabular-nums">
-                <Users className="size-3 text-indigo-300" aria-hidden="true" />
-                <span>Papéis: {roleCount}</span>
-              </Badge>
+                <Badge tone="neutral" className="tabular-nums">
+                  <Users className="size-3 text-indigo-300" aria-hidden="true" />
+                  <span>Papéis: {roleCount}</span>
+                </Badge>
+
+                <button
+                  type="button"
+                  onClick={() => setSubagentsExpanded((v) => !v)}
+                  aria-expanded={subagentsExpanded}
+                  aria-controls="studio-subagents-panel"
+                  className={[
+                    "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                    activeSubagents.length > 0
+                      ? "border-emerald-400/30 bg-emerald-500/12 text-emerald-200 hover:bg-emerald-500/20"
+                      : "border-white/10 bg-zinc-900/70 text-zinc-300 hover:border-white/20 hover:text-zinc-100",
+                  ].join(" ")}
+                >
+                  <Activity
+                    className={`size-3 ${
+                      activeSubagents.length > 0
+                        ? "text-emerald-400"
+                        : "text-zinc-400"
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    Subagentes: {activeSubagents.length}{" "}
+                    {activeSubagents.length === 1 ? "ativo" : "ativos"}
+                  </span>
+                  {subagentsExpanded ? (
+                    <ChevronDown className="size-3 opacity-80" aria-hidden="true" />
+                  ) : (
+                    <ChevronRight className="size-3 opacity-80" aria-hidden="true" />
+                  )}
+                </button>
+
+                {instanceSubagentSummaries.map((item) => (
+                  <Badge
+                    key={item.instanceId}
+                    tone={getInstanceBadgeTone(item.instanceId)}
+                    className="tabular-nums"
+                  >
+                    {item.label} · {item.count}
+                  </Badge>
+                ))}
+              </div>
+
+              {subagentsExpanded ? (
+                <section
+                  id="studio-subagents-panel"
+                  aria-label="Monitor de Subagentes"
+                  className="rounded-xl border border-white/[0.08] bg-zinc-900/75 p-3 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                    <span className="font-semibold uppercase tracking-wider text-zinc-300">
+                      Atividade de Subagentes ({orderedSubagents.length})
+                    </span>
+                    {activeSubagents.length > 0 ? (
+                      <span className="text-emerald-300 tabular-nums">
+                        {activeSubagents.length} em execução agora
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {orderedSubagents.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-white/10 px-3 py-3 text-center text-xs text-zinc-500">
+                      Nenhum subagente ativo ou recente.
+                    </p>
+                  ) : (
+                    <ul className="grid max-h-44 gap-2 overflow-y-auto md:grid-cols-2">
+                      {orderedSubagents.map((sub) => {
+                        const instanceLabel = resolveInstanceShortLabel(
+                          sub.providerInstanceId,
+                          snapshot.providerInstances,
+                        );
+                        const modelLabel =
+                          sub.resolvedModel ?? sub.requestedModel ?? "auto";
+                        return (
+                          <li
+                            key={sub.subagentId}
+                            className="min-w-0 rounded-lg border border-white/[0.07] bg-zinc-950/70 px-3 py-2 space-y-1"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <span className="truncate text-xs font-semibold text-zinc-100">
+                                  {sub.role ?? "worker"}
+                                </span>
+                                {sub.projectTitle ? (
+                                  <span className="truncate text-[11px] text-zinc-400">
+                                    · {sub.projectTitle}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <Badge
+                                tone={getSubagentStatusTone(sub.status)}
+                                dot={isSubagentActive(sub.status)}
+                              >
+                                {formatSubagentStatusLabel(sub.status)}
+                              </Badge>
+                            </div>
+                            {sub.title ? (
+                              <p className="truncate text-[11px] text-zinc-300">
+                                {sub.title}
+                              </p>
+                            ) : null}
+                            <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-400">
+                              <div className="flex min-w-0 items-center gap-1.5">
+                                <Badge
+                                  tone={getInstanceBadgeTone(
+                                    sub.providerInstanceId,
+                                  )}
+                                >
+                                  {instanceLabel}
+                                </Badge>
+                                <span className="truncate font-mono">
+                                  {modelLabel}
+                                </span>
+                              </div>
+                              <span className="shrink-0 tabular-nums text-zinc-500">
+                                {formatRelativeTime(sub.updatedAt)}
+                              </span>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </section>
+              ) : null}
             </div>
           ) : null}
         </header>

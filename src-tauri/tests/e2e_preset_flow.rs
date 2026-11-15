@@ -2,7 +2,8 @@ use oh_my_t3code_lib::{
     compiler::{
         apply_preset_to_project, compile_preset_preview, remove_project_override,
         save_global_preset_and_sync, set_global_preset_config, set_project_preset_enabled,
-        swap_global_instance, swap_project_primary_instance,
+        swap_global_instance, swap_global_instance_with_options, swap_project_primary_instance,
+        swap_project_primary_instance_with_options,
     },
     get_dashboard_snapshot_from_paths,
     importer::import_existing_squad,
@@ -809,3 +810,118 @@ fn vtech_117_sm2_project_override_lifecycle_and_tombstones() {
         .unwrap();
     assert!(!proj_agy.has_custom_override);
 }
+
+#[test]
+fn vtech_123_swap_rebalance_and_inherited_resync_e2e() {
+    let tmp = tempdir().unwrap();
+    let t3_home = tmp.path().join(".t3");
+    let userdata_dir = t3_home.join("userdata");
+    let presets_dir = tmp.path().join("config").join("presets");
+    let skills_root = tmp.path().join("skills");
+    let agy_ws = tmp.path().join("projeto-teste-agy");
+    let codex_ws = tmp.path().join("projeto-teste-codex");
+
+    fs::create_dir_all(&userdata_dir).unwrap();
+    fs::create_dir_all(&agy_ws).unwrap();
+    fs::create_dir_all(&codex_ws).unwrap();
+
+    seed_test_sqlite(&userdata_dir.join("statev2.sqlite"), &agy_ws, &codex_ws);
+    seed_test_skills(&skills_root);
+
+    let settings_path = userdata_dir.join("settings.json");
+    let initial_settings = serde_json::json!({
+        "favorites": ["proj-agy"],
+        "customUserPreference": { "preserveMe": true }
+    });
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&initial_settings).unwrap(),
+    )
+    .unwrap();
+
+    let paths = AppPaths {
+        t3_home,
+        presets_dir,
+        skill_roots: vec![("skillshare".to_string(), skills_root)],
+    };
+    set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+
+    // 1. Project proj-agy inherits from agy-dual with a sparse local override (no explicit roles override)
+    fs::create_dir_all(agy_ws.join(".t3code")).unwrap();
+    fs::write(
+        local_preset_path(&agy_ws),
+        r#"{"id":"projeto-teste-agy","name":"Projeto Agy","extends":"agy-dual","enabled":true}"#,
+    )
+    .unwrap();
+    apply_preset_to_project(&paths, "proj-agy", agy_ws.to_str().unwrap(), None, None).unwrap();
+
+    // Project proj-codex uses codex-squad (unrelated to agy-dual)
+    apply_preset_to_project(
+        &paths,
+        "proj-codex",
+        codex_ws.to_str().unwrap(),
+        Some("codex-squad".to_string()),
+        None,
+    )
+    .unwrap();
+
+    // 2. Global swap with include_roles = true & resync_inherited = true
+    let snap = swap_global_instance_with_options(&paths, true, true).unwrap();
+    let report = snap
+        .last_global_swap_report
+        .as_ref()
+        .expect("last_global_swap_report present");
+    assert_eq!(report.rebalanced_roles_count, 3);
+    assert_eq!(
+        report.rebalanced_roles,
+        vec![
+            "designer".to_string(),
+            "oracle".to_string(),
+            "qa-reviewer".to_string()
+        ]
+    );
+    assert_eq!(report.resynced_projects.len(), 1);
+    assert_eq!(report.resynced_projects[0].project_id, "proj-agy");
+    assert!(report.failed_projects.is_empty());
+
+    // proj-agy SKILL.md, roles/*.md, and settings.json updated to antigravity
+    let oracle_md = fs::read_to_string(
+        agy_ws.join(".agents/skills/projeto-teste-agy-squad/roles/oracle.md"),
+    )
+    .unwrap();
+    assert!(oracle_md.contains("- **Instância:** `antigravity`"));
+
+    let settings_after = read_t3_settings(&settings_path);
+    assert_eq!(
+        settings_after.project_overrides["proj-agy"].instance_id,
+        "antigravity"
+    );
+    assert_eq!(
+        settings_after.project_overrides["proj-codex"].instance_id,
+        "codex"
+    );
+    assert!(userdata_dir.join("settings.json.bak").exists());
+
+    // 3. Project-level Codex swap with include_roles = true on proj-codex
+    let codex_swap = swap_project_primary_instance_with_options(
+        &paths,
+        "proj-codex",
+        codex_ws.to_str().unwrap(),
+        true,
+    )
+    .unwrap();
+    assert_eq!(codex_swap.active_instance_id, "codex");
+    assert_eq!(codex_swap.active_model, "gpt-6.1-terra");
+    assert_eq!(codex_swap.rebalanced_roles_count, 2);
+    assert_eq!(
+        codex_swap.rebalanced_roles,
+        vec!["fixer".to_string(), "oracle".to_string()]
+    );
+    let codex_after = get_project_preset(&paths, "proj-codex", codex_ws.to_str().unwrap(), None)
+        .unwrap()
+        .resolved_preset;
+    assert_eq!(codex_after.roles["explorer"].model, "gpt-6-luna");
+    assert_eq!(codex_after.roles["qa-reviewer"].model, "gpt-6-astra");
+    assert_eq!(codex_after.roles["designer"].model, "gpt-6.1-terra");
+}
+

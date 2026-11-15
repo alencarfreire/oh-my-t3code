@@ -289,13 +289,16 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
 
     let mut orchestrator = base.orchestrator;
     if let Some(op) = patch.orchestrator {
-        if let Some(inst) = op.provider_instance_id {
+        if let Some(inst) = op.provider_instance_id.filter(|s| !s.is_empty()) {
             orchestrator.provider_instance_id = inst;
         }
-        if let Some(model) = op.model {
+        if let Some(model) = op.model.filter(|s| !s.is_empty()) {
             orchestrator.model = model;
         }
         if let Some(opts) = op.options {
+            if opts.contains_key("thinking_level") {
+                orchestrator.options.remove("thinkingLevel");
+            }
             for (k, v) in opts {
                 orchestrator.options.insert(k, v);
             }
@@ -346,19 +349,23 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
             });
             let mut merged_opts = existing.options;
             if let Some(opts) = rp.options {
+                if opts.contains_key("thinking_level") {
+                    merged_opts.remove("thinkingLevel");
+                }
                 for (k, v) in opts {
                     merged_opts.insert(k, v);
                 }
             }
             let merged_role = RoleConfig {
-                id: rp.id.unwrap_or(existing.id),
-                title: rp.title.unwrap_or(existing.title),
+                id: rp.id.filter(|s| !s.is_empty()).unwrap_or(existing.id),
+                title: rp.title.filter(|s| !s.is_empty()).unwrap_or(existing.title),
                 description: rp.description.unwrap_or(existing.description),
                 when_to_use: rp.when_to_use.unwrap_or(existing.when_to_use),
                 provider_instance_id: rp
                     .provider_instance_id
+                    .filter(|s| !s.is_empty())
                     .unwrap_or(existing.provider_instance_id),
-                model: rp.model.unwrap_or(existing.model),
+                model: rp.model.filter(|s| !s.is_empty()).unwrap_or(existing.model),
                 options: merged_opts,
                 skills: rp.skills.unwrap_or(existing.skills),
                 mcps: rp.mcps.unwrap_or(existing.mcps),

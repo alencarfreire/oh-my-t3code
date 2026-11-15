@@ -2,11 +2,14 @@ import type {
   CompiledFilePreview,
   CompilePreviewResult,
   DashboardSnapshot,
+  FailedProjectResync,
   GlobalAppConfig,
+  GlobalSwapReport,
   PresetConfig,
   ProjectSummary,
   ProviderInstanceInfo,
   ResolvedProjectPreset,
+  ResyncedProjectReport,
   RoleConfig,
   SkillMetadata,
   SubagentActivity,
@@ -1620,10 +1623,54 @@ export class MockIpcStore {
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
       activeInstanceId: resolved.orchestrator.providerInstanceId,
       activeModel: resolved.orchestrator.model,
+      rebalancedRolesCount: 0,
+      rebalancedRoles: [],
     };
   }
 
-  swapProjectInstance(projectId: string, workspaceRoot: string): SyncResult {
+  private migrateRoleToCodexModel(role: RoleConfig, nextModel: string): void {
+    role.providerInstanceId = "codex";
+    role.model = nextModel;
+    delete role.options.thinkingLevel;
+    delete role.options.thinking_level;
+    role.options.reasoningEffort ??= "medium";
+    role.options.serviceTier ??= "default";
+  }
+
+  private migrateRoleToAgyInstance(role: RoleConfig, nextInstance: string): void {
+    role.providerInstanceId = nextInstance;
+    if (role.options.thinkingLevel && !role.options.thinking_level) {
+      role.options.thinking_level = role.options.thinkingLevel;
+    }
+    delete role.options.thinkingLevel;
+    if (!role.model.startsWith("gemini-4-")) {
+      role.model = "gemini-4-hydrogen";
+      role.options.thinking_level = "high";
+    }
+  }
+
+  private extendsChainReaches(
+    startId: string,
+    targetId: string,
+    catalog: PresetConfig[],
+  ): boolean {
+    const visited = new Set<string>();
+    let current: string | null = startId;
+    for (let depth = 0; depth < MAX_INHERITANCE_DEPTH && current; depth++) {
+      if (current === targetId) return true;
+      if (!isValidSafeId(current) || visited.has(current)) return false;
+      visited.add(current);
+      const found = catalog.find((p) => p.id === current);
+      current = found?.extends ?? null;
+    }
+    return false;
+  }
+
+  swapProjectInstance(
+    projectId: string,
+    workspaceRoot: string,
+    includeRoles = false,
+  ): SyncResult {
     const proj = this.projects.find((p) => p.projectId === projectId);
     const currentResolved = this.getProjectPreset(projectId, workspaceRoot);
     if (
@@ -1637,7 +1684,11 @@ export class MockIpcStore {
     }
 
     const local = this.localPresetsByProject.get(projectId);
-    const candidateLocal = local ? structuredClone(local) : null;
+    const candidateLocal = local
+      ? structuredClone(local)
+      : includeRoles
+        ? structuredClone(currentResolved.resolvedPreset)
+        : null;
     const current =
       this.projectSettingsOverrides.get(projectId)?.instanceId ??
       proj?.activeInstanceId ??
@@ -1649,12 +1700,35 @@ export class MockIpcStore {
       currentResolved.resolvedPreset.orchestrator.model ??
       "gemini-4-hydrogen";
 
+    if (candidateLocal) {
+      if (!candidateLocal.orchestrator.providerInstanceId) {
+        candidateLocal.orchestrator.providerInstanceId =
+          currentResolved.resolvedPreset.orchestrator.providerInstanceId;
+      }
+      if (!candidateLocal.orchestrator.model) {
+        candidateLocal.orchestrator.model =
+          currentResolved.resolvedPreset.orchestrator.model;
+      }
+      if (Object.keys(candidateLocal.orchestrator.options).length === 0) {
+        candidateLocal.orchestrator.options = structuredClone(
+          currentResolved.resolvedPreset.orchestrator.options,
+        );
+      }
+    }
+
+    const disabledSet = new Set([
+      ...(normalizeDisabledRoles(currentResolved.resolvedPreset.disabledRoles ?? []) ?? []),
+      ...(normalizeDisabledRoles(candidateLocal?.disabledRoles ?? []) ?? []),
+    ]);
+    const rebalancedRoles: string[] = [];
+
     let nextInstance: string;
     let nextModel: string;
 
     if (current === "codex") {
+      const previousModel = currentModel;
       nextInstance = "codex";
-      nextModel = currentModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+      nextModel = previousModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
       if (candidateLocal) {
         candidateLocal.orchestrator.providerInstanceId = "codex";
         candidateLocal.orchestrator.model = nextModel;
@@ -1662,26 +1736,70 @@ export class MockIpcStore {
         delete candidateLocal.orchestrator.options.thinking_level;
         candidateLocal.orchestrator.options.reasoningEffort ??= "medium";
         candidateLocal.orchestrator.options.serviceTier ??= "default";
+
+        if (includeRoles) {
+          for (const [roleId, resolvedRole] of Object.entries(
+            currentResolved.resolvedPreset.roles,
+          ).sort(([a], [b]) => a.localeCompare(b))) {
+            if (disabledSet.has(roleId)) continue;
+            if (
+              resolvedRole.providerInstanceId === "codex" &&
+              resolvedRole.model === previousModel
+            ) {
+              const migrated = structuredClone(resolvedRole);
+              this.migrateRoleToCodexModel(migrated, nextModel);
+              candidateLocal.roles[roleId] = migrated;
+              rebalancedRoles.push(roleId);
+            }
+          }
+        }
       }
     } else {
-      nextInstance = current === "antigravity" ? "antigravity_2" : "antigravity";
+      const previousInstance = current || "antigravity";
+      nextInstance = previousInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
       nextModel =
-        currentModel && currentModel.startsWith("gemini-")
+        currentModel && currentModel.startsWith("gemini-4-")
           ? currentModel
           : "gemini-4-hydrogen";
       if (candidateLocal) {
         candidateLocal.orchestrator.providerInstanceId = nextInstance;
-        candidateLocal.orchestrator.model = nextModel;
-        if (candidateLocal.orchestrator.options.thinkingLevel && !candidateLocal.orchestrator.options.thinking_level) {
+        if (
+          candidateLocal.orchestrator.options.thinkingLevel &&
+          !candidateLocal.orchestrator.options.thinking_level
+        ) {
           candidateLocal.orchestrator.options.thinking_level =
             candidateLocal.orchestrator.options.thinkingLevel;
         }
         delete candidateLocal.orchestrator.options.thinkingLevel;
+        if (!candidateLocal.orchestrator.model.startsWith("gemini-4-")) {
+          candidateLocal.orchestrator.model = "gemini-4-hydrogen";
+          candidateLocal.orchestrator.options.thinking_level = "high";
+        }
+        nextModel = candidateLocal.orchestrator.model;
+
+        if (includeRoles) {
+          for (const [roleId, resolvedRole] of Object.entries(
+            currentResolved.resolvedPreset.roles,
+          ).sort(([a], [b]) => a.localeCompare(b))) {
+            if (disabledSet.has(roleId)) continue;
+            if (resolvedRole.providerInstanceId === previousInstance) {
+              const migrated = structuredClone(resolvedRole);
+              this.migrateRoleToAgyInstance(migrated, nextInstance);
+              candidateLocal.roles[roleId] = migrated;
+              rebalancedRoles.push(roleId);
+            }
+          }
+        }
       }
     }
 
     if (candidateLocal) {
-      return this.applyPresetSync(projectId, workspaceRoot, null, candidateLocal);
+      const result = this.applyPresetSync(projectId, workspaceRoot, null, candidateLocal);
+      return {
+        ...result,
+        rebalancedRolesCount: rebalancedRoles.length,
+        rebalancedRoles,
+      };
     }
 
     this.projectSettingsOverrides.set(projectId, {
@@ -1705,6 +1823,8 @@ export class MockIpcStore {
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
       activeInstanceId: nextInstance,
       activeModel: nextModel,
+      rebalancedRolesCount: 0,
+      rebalancedRoles: [],
     };
   }
 
@@ -1755,7 +1875,10 @@ export class MockIpcStore {
     return this.getDashboardSnapshot();
   }
 
-  swapGlobalInstance(): DashboardSnapshot {
+  swapGlobalInstance(
+    includeRoles = false,
+    resyncInherited = false,
+  ): DashboardSnapshot {
     if (!this.globalConfig.enabled) {
       throw new Error(
         "Preset global está desativado. Reative-o antes de inverter a instância.",
@@ -1774,10 +1897,12 @@ export class MockIpcStore {
     const resolvedActive = this.resolvePresetInheritance(rawActive);
     const candidate = structuredClone(resolvedActive);
     candidate.extends = rawActive.extends;
+    const rebalancedRoles: string[] = [];
 
     if (candidate.orchestrator.providerInstanceId === "codex") {
+      const previousModel = candidate.orchestrator.model;
       const nextModel =
-        candidate.orchestrator.model === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+        previousModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
       const oppositeModel =
         nextModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
       candidate.orchestrator.model = nextModel;
@@ -1791,11 +1916,20 @@ export class MockIpcStore {
       ) {
         candidate.fallbackChain[0].model = oppositeModel;
       }
+      if (includeRoles) {
+        for (const [roleId, role] of Object.entries(candidate.roles).sort(([a], [b]) =>
+          a.localeCompare(b),
+        )) {
+          if (role.providerInstanceId === "codex" && role.model === previousModel) {
+            this.migrateRoleToCodexModel(role, nextModel);
+            rebalancedRoles.push(roleId);
+          }
+        }
+      }
     } else {
+      const previousInstance = candidate.orchestrator.providerInstanceId || "antigravity";
       const nextInstance =
-        candidate.orchestrator.providerInstanceId === "antigravity_2"
-          ? "antigravity"
-          : "antigravity_2";
+        previousInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
       const oppositeInstance =
         nextInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
       candidate.orchestrator.providerInstanceId = nextInstance;
@@ -1814,6 +1948,16 @@ export class MockIpcStore {
       if (candidate.fallbackChain[0]?.providerInstanceId === nextInstance) {
         candidate.fallbackChain[0].providerInstanceId = oppositeInstance;
       }
+      if (includeRoles) {
+        for (const [roleId, role] of Object.entries(candidate.roles).sort(([a], [b]) =>
+          a.localeCompare(b),
+        )) {
+          if (role.providerInstanceId === previousInstance) {
+            this.migrateRoleToAgyInstance(role, nextInstance);
+            rebalancedRoles.push(roleId);
+          }
+        }
+      }
     }
 
     const candidateCatalog = this.globalPresets.map((p, i) => (i === idx ? candidate : p));
@@ -1826,7 +1970,95 @@ export class MockIpcStore {
       }
     }
 
-    return this.getDashboardSnapshot();
+    const resyncedProjects: ResyncedProjectReport[] = [];
+    const failedProjects: FailedProjectResync[] = [];
+
+    if (resyncInherited) {
+      for (const proj of this.projects) {
+        const localPreset = this.localPresetsByProject.get(proj.projectId);
+        if (!localPreset || localPreset.enabled === false || !proj.presetEnabled) {
+          continue;
+        }
+        if (
+          !localPreset.extends ||
+          !this.extendsChainReaches(localPreset.extends, candidate.id, this.globalPresets)
+        ) {
+          continue;
+        }
+
+        try {
+          const normalized = stripDisabledRoles(localPreset);
+          const resolvedProj = this.resolvePresetInheritance(normalized);
+          const projectSlug = deriveProjectSlug(proj.workspaceRoot);
+          const squadDir = `${proj.workspaceRoot}/.agents/skills/${projectSlug}-squad`;
+          const writtenFiles: string[] = [];
+
+          const skillPath = `${squadDir}/SKILL.md`;
+          const newSkill = renderSkillMd(projectSlug, resolvedProj);
+          if (this.compiledFilesByPath.get(skillPath) !== newSkill) {
+            this.compiledFilesByPath.set(skillPath, newSkill);
+            writtenFiles.push(skillPath);
+          }
+
+          for (const [roleId, role] of Object.entries(resolvedProj.roles).sort(([a], [b]) =>
+            a.localeCompare(b),
+          )) {
+            const rolePath = `${squadDir}/roles/${roleId}.md`;
+            const newRole = renderRoleMd(projectSlug, role);
+            if (this.compiledFilesByPath.get(rolePath) !== newRole) {
+              this.compiledFilesByPath.set(rolePath, newRole);
+              writtenFiles.push(rolePath);
+            }
+          }
+
+          const rolesPrefix = `${squadDir}/roles/`;
+          for (const existingPath of Array.from(this.compiledFilesByPath.keys()).sort()) {
+            if (!existingPath.startsWith(rolesPrefix) || !existingPath.endsWith(".md")) {
+              continue;
+            }
+            const fileName = existingPath.slice(rolesPrefix.length);
+            if (fileName.includes("/")) continue;
+            const roleId = fileName.slice(0, -3);
+            if (!(roleId in resolvedProj.roles)) {
+              this.compiledFilesByPath.delete(existingPath);
+              writtenFiles.push(existingPath);
+            }
+          }
+
+          this.projectSettingsOverrides.set(proj.projectId, selectionFromPreset(resolvedProj));
+          proj.activeInstanceId = resolvedProj.orchestrator.providerInstanceId;
+          proj.activeModel = resolvedProj.orchestrator.model;
+          proj.updatedAt = new Date().toISOString();
+
+          resyncedProjects.push({
+            projectId: proj.projectId,
+            title: proj.title,
+            workspaceRoot: proj.workspaceRoot,
+            presetId: resolvedProj.id,
+            writtenFiles,
+          });
+        } catch (err) {
+          failedProjects.push({
+            projectId: proj.projectId,
+            title: proj.title,
+            workspaceRoot: proj.workspaceRoot,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    const report: GlobalSwapReport = {
+      includeRoles,
+      resyncInherited,
+      rebalancedRolesCount: rebalancedRoles.length,
+      rebalancedRoles,
+      resyncedProjects,
+      failedProjects,
+    };
+    const snapshot = this.getDashboardSnapshot();
+    snapshot.lastGlobalSwapReport = report;
+    return snapshot;
   }
 
   setProjectPresetEnabled(
@@ -1867,6 +2099,8 @@ export class MockIpcStore {
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
       activeInstanceId: resolved.orchestrator.providerInstanceId,
       activeModel: resolved.orchestrator.model,
+      rebalancedRolesCount: 0,
+      rebalancedRoles: [],
     };
   }
 

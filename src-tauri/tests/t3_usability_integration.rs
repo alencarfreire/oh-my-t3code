@@ -7,7 +7,8 @@ use oh_my_t3code_lib::{
     compiler::{
         apply_preset_to_project, compile_preset_preview, remove_project_override,
         set_global_preset_config, set_project_preset_enabled, swap_global_instance,
-        swap_project_primary_instance,
+        swap_global_instance_with_options, swap_project_primary_instance,
+        swap_project_primary_instance_with_options,
     },
     get_dashboard_snapshot_from_paths,
     importer::import_existing_squad,
@@ -433,7 +434,7 @@ fn test_2_tight_quota_workflow_global_and_project_swap_and_inheritance() {
     .unwrap();
     assert!(skill_md.contains("- **Orquestrador:** `antigravity` / `gemini-4-hydrogen`"));
 
-    // Usability verification: Project swap updates orchestrator, while roles keep their inherited assignment unless edited in Studio
+    // Usability verification: Project swap updates orchestrator, while roles keep their inherited assignment unless include_roles=true or edited in Studio
     let resolved_after_swap = get_project_preset(
         &paths,
         "proj-override",
@@ -452,6 +453,38 @@ fn test_2_tight_quota_workflow_global_and_project_swap_and_inheritance() {
         resolved_after_swap.resolved_preset.roles["oracle"].provider_instance_id,
         "antigravity_2"
     );
+
+    // VTECH-123: Full Squad Swap (include_roles = true) on proj-override rebalances worker roles that followed the primary instance
+    let full_proj_swap = swap_project_primary_instance_with_options(
+        &paths,
+        "proj-override",
+        ws_override.to_str().unwrap(),
+        true,
+    )
+    .expect("swap project primary instance with role rebalancing");
+    assert_eq!(full_proj_swap.active_instance_id, "antigravity_2");
+    assert_eq!(full_proj_swap.rebalanced_roles_count, 2);
+    assert_eq!(
+        full_proj_swap.rebalanced_roles,
+        vec!["explorer".to_string(), "fixer".to_string()]
+    );
+
+    // VTECH-123: Global Swap with include_roles = true & resync_inherited = true rebalances global roles and resyncs inherited active project
+    fs::write(
+        local_preset_path(&ws_override),
+        r#"{"id":"proj-override","name":"Proj Override","extends":"agy-dual","enabled":true}"#,
+    )
+    .unwrap();
+    let global_full_swap = swap_global_instance_with_options(&paths, true, true)
+        .expect("global swap with role rebalancing and inherited resync");
+    let swap_report = global_full_swap
+        .last_global_swap_report
+        .as_ref()
+        .expect("global swap report present");
+    assert_eq!(swap_report.rebalanced_roles_count, 3);
+    assert_eq!(swap_report.resynced_projects.len(), 1);
+    assert_eq!(swap_report.resynced_projects[0].project_id, "proj-override");
+    assert!(swap_report.failed_projects.is_empty());
 
     // Pause project override -> proj-override falls back to Global Default, preserving .t3code/preset.jsonc
     set_project_preset_enabled(

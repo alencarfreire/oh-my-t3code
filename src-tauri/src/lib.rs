@@ -161,10 +161,16 @@ fn apply_preset_sync(
 fn swap_project_instance(
     project_id: String,
     workspace_root: String,
+    include_roles: Option<bool>,
 ) -> Result<SyncResult, String> {
     let paths = AppPaths::from_env().map_err(String::from)?;
-    compiler::swap_project_primary_instance(&paths, &project_id, &workspace_root)
-        .map_err(String::from)
+    compiler::swap_project_primary_instance_with_options(
+        &paths,
+        &project_id,
+        &workspace_root,
+        include_roles.unwrap_or(false),
+    )
+    .map_err(String::from)
 }
 
 #[tauri::command]
@@ -186,9 +192,17 @@ fn set_global_preset_config(
 }
 
 #[tauri::command]
-fn swap_global_instance() -> Result<DashboardSnapshot, String> {
+fn swap_global_instance(
+    include_roles: Option<bool>,
+    resync_inherited: Option<bool>,
+) -> Result<DashboardSnapshot, String> {
     let paths = AppPaths::from_env().map_err(String::from)?;
-    compiler::swap_global_instance(&paths).map_err(String::from)
+    compiler::swap_global_instance_with_options(
+        &paths,
+        include_roles.unwrap_or(false),
+        resync_inherited.unwrap_or(false),
+    )
+    .map_err(String::from)
 }
 
 #[tauri::command]

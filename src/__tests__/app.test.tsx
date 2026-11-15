@@ -19,13 +19,20 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
 
       render(<App />);
 
-      // Header logo & summary (no subagent monitor)
+      // Live subagents header strip & collapsible Monitor de Subagentes (VTECH-121)
       expect(await screen.findByText("Oh My T3Code")).toBeInTheDocument();
       expect(screen.getByAltText("Oh My T3Code")).toHaveAttribute("src", "/logo.png");
       expect(screen.getByText("Global Ativo · 3 overrides · 4 presets")).toBeInTheDocument();
-      expect(
-        screen.queryByRole("region", { name: /Subagentes/i }),
-      ).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Subagentes ativos agora")).toHaveTextContent(
+        "2 subagentes ativos",
+      );
+      const subagentsRegion = screen.getByRole("region", {
+        name: /Monitor de Subagentes/i,
+      });
+      const subagentsToggle = within(subagentsRegion).getByRole("button", {
+        name: /Monitor de Subagentes/i,
+      });
+      expect(subagentsToggle).toHaveAttribute("aria-expanded", "false");
 
       // 1. Featured Global Default Card at the top ('default' OMOS Standard active initially)
       const globalCard = screen.getByRole("region", {

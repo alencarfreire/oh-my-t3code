@@ -82,6 +82,7 @@ function dispatchMockCommand<K extends IpcCommandName>(
       return store.swapProjectInstance(
         a.projectId,
         a.workspaceRoot,
+        a.includeRoles,
       ) as IpcCommandReturns[K];
     }
     case "import_project_squad": {
@@ -98,8 +99,13 @@ function dispatchMockCommand<K extends IpcCommandName>(
         a.enabled,
       ) as IpcCommandReturns[K];
     }
-    case "swap_global_instance":
-      return store.swapGlobalInstance() as IpcCommandReturns[K];
+    case "swap_global_instance": {
+      const a = args as IpcCommandArgs["swap_global_instance"];
+      return store.swapGlobalInstance(
+        a?.includeRoles,
+        a?.resyncInherited,
+      ) as IpcCommandReturns[K];
+    }
     case "set_project_preset_enabled": {
       const a = args as IpcCommandArgs["set_project_preset_enabled"];
       return store.setProjectPresetEnabled(

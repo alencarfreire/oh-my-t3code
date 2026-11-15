@@ -858,6 +858,40 @@ pub fn scan_global_skills(skill_roots: &[(String, std::path::PathBuf)]) -> Vec<S
     map.into_values().collect()
 }
 
+/// Lists `(project_id, title, workspace_root)` from `statev2.sqlite` strictly read-only.
+pub(crate) fn list_known_projects_readonly(
+    sqlite_path: &Path,
+) -> AppResult<Vec<(String, String, String)>> {
+    if !sqlite_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = open_sqlite_readonly(sqlite_path)?;
+    let proj_cols = table_columns(&conn, "projection_projects");
+    if proj_cols.is_empty() {
+        return Ok(Vec::new());
+    }
+    let deleted_filter = if proj_cols.contains("deleted_at") {
+        "WHERE deleted_at IS NULL"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT project_id, title, workspace_root \
+         FROM projection_projects {deleted_filter} \
+         ORDER BY updated_at DESC, project_id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    let mut projects = Vec::new();
+    while let Some(row) = rows.next()? {
+        let project_id: String = row.get(0)?;
+        let title: String = row.get(1)?;
+        let workspace_root: String = row.get(2)?;
+        projects.push((project_id, title, workspace_root));
+    }
+    Ok(projects)
+}
+
 /// Builds the full dashboard snapshot read-only.
 pub fn build_dashboard_snapshot(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let _guard = lock_config_state();
@@ -905,6 +939,7 @@ pub(crate) fn build_dashboard_snapshot_unlocked(paths: &AppPaths) -> AppResult<D
         fallback_model_selection: settings.fallback_model_selection,
         sqlite_available,
         settings_available: settings.available,
+        last_global_swap_report: None,
     })
 }
 

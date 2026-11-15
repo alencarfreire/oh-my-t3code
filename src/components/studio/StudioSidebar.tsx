@@ -525,7 +525,21 @@ export function StudioSidebar({
                             className="size-2.5 shrink-0 text-zinc-500"
                             aria-hidden="true"
                           />
-                          <span className="truncate font-mono">{inheritsLabel}</span>
+                          <span className="min-w-0 flex-1 truncate font-mono">
+                            {inheritsLabel}
+                          </span>
+                          {project.activeSubagentCount > 0 ? (
+                            <Badge
+                              tone="emerald"
+                              dot
+                              className="shrink-0 px-1.5 py-0 text-[10px] tabular-nums"
+                            >
+                              {project.activeSubagentCount}{" "}
+                              {project.activeSubagentCount === 1
+                                ? "subagente"
+                                : "subagentes"}
+                            </Badge>
+                          ) : null}
                         </div>
                       </div>
                     </button>

@@ -47,8 +47,8 @@ export function StringListEditor({
         : "border-white/12 bg-zinc-900/90 text-zinc-200";
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-baseline justify-between gap-2">
+    <div className="min-w-0 space-y-2">
+      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
         <label htmlFor={inputId} className="text-xs font-medium text-zinc-200">
           {label}
         </label>
@@ -57,7 +57,7 @@ export function StringListEditor({
         ) : null}
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex min-w-0 gap-2">
         <input
           id={inputId}
           type="text"
@@ -71,13 +71,13 @@ export function StringListEditor({
           }}
           placeholder={placeholder}
           className={[
-            "h-8 flex-1 rounded-lg border border-white/12 bg-zinc-950/90 px-3 text-xs text-zinc-100 placeholder:text-zinc-500",
+            "h-8 min-w-0 flex-1 rounded-lg border border-white/12 bg-zinc-950/90 px-3 text-xs text-zinc-100 placeholder:text-zinc-500",
             "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
             monospace ? "font-mono" : "",
           ].join(" ")}
         />
-        <Button variant="secondary" size="sm" onClick={handleAdd}>
+        <Button variant="secondary" size="sm" onClick={handleAdd} className="shrink-0">
           <Plus className="size-3.5" aria-hidden="true" />
           Adicionar
         </Button>
@@ -85,22 +85,22 @@ export function StringListEditor({
 
       {items.length > 0 ? (
         displayMode === "chips" ? (
-          <ul className="flex flex-wrap gap-1.5 pt-0.5">
+          <ul className="flex min-w-0 flex-wrap gap-1.5 pt-0.5">
             {items.map((item, idx) => (
-              <li key={`${item}-${idx}`}>
+              <li key={`${item}-${idx}`} className="max-w-full min-w-0">
                 <span
                   className={[
-                    "inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]",
+                    "inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]",
                     monospace ? "font-mono" : "",
                     chipToneClasses,
                   ].join(" ")}
                 >
-                  <span className="break-all">{item}</span>
+                  <span className="min-w-0 break-all">{item}</span>
                   <button
                     type="button"
                     onClick={() => handleRemove(idx)}
                     aria-label={`Remover ${item}`}
-                    className="rounded p-0.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="shrink-0 rounded p-0.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   >
                     <X className="size-3" aria-hidden="true" />
                   </button>
@@ -109,17 +109,17 @@ export function StringListEditor({
             ))}
           </ul>
         ) : displayMode === "terminal" ? (
-          <ul className="space-y-1.5">
+          <ul className="min-w-0 space-y-1.5">
             {items.map((item, idx) => (
               <li
                 key={`${item}-${idx}`}
-                className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-zinc-950/95 px-2.5 py-1.5 font-mono text-[11px] text-zinc-200"
+                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-white/10 bg-zinc-950/95 px-2.5 py-1.5 font-mono text-[11px] text-zinc-200"
               >
                 <span className="flex min-w-0 items-center gap-2 break-all">
-                  <span className="select-none font-semibold text-emerald-400" aria-hidden="true">
+                  <span className="shrink-0 select-none font-semibold text-emerald-400" aria-hidden="true">
                     $
                   </span>
-                  <span>{item}</span>
+                  <span className="min-w-0 break-all">{item}</span>
                 </span>
                 <button
                   type="button"
@@ -133,11 +133,11 @@ export function StringListEditor({
             ))}
           </ul>
         ) : (
-          <ul className="space-y-1.5">
+          <ul className="min-w-0 space-y-1.5">
             {items.map((item, idx) => (
               <li
                 key={`${item}-${idx}`}
-                className="flex items-center justify-between gap-2 rounded-lg border border-white/8 bg-zinc-950/70 px-2.5 py-1.5 text-xs text-zinc-200"
+                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-white/8 bg-zinc-950/70 px-2.5 py-1.5 text-xs text-zinc-200"
               >
                 <span className={`min-w-0 break-all ${monospace ? "font-mono text-[11px]" : ""}`}>
                   {item}

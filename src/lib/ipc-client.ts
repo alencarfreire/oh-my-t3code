@@ -9,10 +9,12 @@ export interface StudioNavigatePayload {
 }
 
 type NavigateListener = (payload: StudioNavigatePayload) => void | Promise<void>;
+type SnapshotUpdatedListener = () => void | Promise<void>;
 
 const mockStore = new MockIpcStore();
 const mockNavigateListeners = new Set<NavigateListener>();
 const mockPopoverListeners = new Set<() => void>();
+const mockSnapshotUpdatedListeners = new Set<SnapshotUpdatedListener>();
 
 export function isTauriRuntime(): boolean {
   return (
@@ -39,6 +41,12 @@ export function subscribeMockPopoverToggle(listener: () => void): () => void {
   };
 }
 
+export function emitMockSnapshotUpdated(): void {
+  mockSnapshotUpdatedListeners.forEach((fn) => {
+    void fn();
+  });
+}
+
 export async function listenStudioNavigate(
   handler: NavigateListener,
 ): Promise<UnlistenFn> {
@@ -48,6 +56,20 @@ export async function listenStudioNavigate(
     });
   }
   return subscribeMockStudioNavigate(handler);
+}
+
+export async function listenSnapshotUpdated(
+  handler: SnapshotUpdatedListener,
+): Promise<UnlistenFn> {
+  if (isTauriRuntime()) {
+    return listen("t3://snapshot-updated", () => {
+      void handler();
+    });
+  }
+  mockSnapshotUpdatedListeners.add(handler);
+  return () => {
+    mockSnapshotUpdatedListeners.delete(handler);
+  };
 }
 
 export async function invokeIpc<K extends IpcCommandName>(
@@ -108,6 +130,7 @@ export async function invokeIpc<K extends IpcCommandName>(
       return mockStore.swapProjectInstance(
         a.projectId,
         a.workspaceRoot,
+        a.includeRoles,
       ) as IpcCommandReturns[K];
     }
     case "import_project_squad": {
@@ -124,8 +147,13 @@ export async function invokeIpc<K extends IpcCommandName>(
         a.enabled,
       ) as IpcCommandReturns[K];
     }
-    case "swap_global_instance":
-      return mockStore.swapGlobalInstance() as IpcCommandReturns[K];
+    case "swap_global_instance": {
+      const a = args as IpcCommandArgs["swap_global_instance"];
+      return mockStore.swapGlobalInstance(
+        a?.includeRoles,
+        a?.resyncInherited,
+      ) as IpcCommandReturns[K];
+    }
     case "set_project_preset_enabled": {
       const a = args as IpcCommandArgs["set_project_preset_enabled"];
       return mockStore.setProjectPresetEnabled(

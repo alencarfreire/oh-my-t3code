@@ -3,6 +3,7 @@ import type {
   PresetConfig,
   ProviderInstanceInfo,
   RoleConfig,
+  SubagentActivity,
 } from "../types/ipc";
 
 export const RECOMMENDED_MCPS = [
@@ -427,4 +428,141 @@ export function formatRelativeTime(isoDate: string | null | undefined): string {
   if (diffHours < 24) return `${diffHours}h atrás`;
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays}d atrás`;
+}
+
+const ACTIVE_SUBAGENT_STATUSES = new Set([
+  "running",
+  "pending",
+  "queued",
+  "waiting",
+  "in_progress",
+]);
+
+export function isSubagentActive(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return ACTIVE_SUBAGENT_STATUSES.has(status.toLowerCase());
+}
+
+export function formatSubagentStatusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "running" || normalized === "in_progress") return "Em execução";
+  if (normalized === "pending" || normalized === "queued" || normalized === "waiting") {
+    return "Aguardando";
+  }
+  if (normalized === "completed" || normalized === "succeeded" || normalized === "done") {
+    return "Concluído";
+  }
+  if (normalized === "failed" || normalized === "error") return "Falhou";
+  if (normalized === "canceled" || normalized === "cancelled") return "Cancelado";
+  return status;
+}
+
+export function getSubagentStatusTone(
+  status: string,
+): "emerald" | "neutral" | "rose" | "amber" {
+  const normalized = status.toLowerCase();
+  if (ACTIVE_SUBAGENT_STATUSES.has(normalized)) return "emerald";
+  if (normalized === "failed" || normalized === "error") return "rose";
+  if (normalized === "canceled" || normalized === "cancelled") return "amber";
+  return "neutral";
+}
+
+export interface InstanceSubagentSummary {
+  instanceId: string;
+  label: string;
+  count: number;
+}
+
+export function summarizeActiveSubagentsByInstance(
+  subagents: readonly SubagentActivity[],
+  instances: readonly ProviderInstanceInfo[],
+): InstanceSubagentSummary[] {
+  const counts = new Map<string, number>();
+  for (const sub of subagents) {
+    if (!isSubagentActive(sub.status)) continue;
+    const key = sub.providerInstanceId || "unknown";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([instanceId, count]) => ({
+      instanceId,
+      label:
+        instanceId === "unknown"
+          ? "Desconhecida"
+          : resolveInstanceShortLabel(instanceId, [...instances]),
+      count,
+    }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+export function formatGlobalSwapFeedback(params: {
+  instanceId: string;
+  model: string;
+  instances: readonly ProviderInstanceInfo[];
+  report?: import("../types/ipc").GlobalSwapReport | null;
+}): { status: string; partialError: string | null } {
+  const { instanceId, model, instances, report } = params;
+  const label = resolveInstanceShortLabel(instanceId, [...instances]);
+  const parts: string[] = [
+    instanceId === "codex"
+      ? `Modelo global alternado: ${label} (${model}).`
+      : `Instância global invertida: ${label} (${model}).`,
+  ];
+
+  if (report) {
+    if (report.rebalancedRolesCount > 0) {
+      parts.push(
+        `${report.rebalancedRolesCount} ${
+          report.rebalancedRolesCount === 1 ? "papel rebalanceado" : "papéis rebalanceados"
+        }.`,
+      );
+    }
+    if (report.resyncedProjects.length > 0) {
+      parts.push(
+        `${report.resyncedProjects.length} ${
+          report.resyncedProjects.length === 1
+            ? "projeto herdado ressincronizado"
+            : "projetos herdados ressincronizados"
+        }.`,
+      );
+    }
+  }
+
+  parts.push("Alteração vale para novas threads no T3 Code.");
+
+  const failed = report?.failedProjects ?? [];
+  const partialError =
+    failed.length > 0
+      ? `Falha parcial ao ressincronizar ${failed.length} ${
+          failed.length === 1 ? "projeto" : "projetos"
+        }: ${failed.map((f) => `${f.title} (${f.error})`).join("; ")}.`
+      : null;
+
+  return { status: parts.join(" "), partialError };
+}
+
+export function formatProjectSwapFeedback(params: {
+  projectTitle: string;
+  result: import("../types/ipc").SyncResult;
+  instances: readonly ProviderInstanceInfo[];
+}): string {
+  const { projectTitle, result, instances } = params;
+  const label = resolveInstanceShortLabel(result.activeInstanceId, [...instances]);
+  const parts: string[] = [
+    result.activeInstanceId === "codex"
+      ? `Modelo alternado em ${projectTitle}: ${label} (${result.activeModel}).`
+      : `Instância alternada em ${projectTitle}: ${label} (${result.activeModel}).`,
+  ];
+
+  const rebalancedCount = result.rebalancedRolesCount ?? 0;
+  if (rebalancedCount > 0) {
+    parts.push(
+      `${rebalancedCount} ${
+        rebalancedCount === 1 ? "papel rebalanceado" : "papéis rebalanceados"
+      }.`,
+    );
+  }
+
+  parts.push("Alteração vale para novas threads no T3 Code.");
+  return parts.join(" ");
 }
