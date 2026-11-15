@@ -54,7 +54,7 @@ All configuration objects serialize in `camelCase` (`#[serde(rename_all = "camel
 
 ### Identifier validation rules (`validate_safe_id`)
 
-Every preset `id`, `extends` target, key in `roles`, and preset or role filename passes through `validate_safe_id` before any disk read or write:
+Every preset `id`, `extends` target, key in `roles`, key in `sessionPolicy.workerThinkingByKind`, and preset or role filename passes through `validate_safe_id` before any disk read or write:
 
 - Required length between `1` and `64` characters
 - Allowed characters: `[a-zA-Z0-9_-]` only (ASCII alphanumeric, hyphen, and underscore)
@@ -94,6 +94,7 @@ Defines the complete orchestration preset, including its fallback chain, content
 | `orchestrator` | `OrchestratorSelection` | `{}` | Provider instance, model, and options for the primary orchestrator agent |
 | `fallbackChain` | `FallbackStep[]` | `[]` | Ordered contingency list used when quota or availability fails |
 | `contention` | `ContentionPolicy` | `shared` defaults | Concurrency, test database, environment variable, and conflict-file policy |
+| `sessionPolicy` | `SessionPolicy` | `SessionPolicy` defaults | Session policy, hardware RAM profile, worker concurrency caps, parent handoff thresholds, and worker thinking rules |
 | `roles` | `Record<string, RoleConfig>` | `{}` | Ordered map (`BTreeMap`) of specialized worker roles compiled into `roles/*.md` |
 | `disabledRoles` | `string[]` | `[]` *(omitted when empty)* | Sorted, deduplicated list (tombstone) of role IDs inherited via `extends` that must be suppressed (`validate_safe_id`) |
 
@@ -115,7 +116,7 @@ Here is an Antigravity orchestrator selection paired with a first-level account 
   "providerInstanceId": "antigravity_2",
   "model": "gemini-4-hydrogen",
   "options": {
-    "thinking_level": "high"
+    "thinking_level": "medium"
   }
 },
 "fallbackChain": [
@@ -138,7 +139,55 @@ Documents repository concurrency boundaries in the compiled `SKILL.md` to preven
 | `envVars` | `Record<string, string>` | `{}` | Required environment variables printed in the playbook (for example, `PARALLEL_WORKERS=1`) |
 | `gitIgnoredBuilds` | `string[]` | `[]` | Build directories outside version control (for example, `target/`, `dist/`) |
 | `conflictFiles` | `string[]` | `[]` | High-contention files requiring sequential waves (for example, `Cargo.toml`, `package.json`) |
-| `defaultIsolation` | `string` | `"shared"` | Default workspace mode for subagents (`"shared"` or `"worktree"`) |
+| `defaultIsolation` | `string` | `"shared"` | Default workspace mode for subagents (`"shared"` or `"worktree"`). Also reused as the isolation hint by `SessionPolicy` |
+
+### `SessionPolicy` and `WorkerThinkingRule`
+
+Controls the RAM/concurrency budget per hardware profile, parent thread handoff thresholds (used by `ParentThreadHealth`, `ProjectSessionHealth`, and `GlobalSessionHealth` session health tracking), orchestrator reasoning clamping, and per-task-kind model/thinking routing (`workerThinkingByKind`):
+
+| Field | Type | Default | Allowed values / Notes |
+| :--- | :--- | :--- | :--- |
+| `hardwareProfile` | `string` | `"laptop-8gb"` | `"laptop-8gb"`, `"desktop-16gb"`, `"desktop-32gb-plus"` (or custom string). Helper `default_max_antigravity_for_profile`: `laptop-8gb` → `2`, `desktop-16gb` → `3`, `desktop-32gb-plus` → `4` |
+| `maxConcurrentAntigravityWorkers` | `number` (`u32`) | `2` | Maximum simultaneous workers on Antigravity (ACP) instances per wave |
+| `maxConcurrentWorkersTotal` | `number` (`u32`) | `3` | Maximum simultaneous workers per wave across all providers |
+| `parentMaxTurnsBeforeHandoff` | `number` (`u32`) | `15` | Parent thread turn limit before recommending handoff (`memory_handoff_begin`) |
+| `parentMaxItemsBeforeHandoff` | `number` (`u32`) | `120` | Accumulated item limit in the parent thread before handoff |
+| `parentWarnInputTokens` | `number` (`u64`) | `200000` | Input token warning threshold for the parent thread |
+| `parentHardInputTokens` | `number` (`u64`) | `700000` | Critical input token threshold requiring mandatory parent handoff |
+| `parentThinkingLevel` | `string` | `"medium"` | `"low"`, `"medium"`, `"high"`, or `"xhigh"`. On `"laptop-8gb"`, `"high"` and `"xhigh"` are always clamped down to `"medium"` by `effective_parent_thinking_level` |
+| `workerThinkingByKind` | `Record<string, WorkerThinkingRule>` | 5 default kinds (`architecture`, `backend`, `frontend`, `qa`, `research`) | Ordered map (`BTreeMap`) of model and thinking rules by task kind; every key is validated with `validate_safe_id` |
+| `delegateMode` | `string` | `"async-default"` | Default delegation mode instructed in the playbook (`"async-default"`, etc.) |
+| `onAcpSessionDead` | `string` | `"advise-new-thread"` | Recommended recovery action when an ACP session dies (`provider_error` / `AcpRequestError` or failure in `< 1000ms`) |
+| `forbiddenPatterns` | `string[]` | 4 default patterns *(see below)* | List of anti-patterns printed in Section 5 of the compiled `SKILL.md` |
+
+#### `WorkerThinkingRule` and `workerThinkingByKind` defaults
+
+Each entry in `workerThinkingByKind` uses the `WorkerThinkingRule` type with two `camelCase` fields:
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `model` | `string` | `""` | Recommended model for that task kind (for example, `"gemini-4-hydrogen"`, `"gemini-4-argon"`) |
+| `thinkingLevel` | `string` | `""` | Recommended reasoning level (`"low"`, `"medium"`, `"high"`, `"xhigh"`). Schema field of `WorkerThinkingRule` (distinct from the legacy `options.thinkingLevel` key) |
+
+Default rules in `SessionPolicy::default()`:
+
+| Kind (`key`) | `model` | `thinkingLevel` |
+| :--- | :--- | :--- |
+| `"architecture"` | `"gemini-4-argon"` | `"high"` |
+| `"backend"` | `"gemini-4-hydrogen"` | `"high"` |
+| `"frontend"` | `"gemini-4-hydrogen"` | `"medium"` |
+| `"qa"` | `"gemini-4-argon"` | `"high"` |
+| `"research"` | `"gemini-4-hydrogen"` | `"low"` |
+
+The 4 default `forbiddenPatterns` entries are:
+- `"orquestrar+implementar no mesmo chat"`
+- `"4 ACP simultâneos neste perfil"`
+- `"thinking high no pai"`
+- `"continuar thread após provider_error AcpRequestError"`
+
+> [!NOTE]
+> **Effective isolation (`contention.defaultIsolation` × concurrency)**: `SessionPolicy` has no separate `isolationHint` field — it reuses `contention.defaultIsolation` (`"shared"` or `"worktree"`). When rendering Section 5 of `SKILL.md`, `render_squad_skill_md` cross-checks `contention.defaultIsolation` against `maxConcurrentAntigravityWorkers` and `maxConcurrentWorkersTotal`: if `defaultIsolation == "worktree"` and either `maxConcurrent*` limit is `<= 1`, Section 5 forces sequential waves with `isolation: "shared"` to avoid spawning multiple simultaneous worktrees.
+
 
 ### `RoleConfig`
 
@@ -179,9 +228,9 @@ When combining a parent preset (`base`) with a child file (`patch`), the algorit
 1. **Identifier (`id`)**: uses `patch.id` if present; otherwise falls back to `fallback_id` (filename or project slug).
 2. **`name` and `description`**: override the parent value only when present and non-empty after `.trim()`. If omitted, `""`, or whitespace-only, they retain the parent value.
 3. **`enabled` and `topology`**: override the parent value when present in the child.
-4. **Dictionaries (`orchestrator.options`, `contention.envVars`, `roles[id].options`)**: perform **key-by-key merge**. New keys are inserted and matching keys overwrite the parent, preserving all other inherited keys.
-5. **Scalars in `orchestrator` and `contention`**: `providerInstanceId`, `model`, `singleTestDb`, and `defaultIsolation` replace the parent value when specified in the child.
-6. **Arrays**: `fallbackChain`, `contention.gitIgnoredBuilds`, `contention.conflictFiles`, and all `RoleConfig` arrays (`skills`, `mcps`, `allowedPaths`, `forbiddenPaths`, `invariants`, `verificationCommands`) **replace the entire parent array** when specified in the child; arrays are never concatenated.
+4. **Dictionaries (`orchestrator.options`, `contention.envVars`, `roles[id].options`, `sessionPolicy.workerThinkingByKind`)**: perform **key-by-key merge**. New keys are inserted and matching keys overwrite the parent, preserving all other inherited keys. In `sessionPolicy.workerThinkingByKind`, all keys pass `validate_safe_id` and each `WorkerThinkingRulePatch` merges `model` and `thinkingLevel` individually (only when present and non-empty after `.trim()`), keeping the sibling field inherited for that key.
+5. **Scalars in `orchestrator`, `contention`, and `sessionPolicy`**: `providerInstanceId`, `model`, `singleTestDb`, `defaultIsolation`, and numeric `sessionPolicy` scalars (`maxConcurrentAntigravityWorkers`, `maxConcurrentWorkersTotal`, `parentMaxTurnsBeforeHandoff`, `parentMaxItemsBeforeHandoff`, `parentWarnInputTokens`, `parentHardInputTokens`) replace the parent value when specified in the child. String `sessionPolicy` scalars (`hardwareProfile`, `parentThinkingLevel`, `delegateMode`, `onAcpSessionDead`) replace the parent when present and non-empty after `.trim()`.
+6. **Arrays**: `fallbackChain`, `contention.gitIgnoredBuilds`, `contention.conflictFiles`, `sessionPolicy.forbiddenPatterns`, and all `RoleConfig` arrays (`skills`, `mcps`, `allowedPaths`, `forbiddenPaths`, `invariants`, `verificationCommands`) **replace the entire parent array** when specified in the child; arrays are never concatenated.
 7. **`roles` map**: if `role_id` already exists in the parent, fields defined in `RolePatch` merge onto the parent role (preserving the remaining parent fields); if `role_id` does not exist in the parent, a new role is created with `id` and `title` defaulted to `role_id`.
 
 > [!NOTE]
@@ -189,20 +238,20 @@ When combining a parent preset (`base`) with a child file (`patch`), the algorit
 
 ### Annotated `.t3code/preset.jsonc` example
 
-This project override inherits from `default`, keeps `explorer`, `oracle`, `designer`, and `qa-reviewer` intact, and customizes only `fixer` and the contention policy:
+This project override inherits from `default`, keeps `explorer`, `oracle`, `designer`, and `qa-reviewer` intact, and customizes `fixer`, the contention policy, and part of `sessionPolicy`:
 
 ```jsonc
 // Save at <workspace_root>/.t3code/preset.jsonc
 {
   "id": "my-project",
   "name": "My Project (Custom)",
-  "description": "Extends default with single test DB and custom fixer checks.",
+  "description": "Extends default with single test DB, sessionPolicy overrides, and custom fixer checks.",
   "extends": "default",
   "enabled": true,
   "orchestrator": {
     // Keeps parent providerInstanceId ("codex") and model ("gpt-6.1-sol"); key-by-key merge on options
     "options": {
-      "reasoningEffort": "high",
+      "reasoningEffort": "medium",
     },
   },
   "contention": {
@@ -213,6 +262,16 @@ This project override inherits from `default`, keeps `explorer`, `oracle`, `desi
     },
     // Replaces conflictFiles inherited from parent
     "conflictFiles": ["Cargo.toml", "package.json", "Makefile"],
+  },
+  "sessionPolicy": {
+    // Numeric scalar overrides parent value (15 -> 12)
+    "parentMaxTurnsBeforeHandoff": 12,
+    // Key-by-key merge: overrides only "frontend", preserving research/backend/architecture/qa from parent
+    "workerThinkingByKind": {
+      "frontend": {
+        "thinkingLevel": "high", // preserves inherited model ("gemini-4-hydrogen")
+      },
+    },
   },
   "roles": {
     "fixer": {
@@ -231,17 +290,22 @@ This project override inherits from `default`, keeps `explorer`, `oracle`, `desi
 }
 ```
 
-## Built-in `default` preset and custom presets
+## Built-in presets (`default`, `agy-dual`, `codex-squad`, `hybrid-agy-codex`) and custom presets
 
-At startup (or when listing presets), `ensure_seed_presets` ensures the built-in **`default` (`Default (OMOS Standard)`)** preset exists at `~/.config/oh-my-t3code/presets/default.jsonc`, populated with the five canonical roles inspired by `oh-my-opencode-slim` (OMOS): `explorer`, `oracle`, `designer`, `fixer`, and `qa-reviewer`.
+At startup (or when listing presets), `ensure_seed_presets` ensures all 4 built-in presets exist in `~/.config/oh-my-t3code/presets/`: **`default` (`Default (OMOS Standard)`)**, **`agy-dual` (`Agy Dual (Veca + Principal)`)**, **`codex-squad` (`Codex Squad (Issue Threads)`)**, and **`hybrid-agy-codex` (`Hybrid (Agy + Codex)`)**. All of them ship with the five canonical roles inspired by `oh-my-opencode-slim` (OMOS) (`explorer`, `oracle`, `designer`, `fixer`, and `qa-reviewer`) and a populated `SessionPolicy::default()` (`hardwareProfile: "laptop-8gb"`, `maxConcurrentAntigravityWorkers: 2`, `maxConcurrentWorkersTotal: 3`, `parentThinkingLevel: "medium"`, and the full `workerThinkingByKind` map).
 
-Beyond `default`, the `~/.config/oh-my-t3code/presets/` directory accepts any custom preset created by the user (either via the Preset Studio or manually edited `.jsonc` files), letting you configure alternative provider/model combinations or inherit from `default` via `"extends": "default"`.
+In the Antigravity-based seeds (`agy-dual` and `hybrid-agy-codex`), the orchestrator is configured on `antigravity_2` / `gemini-4-hydrogen` with `thinking_level: "medium"` to avoid memory and context pressure on the parent thread.
 
-### Overview and fallback strategy for `default`
+Beyond these 4 built-in presets, the `~/.config/oh-my-t3code/presets/` directory accepts any custom preset created by the user (either via the Preset Studio or manually edited `.jsonc` files), letting you configure alternative provider/model combinations or inherit from any seed via `"extends": "<id>"`.
 
-| Preset (`id`) | Name | Orchestrator | Topology | `ContentionPolicy` | Fallback Chain (order 1 → 2 → 3) |
+### Overview of built-in presets
+
+| Preset (`id`) | Name | Orchestrator | Topology | `ContentionPolicy` & `SessionPolicy` | Fallback Chain (order 1 → 2 → 3) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `default` | `Default (OMOS Standard)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=medium`, `serviceTier=default`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, builds `target/`, `dist/`, conflicts `package.json`, `Cargo.toml`, `tauri.conf.json` | 1. `codex` / `gpt-6.1-terra` (`high`)<br>2. `codex` / `gpt-6-astra` (`high`)<br>3. `codex` / `gpt-6-luna` (`medium`) |
+| `default` | `Default (OMOS Standard)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=medium`, `serviceTier=default`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3, `parentThinkingLevel: "medium"`) | 1. `codex` / `gpt-6.1-terra` (`high`)<br>2. `codex` / `gpt-6-astra` (`high`)<br>3. `codex` / `gpt-6-luna` (`medium`) |
+| `agy-dual` | `Agy Dual (Veca + Principal)` | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=medium`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3, `parentThinkingLevel: "medium"`) | 1. `antigravity` / `gemini-4-hydrogen` (`high`)<br>2. `antigravity_2` / `gemini-4-argon` (`high`)<br>3. `antigravity` / `gemini-4-argon` (`medium`) |
+| `codex-squad` | `Codex Squad (Issue Threads)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=high`, `serviceTier=default`) | `issue-thread-orchestrator` | `singleTestDb: true` (`PARALLEL_WORKERS=1`), `defaultIsolation: "shared"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3) | 1. `codex` / `gpt-6.1-sol` (`medium`)<br>2. `codex` / `gpt-6.1-terra` (`medium`)<br>3. `codex` / `gpt-6-astra` (`high`) |
+| `hybrid-agy-codex` | `Hybrid (Agy + Codex)` | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=medium`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "worktree"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3, `parentThinkingLevel: "medium"`) | 1. `antigravity` / `gemini-4-hydrogen` (`high`)<br>2. `codex` / `gpt-6.1-sol` (`high`)<br>3. `antigravity_2` / `gemini-4-argon` (`high`) |
 
 ### The 5 canonical OMOS roles in `default`
 
@@ -255,9 +319,9 @@ Beyond `default`, the `~/.config/oh-my-t3code/presets/` directory accepts any cu
 
 ### Self-healing and built-in preset migration rule
 
-The `ensure_seed_presets` function in [`preset_engine.rs`](../../src-tauri/src/preset_engine.rs) preserves user edits inside `default`, but automatically rewrites the file if it detects any of three legacy or corruption conditions:
+The `ensure_seed_presets` function in [`preset_engine.rs`](../../src-tauri/src/preset_engine.rs) preserves user edits inside the 4 built-in presets, but automatically rewrites a seed file if it detects any of three legacy or corruption conditions:
 
-1. Presence of the legacy camelCase key `"thinkingLevel"`.
+1. Presence of the legacy camelCase key `"thinkingLevel"` inside `options` maps — checked by `has_legacy_thinking_level_options`, which performs a typed `parse_jsonc_preset` parse and inspects **only** `orchestrator.options`, `fallbackChain[*].options`, and `roles[*].options`. Therefore, the valid schema field `sessionPolicy.workerThinkingByKind[*].thinkingLevel` **never** triggers a false-positive self-healing rewrite.
 2. UTF-8 byte sequences misdecoded as Latin-1 mojibake, detected by `looks_like_mojibake` (for example, `NÃvel`, `instÃ¢ncia`, `â↔`).
 3. Invalid JSONC syntax or absence of any of the five canonical OMOS roles (`explorer`, `oracle`, `designer`, `fixer`, `qa-reviewer`).
 
@@ -269,21 +333,25 @@ These three modules connect declarative JSONC presets, the Markdown playbooks re
 
 ### Preset Compiler (`compiler.rs`)
 
-Given a resolved `PresetConfig` and a `workspace_root`, the compiler in [`compiler.rs`](../../src-tauri/src/compiler.rs) validates all identifiers, verifies every output path stays inside the workspace (`ensure_within_workspace`), and generates 100% deterministic files using `BTreeMap` with zero random timestamps or UUIDs:
+Given a resolved `PresetConfig` and a `workspace_root`, the compiler in [`compiler.rs`](../../src-tauri/src/compiler.rs) validates all identifiers (including `sessionPolicy.workerThinkingByKind` keys via `validate_worker_thinking_keys`), verifies every output path stays inside the workspace (`ensure_within_workspace`), and generates 100% deterministic files using `BTreeMap` with zero random timestamps or UUIDs:
 
 - **`<workspace>/.t3code/preset.jsonc`**: serializes the project preset with the header `// Oh My T3Code project preset`
-- **`<workspace>/.agents/skills/<slug>-squad/SKILL.md`**: outputs YAML frontmatter (`name: <slug>-squad`, `description`) followed by the signature `# <slug> Squad — Playbook do Orquestrador (T3 Code)` and four fixed sections (`1. Preparação do Orquestrador`, `2. Papéis da Squad (roles/)`, `3. Topologia, Contenção & Isolamento`, and `4. Cadeia de Fallback`)
+- **`<workspace>/.agents/skills/<slug>-squad/SKILL.md`**: outputs YAML frontmatter (`name: <slug>-squad`, `description`) followed by the signature `# <slug> Squad — Playbook do Orquestrador (T3 Code)` and five fixed sections (`1. Preparação do Orquestrador`, `2. Papéis da Squad (roles/)`, `3. Topologia, Contenção & Isolamento`, `4. Cadeia de Fallback`, and `5. Gestão de sessão e concorrência (oh-my-t3code)`)
 - **`<workspace>/.agents/skills/<slug>-squad/roles/<role-id>.md`**: emits one file per role containing `# Role: <title> (<slug>)`, `## Modelo & Instância`, `## Escopo de arquivos`, `## Skills e MCPs recomendados`, `## Regras e Invariantes do Projeto`, and `## Verificação obrigatória antes de concluir`
 
-Both the compiler and the `settings.json` synchronizer automatically normalize the legacy `thinkingLevel` key into `thinking_level` (`normalize_options`). In addition, `t3_reader.rs` relies on the exact presence of `— Playbook do Orquestrador (T3 Code)` inside `SKILL.md` to distinguish compiler-generated squads from external manual squads.
+When rendering `SKILL.md`, Section 5 (`## 5. Gestão de sessão e concorrência (oh-my-t3code)`) prints the hardware profile, worker concurrency caps (ACP and total), parent handoff thresholds (turns, items, warn/hard tokens), effective parent thinking level (`effective_parent_thinking_level`), `delegateMode`, `onAcpSessionDead` action, `workerThinkingByKind` table, `forbiddenPatterns` list, and the 8 mandatory operational rules — including the cross-check between `contention.defaultIsolation` and `maxConcurrent*` (forcing sequential waves with `isolation: "shared"` whenever `defaultIsolation == "worktree"` and any concurrency cap is `<= 1`).
+
+Furthermore, `effective_parent_thinking_level` and `effective_orchestrator_options` apply automatic clamping: on `"laptop-8gb"`, `"high"` or `"xhigh"` on the parent are always clamped down to `"medium"` in both the `Orquestrador` header and Section 5 of `SKILL.md`. Both the compiler and the `settings.json` synchronizer also normalize the legacy `thinkingLevel` key into `thinking_level` (`normalize_options`). Finally, `t3_reader.rs` relies on the exact presence of `— Playbook do Orquestrador (T3 Code)` inside `SKILL.md` to distinguish compiler-generated squads from external manual squads.
 
 ### `settings.json` Sync (`settings_sync.rs`)
 
 Every mutation to `~/.t3/userdata/settings.json` in [`settings_sync.rs`](../../src-tauri/src/settings_sync.rs) first saves an exact byte-for-byte backup in `~/.t3/userdata/settings.json.bak` via atomic write and preserves all unmanaged keys (`favorites`, `providerInstances`, and unknown keys):
 
-- **Global sync (`sync_global_settings`)**: updates `defaultModelSelection` from `preset.orchestrator` and `fallbackModelSelection` from `preset.fallbackChain[0]` (when at least one fallback step exists)
-- **Project sync (`sync_project_settings`)**: updates only `projectSettingsOverrides[projectId].defaultModelSelection`, preserving other keys already on that project object and overrides belonging to other projects
+- **Global sync (`sync_global_settings`)**: updates `defaultModelSelection` from `preset.orchestrator` with options filtered by `effective_orchestrator_options(preset)`, and `fallbackModelSelection` from `preset.fallbackChain[0]` (when at least one fallback step exists)
+- **Project sync (`sync_project_settings`)**: updates only `projectSettingsOverrides[projectId].defaultModelSelection` via `build_project_override_value` (also applying `effective_orchestrator_options(preset)`), preserving other keys already on that project object and overrides belonging to other projects
 - **Override removal (`remove_project_settings_override`)**: deletes `projectSettingsOverrides[projectId]` after writing the `.bak` backup
+
+Because of `effective_orchestrator_options`, when `hardwareProfile == "laptop-8gb"`, `defaultModelSelection` emitted in `settings.json` (global or per-project) **never** emits `thinking_level: "high"` or `"xhigh"` for the orchestrator (clamping to `"medium"`), and also caps `reasoningEffort` downward if its rank exceeds `effective_parent_thinking_level`; on profiles such as `"desktop-16gb"` or `"desktop-32gb-plus"`, `"high"` and `"xhigh"` are preserved.
 
 Inside `settings.json`, each `ModelSelection`'s `options` object converts from `Record<string, string>` into the T3 Code array format (`[{ "id": "<key>", "value": "<value>" }]`), with `thinkingLevel` normalized to `thinking_level`.
 
@@ -292,9 +360,10 @@ Inside `settings.json`, each `ModelSelection`'s `options` object converts from `
 When a repository already has a manual squad under `<workspace>/.agents/skills/*-squad/` without `.t3code/preset.jsonc`, the `import_project_squad` command runs `import_existing_squad` in [`importer.rs`](../../src-tauri/src/importer.rs):
 
 1. Locates the first `*-squad` directory alphabetically inside `.agents/skills/` that contains `SKILL.md`.
-2. Infers the base preset from `SKILL.md` content: detects the predominant provider declared in the existing squad (such as `codex`, `antigravity`, or another configured provider) to set the initial `extends` base (such as `default` or a compatible preset) and imports the roles found under `roles/*.md`.
+2. Infers the base preset from `SKILL.md` content: detects the predominant provider declared in the existing squad (such as `codex`, `antigravity`, or another configured provider) to set the initial `extends` base (`codex-squad` or `agy-dual`) and imports the roles found under `roles/*.md`.
 3. Iterates over `roles/*.md`, validates each filename with `validate_safe_id`, and extracts title, description, `whenToUse`, instance, model, options (`thinkingLevel` normalized to `thinking_level`), skills, MCPs, `allowedPaths`, `forbiddenPaths`, `invariants`, and `verificationCommands`.
 4. Detects model heuristics in the Markdown body (`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gemini-4-argon`, `gemini-4-hydrogen`) and contention hints in `SKILL.md` (`parallel_workers=1` or `banco único` enables `singleTestDb: true`; `isolation: "worktree"` without `isolation: "shared"` sets `defaultIsolation: "worktree"`).
-5. Writes `.t3code/preset.jsonc` with `id: <project_slug>` and `extends: <base_preset_id>`.
+5. Extracts session policy from **`t3-global`**-style `SKILL.md` files via `parse_t3_global_session_policy`: when detecting `t3-global`, `matriz padrão de distribuição` (`matriz padrao de distribuicao`), or a table containing both `thinking_level` and `tipo de tarefa`, parses table rows mapping task kinds (`research`, `architecture`, `frontend`, `backend`, `qa`) into `sessionPolicy.workerThinkingByKind` with `(model, thinkingLevel)`, sets `sessionPolicy.parentThinkingLevel: "medium"`, and when the orchestrator is Antigravity or `gemini-4-hydrogen`, sets `orchestrator.options.thinking_level = "medium"` (removing any legacy `thinkingLevel`).
+6. Writes `.t3code/preset.jsonc` with `id: <project_slug>` and `extends: <base_preset_id>`.
 
 For step-by-step interface instructions, see the [User Guide](USER_GUIDE.md). For internal architecture details, security invariants, the 15 IPC commands catalog, and troubleshooting procedures, read [Architecture and Troubleshooting](ARCHITECTURE_AND_TROUBLESHOOTING.md) and [State Machines](../STATE_MACHINES.md).

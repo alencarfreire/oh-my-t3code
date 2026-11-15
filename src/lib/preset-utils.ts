@@ -1,8 +1,12 @@
 import type {
   FallbackStep,
+  HardwareProfile,
   PresetConfig,
+  ProjectSessionHealth,
+  ProjectSummary,
   ProviderInstanceInfo,
   RoleConfig,
+  SessionPolicy,
   SubagentActivity,
 } from "../types/ipc";
 
@@ -358,6 +362,99 @@ export function normalizeDisabledRoles(
   return normalized.length > 0 ? normalized : undefined;
 }
 
+export function defaultMaxAntigravityForProfile(profile: HardwareProfile): number {
+  switch (profile) {
+    case "laptop-8gb":
+      return 2;
+    case "desktop-16gb":
+      return 3;
+    case "desktop-32gb-plus":
+      return 4;
+    default:
+      return 2;
+  }
+}
+
+export function createDefaultSessionPolicy(): SessionPolicy {
+  return {
+    hardwareProfile: "laptop-8gb",
+    maxConcurrentAntigravityWorkers: 2,
+    maxConcurrentWorkersTotal: 3,
+    parentMaxTurnsBeforeHandoff: 15,
+    parentMaxItemsBeforeHandoff: 120,
+    parentWarnInputTokens: 200_000,
+    parentHardInputTokens: 700_000,
+    parentThinkingLevel: "medium",
+    workerThinkingByKind: {
+      architecture: { model: "gemini-4-argon", thinkingLevel: "high" },
+      backend: { model: "gemini-4-hydrogen", thinkingLevel: "high" },
+      frontend: { model: "gemini-4-hydrogen", thinkingLevel: "medium" },
+      qa: { model: "gemini-4-argon", thinkingLevel: "high" },
+      research: { model: "gemini-4-hydrogen", thinkingLevel: "low" },
+    },
+    delegateMode: "async-default",
+    onAcpSessionDead: "advise-new-thread",
+    forbiddenPatterns: [
+      "orquestrar+implementar no mesmo chat",
+      "4 ACP simultâneos neste perfil",
+      "thinking high no pai",
+      "continuar thread após provider_error AcpRequestError",
+    ],
+  };
+}
+
+export function effectiveParentThinkingLevel(policy: SessionPolicy): string {
+  const configured = policy.parentThinkingLevel.trim();
+  if (policy.hardwareProfile === "laptop-8gb" && (configured === "high" || configured === "xhigh")) {
+    return "medium";
+  }
+  return configured || "medium";
+}
+
+function thinkingRank(level: string): number {
+  switch (level) {
+    case "low":
+      return 1;
+    case "medium":
+      return 2;
+    case "high":
+      return 3;
+    case "xhigh":
+      return 4;
+    default:
+      return 2;
+  }
+}
+
+export function effectiveOrchestratorOptions(preset: PresetConfig): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [k, v] of Object.entries(preset.orchestrator.options)) {
+    if (k === "thinkingLevel") {
+      if (!("thinking_level" in normalized)) {
+        normalized.thinking_level = v;
+      }
+    } else {
+      normalized[k] = v;
+    }
+  }
+
+  const effLevel = effectiveParentThinkingLevel(preset.sessionPolicy);
+  if (
+    preset.orchestrator.providerInstanceId.startsWith("antigravity") ||
+    preset.orchestrator.model.startsWith("gemini-4-") ||
+    "thinking_level" in normalized
+  ) {
+    normalized.thinking_level = effLevel;
+  } else if ("reasoningEffort" in normalized) {
+    const currentEffort = normalized.reasoningEffort;
+    if (thinkingRank(effLevel) < thinkingRank(currentEffort)) {
+      normalized.reasoningEffort = effLevel;
+    }
+  }
+
+  return normalized;
+}
+
 export function createEmptyPreset(
   id: string,
   extendsId: string | null = "default",
@@ -374,7 +471,7 @@ export function createEmptyPreset(
     orchestrator: {
       providerInstanceId: "antigravity_2",
       model: "gemini-4-hydrogen",
-      options: { thinking_level: "high" },
+      options: { thinking_level: "medium" },
     },
     fallbackChain: [
       {
@@ -391,6 +488,7 @@ export function createEmptyPreset(
       conflictFiles: [],
       defaultIsolation: "shared",
     },
+    sessionPolicy: createDefaultSessionPolicy(),
     roles: {},
     ...(normalizedDisabled ? { disabledRoles: normalizedDisabled } : {}),
   };
@@ -566,3 +664,115 @@ export function formatProjectSwapFeedback(params: {
   parts.push("Alteração vale para novas threads no T3 Code.");
   return parts.join(" ");
 }
+
+export interface SessionHealthMeta {
+  label: string;
+  tone: "emerald" | "amber" | "rose" | "neutral";
+}
+
+export function getSessionHealthMeta(status: string | null | undefined): SessionHealthMeta {
+  switch (status) {
+    case "ok":
+      return { label: "OK", tone: "emerald" };
+    case "fat_parent":
+      return { label: "Pai gordo", tone: "amber" };
+    case "acp_dead":
+      return { label: "ACP morto", tone: "rose" };
+    case "over_concurrency":
+      return { label: "Muitos workers", tone: "rose" };
+    default:
+      return { label: status || "OK", tone: "neutral" };
+  }
+}
+
+export function formatProjectSessionSummary(health: ProjectSessionHealth): string {
+  const agyPart = `Agy ${health.activeAntigravityWorkers}/${health.maxConcurrentAntigravityWorkers}`;
+  const primaryThread = health.deadAcpThreads[0] ?? health.fatParentThreads[0];
+  if (primaryThread) {
+    return `${agyPart} · pai ${primaryThread.runCount} turns · ${primaryThread.itemCount} itens`;
+  }
+  if (health.status === "over_concurrency") {
+    return `${agyPart} · ${health.activeWorkersTotal}/${health.maxConcurrentWorkersTotal} workers`;
+  }
+  return `${agyPart} · saudável`;
+}
+
+export function buildSessionHandoffPrompt(params: {
+  project: ProjectSummary;
+  sessionPolicy?: SessionPolicy | null;
+  globalPresetId?: string | null;
+}): string {
+  const { project, sessionPolicy, globalPresetId } = params;
+  const health = project.sessionHealth;
+  const meta = getSessionHealthMeta(health.status);
+  const policy = sessionPolicy ?? createDefaultSessionPolicy();
+  const effectiveThinking = effectiveParentThinkingLevel(policy);
+  const slug =
+    project.workspaceRoot.split("/").filter(Boolean).pop() ?? project.title;
+  const presetLabel = project.localPresetId ?? globalPresetId ?? "default";
+  const affectedThreads = [...health.deadAcpThreads, ...health.fatParentThreads];
+
+  const lines: string[] = [
+    `# Handoff de Sessão — ${project.title}`,
+    "",
+    `- **Motivo do alerta:** ${meta.label} (\`${health.status}\`)${health.ramWarning ? " · Alerta de RAM (8 GB)" : ""}`,
+    `- **Projeto:** \`${project.title}\` (\`${project.workspaceRoot}\`)`,
+    `- **Preset / Modelo:** \`${presetLabel}\` · ${project.activeInstanceId ?? "padrão"} / \`${project.activeModel ?? "padrão"}\``,
+    `- **Concorrência observada:** \`Agy ${health.activeAntigravityWorkers}/${health.maxConcurrentAntigravityWorkers}\` · \`${health.activeWorkersTotal}/${health.maxConcurrentWorkersTotal}\` workers totais`,
+  ];
+
+  if (health.advisory) {
+    lines.push(`- **Diagnóstico:** ${health.advisory}`);
+  }
+
+  if (affectedThreads.length > 0) {
+    lines.push("", "## Threads afetadas", "");
+    for (const thread of affectedThreads) {
+      const errSuffix = thread.lastError ? ` · erro: \`${thread.lastError}\`` : "";
+      lines.push(
+        `- [${thread.status}] **${thread.title}** (\`threadId: ${thread.threadId}\`) — ${thread.runCount} turns, ${thread.itemCount} itens${errSuffix}`,
+      );
+    }
+  }
+
+  lines.push(
+    "",
+    "## Retomada recomendada no novo thread pai (T3 Code)",
+    "",
+    `1. Leia \`AGENTS.md\`, \`README.md\` e \`.agents/skills/${slug}-squad/SKILL.md\` (se existir).`,
+    "2. Consulte o `ai-memory` (`memory_briefing`, `memory_handoff_accept`, `memory_query`) para recuperar o contexto consolidado sem reler histórico antigo.",
+    "3. Verifique `git status --short` e `git diff --stat` antes de iniciar novas ondas.",
+    `4. Siga a \`sessionPolicy\` (\`${policy.hardwareProfile}\`): mantenha \`parentThinkingLevel\` efetivo em \`${effectiveThinking}\`, limite de \`${policy.maxConcurrentAntigravityWorkers}\` worker(s) Antigravity e \`${policy.maxConcurrentWorkersTotal}\` worker(s) no total, delegando em \`delegateMode: "${policy.delegateMode}"\` (\`onAcpSessionDead: "${policy.onAcpSessionDead}"\`).`,
+  );
+
+  return lines.join("\n");
+}
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback below for headless/restricted environments
+    }
+  }
+  if (typeof document !== "undefined" && typeof document.execCommand === "function") {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+

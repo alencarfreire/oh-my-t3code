@@ -604,6 +604,7 @@ fn test_3_compiled_skills_t3_compatibility_determinism_prune_and_reverse_import(
             reason: "quota_or_rate_limit".to_string(),
         }],
         contention: agy_dual.contention.clone(),
+        session_policy: Default::default(),
         roles: custom_roles,
         disabled_roles: vec!["oracle".to_string()],
     };
@@ -847,4 +848,138 @@ fn test_4_resilience_missing_db_concurrent_wal_and_corrupt_settings() {
 
     let globals = list_global_presets(&paths.presets_dir).unwrap();
     assert_eq!(globals.len(), 4);
+}
+
+#[test]
+fn test_5_session_health_monitoring_end_to_end() {
+    let tmp = tempdir().expect("tempdir");
+    let t3_home = tmp.path().join(".t3");
+    let userdata_dir = t3_home.join("userdata");
+    let presets_dir = tmp.path().join("config").join("presets");
+    let skills_root = tmp.path().join("skills");
+    let ws_alpha = tmp.path().join("ws-alpha");
+    let ws_beta = tmp.path().join("ws-beta");
+    fs::create_dir_all(&userdata_dir).unwrap();
+    fs::create_dir_all(&skills_root).unwrap();
+    fs::create_dir_all(&ws_alpha).unwrap();
+    fs::create_dir_all(&ws_beta).unwrap();
+
+    let db_path = userdata_dir.join("statev2.sqlite");
+    let settings_path = userdata_dir.join("settings.json");
+    create_real_t3_sqlite_schema(&db_path);
+    seed_real_t3_settings(&settings_path);
+
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE orchestration_v2_projection_runs (
+                run_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                provider_instance_id TEXT,
+                model TEXT,
+                error_message TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE orchestration_v2_projection_turn_items (
+                item_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            ",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+             VALUES ('proj-alpha', 'Alpha', ?1, '[]', '2026-11-15T00:00:00Z', '2026-11-15T04:00:00Z')",
+            rusqlite::params![ws_alpha.to_str().unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+             VALUES ('proj-beta', 'Beta', ?1, '[]', '2026-11-15T00:00:00Z', '2026-11-15T03:00:00Z')",
+            rusqlite::params![ws_beta.to_str().unwrap()],
+        )
+        .unwrap();
+
+        // proj-alpha: 3 active antigravity workers + 15 runs -> over_concurrency + ram_warning
+        conn.execute(
+            "INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at)
+             VALUES ('th-alpha', 'proj-alpha', 'Alpha Parent', '2026-11-15T00:00:00Z', '2026-11-15T04:00:00Z')",
+            [],
+        )
+        .unwrap();
+        for idx in 1..=3 {
+            conn.execute(
+                "INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, child_thread_id, parent_node_id, provider, origin, status, started_at, updated_at, payload_json, driver, provider_instance_id)
+                 VALUES (?1, 'th-alpha', ?2, 'root', 'antigravity', 'delegate', 'running', '2026-11-15T04:00:00Z', '2026-11-15T04:01:00Z', '{\"model\":\"gemini-4-hydrogen\"}', 'antigravity', 'antigravity')",
+                rusqlite::params![format!("sub-a-{idx}"), format!("child-a-{idx}")],
+            )
+            .unwrap();
+        }
+        for r in 0..15 {
+            conn.execute(
+                "INSERT INTO orchestration_v2_projection_runs VALUES (?1, 'th-alpha', 'completed', 'antigravity_2', 'gemini-4-hydrogen', NULL, '2026-11-15T03:00:00Z', '2026-11-15T03:01:00Z', ?2)",
+                rusqlite::params![format!("run-a-{r}"), format!("2026-11-15T03:{r:02}:00Z")],
+            )
+            .unwrap();
+        }
+
+        // proj-beta: latest run failed in 400ms with AcpRequestError -> acp_dead
+        conn.execute(
+            "INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at)
+             VALUES ('th-beta', 'proj-beta', 'Beta Parent', '2026-11-15T00:00:00Z', '2026-11-15T03:30:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO orchestration_v2_projection_runs VALUES ('run-b-dead', 'th-beta', 'failed', 'antigravity', 'gemini-4-hydrogen', 'AcpRequestError: closed', '2026-11-15T03:30:00.000Z', '2026-11-15T03:30:00.400Z', '2026-11-15T03:30:00.400Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let paths = AppPaths {
+        t3_home,
+        presets_dir,
+        skill_roots: vec![("skillshare".to_string(), skills_root)],
+    };
+    ensure_seed_presets(&paths.presets_dir).unwrap();
+    set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+
+    let snap = get_dashboard_snapshot_from_paths(&paths).unwrap();
+    let alpha = snap
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-alpha")
+        .unwrap();
+    let beta = snap
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-beta")
+        .unwrap();
+
+    assert_eq!(alpha.session_health.status, "over_concurrency");
+    assert!(alpha.session_health.ram_warning);
+    assert_eq!(alpha.session_health.active_antigravity_workers, 3);
+    assert_eq!(alpha.session_health.fat_parent_threads.len(), 1);
+
+    assert_eq!(beta.session_health.status, "acp_dead");
+    assert_eq!(beta.session_health.dead_acp_threads.len(), 1);
+
+    assert_eq!(snap.session_health.status, "acp_dead");
+    assert!(snap.session_health.ram_warning);
+    assert_eq!(snap.session_health.active_antigravity_workers, 3);
+    assert!(snap
+        .session_health
+        .affected_projects
+        .contains(&"proj-alpha".to_string()));
+    assert!(snap
+        .session_health
+        .affected_projects
+        .contains(&"proj-beta".to_string()));
 }

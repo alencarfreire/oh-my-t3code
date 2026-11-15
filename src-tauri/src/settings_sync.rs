@@ -1,4 +1,6 @@
-use crate::models::{AppError, AppResult, PresetConfig, SettingsOverridePreview};
+use crate::models::{
+    effective_orchestrator_options, AppError, AppResult, PresetConfig, SettingsOverridePreview,
+};
 use crate::preset_engine::atomic_write_file;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -132,10 +134,11 @@ pub fn build_model_selection_value(
 
 /// Builds the T3 Code `projectSettingsOverrides[projectId]` JSON value for a preset.
 pub fn build_project_override_value(preset: &PresetConfig) -> Value {
+    let eff_options = effective_orchestrator_options(preset);
     let selection = build_model_selection_value(
         &preset.orchestrator.provider_instance_id,
         &preset.orchestrator.model,
-        &preset.orchestrator.options,
+        &eff_options,
     );
     let mut wrapper = Map::new();
     wrapper.insert("defaultModelSelection".to_string(), selection);
@@ -293,10 +296,11 @@ pub fn sync_global_settings(
         .as_object_mut()
         .ok_or_else(|| AppError::InvalidInput("settings.json root is not an object".into()))?;
 
+    let eff_options = effective_orchestrator_options(preset);
     let default_sel = build_model_selection_value(
         &preset.orchestrator.provider_instance_id,
         &preset.orchestrator.model,
-        &preset.orchestrator.options,
+        &eff_options,
     );
     root_obj.insert("defaultModelSelection".to_string(), default_sel);
 
@@ -652,5 +656,52 @@ mod tests {
 
         // Idempotent second call when global keys are already absent -> Ok(None)
         assert!(remove_global_settings_override(&settings_path).unwrap().is_none());
+    }
+
+    #[test]
+    fn laptop_8gb_forces_parent_thinking_high_or_xhigh_to_medium_in_settings_json() {
+        let dir = tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+
+        let mut preset = default_seed_presets()
+            .into_iter()
+            .find(|p| p.id == "agy-dual")
+            .unwrap();
+        preset.session_policy.hardware_profile = "laptop-8gb".to_string();
+        preset.session_policy.parent_thinking_level = "xhigh".to_string();
+        preset
+            .orchestrator
+            .options
+            .insert("thinking_level".to_string(), "high".to_string());
+
+        sync_project_settings(&settings_path, "proj-cap", &preset).unwrap();
+        sync_global_settings(&settings_path, &preset).unwrap();
+
+        let val: Value = serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let global_opts = val["defaultModelSelection"]["options"].as_array().unwrap();
+        assert!(global_opts
+            .iter()
+            .any(|o| o["id"] == "thinking_level" && o["value"] == "medium"));
+
+        let proj_opts = val["projectSettingsOverrides"]["proj-cap"]["defaultModelSelection"]["options"]
+            .as_array()
+            .unwrap();
+        assert!(proj_opts
+            .iter()
+            .any(|o| o["id"] == "thinking_level" && o["value"] == "medium"));
+
+        // desktop-16gb preserves "high"
+        preset.session_policy.hardware_profile = "desktop-16gb".to_string();
+        preset.session_policy.parent_thinking_level = "high".to_string();
+        sync_global_settings(&settings_path, &preset).unwrap();
+
+        let val_desktop: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let desktop_opts = val_desktop["defaultModelSelection"]["options"]
+            .as_array()
+            .unwrap();
+        assert!(desktop_opts
+            .iter()
+            .any(|o| o["id"] == "thinking_level" && o["value"] == "high"));
     }
 }

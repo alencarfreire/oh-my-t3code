@@ -1,6 +1,7 @@
 use crate::models::{
     AppError, AppPaths, AppResult, ContentionPolicy, FallbackStep, GlobalAppConfig,
-    OrchestratorSelection, PresetConfig, ResolvedProjectPreset, RoleConfig,
+    OrchestratorSelection, PresetConfig, ResolvedProjectPreset, RoleConfig, SessionPolicy,
+    WorkerThinkingRule,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -229,6 +230,30 @@ pub(crate) fn normalize_disabled_roles(ids: &[String]) -> AppResult<Vec<String>>
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+struct WorkerThinkingRulePatch {
+    model: Option<String>,
+    thinking_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SessionPolicyPatch {
+    hardware_profile: Option<String>,
+    max_concurrent_antigravity_workers: Option<u32>,
+    max_concurrent_workers_total: Option<u32>,
+    parent_max_turns_before_handoff: Option<u32>,
+    parent_max_items_before_handoff: Option<u32>,
+    parent_warn_input_tokens: Option<u64>,
+    parent_hard_input_tokens: Option<u64>,
+    parent_thinking_level: Option<String>,
+    worker_thinking_by_kind: Option<BTreeMap<String, WorkerThinkingRulePatch>>,
+    delegate_mode: Option<String>,
+    on_acp_session_dead: Option<String>,
+    forbidden_patterns: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct PresetPatch {
     id: Option<String>,
     name: Option<String>,
@@ -239,14 +264,23 @@ struct PresetPatch {
     orchestrator: Option<OrchestratorPatch>,
     fallback_chain: Option<Vec<FallbackStep>>,
     contention: Option<ContentionPatch>,
+    session_policy: Option<SessionPolicyPatch>,
     roles: Option<BTreeMap<String, RolePatch>>,
     disabled_roles: Option<Vec<String>>,
+}
+
+pub(crate) fn validate_worker_thinking_keys<V>(map: &BTreeMap<String, V>) -> AppResult<()> {
+    for kind in map.keys() {
+        validate_safe_id(kind, "worker thinking kind")?;
+    }
+    Ok(())
 }
 
 pub fn parse_jsonc_preset(raw: &str) -> AppResult<PresetConfig> {
     let clean = strip_jsonc_comments(raw);
     let mut preset: PresetConfig = serde_json::from_str(&clean)?;
     validate_safe_id(&preset.id, "preset id")?;
+    validate_worker_thinking_keys(&preset.session_policy.worker_thinking_by_kind)?;
     for role_key in preset.roles.keys() {
         validate_safe_id(role_key, "role id")?;
     }
@@ -262,6 +296,11 @@ fn parse_jsonc_patch(raw: &str) -> AppResult<PresetPatch> {
     }
     if let Some(extends) = &patch.extends {
         validate_safe_id(extends, "extends preset id")?;
+    }
+    if let Some(sp) = &patch.session_policy {
+        if let Some(rules) = &sp.worker_thinking_by_kind {
+            validate_worker_thinking_keys(rules)?;
+        }
     }
     if let Some(roles) = &patch.roles {
         for role_key in roles.keys() {
@@ -325,6 +364,63 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         }
         if let Some(iso) = cp.default_isolation {
             contention.default_isolation = iso;
+        }
+    }
+
+    let mut session_policy = base.session_policy;
+    if let Some(sp) = patch.session_policy {
+        if let Some(profile) = sp.hardware_profile.filter(|s| !s.trim().is_empty()) {
+            session_policy.hardware_profile = profile;
+        }
+        if let Some(v) = sp.max_concurrent_antigravity_workers {
+            session_policy.max_concurrent_antigravity_workers = v;
+        }
+        if let Some(v) = sp.max_concurrent_workers_total {
+            session_policy.max_concurrent_workers_total = v;
+        }
+        if let Some(v) = sp.parent_max_turns_before_handoff {
+            session_policy.parent_max_turns_before_handoff = v;
+        }
+        if let Some(v) = sp.parent_max_items_before_handoff {
+            session_policy.parent_max_items_before_handoff = v;
+        }
+        if let Some(v) = sp.parent_warn_input_tokens {
+            session_policy.parent_warn_input_tokens = v;
+        }
+        if let Some(v) = sp.parent_hard_input_tokens {
+            session_policy.parent_hard_input_tokens = v;
+        }
+        if let Some(level) = sp.parent_thinking_level.filter(|s| !s.trim().is_empty()) {
+            session_policy.parent_thinking_level = level;
+        }
+        if let Some(rules) = sp.worker_thinking_by_kind {
+            for (kind, rp) in rules {
+                let existing = session_policy
+                    .worker_thinking_by_kind
+                    .get(&kind)
+                    .cloned()
+                    .unwrap_or_default();
+                let merged_rule = WorkerThinkingRule {
+                    model: rp
+                        .model
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(existing.model),
+                    thinking_level: rp
+                        .thinking_level
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(existing.thinking_level),
+                };
+                session_policy.worker_thinking_by_kind.insert(kind, merged_rule);
+            }
+        }
+        if let Some(mode) = sp.delegate_mode.filter(|s| !s.trim().is_empty()) {
+            session_policy.delegate_mode = mode;
+        }
+        if let Some(action) = sp.on_acp_session_dead.filter(|s| !s.trim().is_empty()) {
+            session_policy.on_acp_session_dead = action;
+        }
+        if let Some(patterns) = sp.forbidden_patterns {
+            session_policy.forbidden_patterns = patterns;
         }
     }
 
@@ -395,6 +491,7 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         orchestrator,
         fallback_chain,
         contention,
+        session_policy,
         roles,
         disabled_roles,
     }
@@ -411,6 +508,7 @@ fn empty_base_preset(id: &str) -> PresetConfig {
         orchestrator: OrchestratorSelection::default(),
         fallback_chain: Vec::new(),
         contention: ContentionPolicy::default(),
+        session_policy: SessionPolicy::default(),
         roles: BTreeMap::new(),
         disabled_roles: Vec::new(),
     }
@@ -519,6 +617,7 @@ pub(crate) fn resolve_preset_inheritance_unlocked(
     mut preset: PresetConfig,
 ) -> AppResult<PresetConfig> {
     validate_safe_id(&preset.id, "preset id")?;
+    validate_worker_thinking_keys(&preset.session_policy.worker_thinking_by_kind)?;
     for role_id in preset.roles.keys() {
         validate_safe_id(role_id, "role id")?;
     }
@@ -836,6 +935,7 @@ pub fn build_default_preset() -> PresetConfig {
             ],
             default_isolation: "shared".to_string(),
         },
+        session_policy: SessionPolicy::default(),
         roles,
         disabled_roles: Vec::new(),
     }
@@ -992,7 +1092,7 @@ fn build_agy_dual_preset() -> PresetConfig {
         orchestrator: OrchestratorSelection {
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "medium".to_string())]),
         },
         fallback_chain: vec![
             FallbackStep {
@@ -1025,6 +1125,7 @@ fn build_agy_dual_preset() -> PresetConfig {
             ],
             default_isolation: "shared".to_string(),
         },
+        session_policy: SessionPolicy::default(),
         roles,
         disabled_roles: Vec::new(),
     }
@@ -1212,6 +1313,7 @@ fn build_codex_squad_preset() -> PresetConfig {
             ],
             default_isolation: "shared".to_string(),
         },
+        session_policy: SessionPolicy::default(),
         roles,
         disabled_roles: Vec::new(),
     }
@@ -1335,7 +1437,7 @@ fn build_hybrid_preset() -> PresetConfig {
         orchestrator: OrchestratorSelection {
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "medium".to_string())]),
         },
         fallback_chain: vec![
             FallbackStep {
@@ -1367,6 +1469,7 @@ fn build_hybrid_preset() -> PresetConfig {
             conflict_files: vec!["package.json".to_string(), "Cargo.toml".to_string()],
             default_isolation: "worktree".to_string(),
         },
+        session_policy: SessionPolicy::default(),
         roles,
         disabled_roles: Vec::new(),
     }
@@ -1385,6 +1488,21 @@ pub fn looks_like_mojibake(s: &str) -> bool {
         }
     }
     false
+}
+
+fn has_legacy_thinking_level_options(raw: &str) -> bool {
+    let Ok(parsed) = parse_jsonc_preset(raw) else {
+        return true;
+    };
+    parsed.orchestrator.options.contains_key("thinkingLevel")
+        || parsed
+            .fallback_chain
+            .iter()
+            .any(|step| step.options.contains_key("thinkingLevel"))
+        || parsed
+            .roles
+            .values()
+            .any(|role| role.options.contains_key("thinkingLevel"))
 }
 
 fn has_all_omos_roles(raw: &str) -> bool {
@@ -1423,7 +1541,7 @@ pub(crate) fn ensure_seed_presets_unlocked(presets_dir: &Path) -> AppResult<()> 
             None => Some((&jsonc_path, true)),
             Some((path, is_jsonc)) => match fs::read_to_string(path) {
                 Ok(raw) => {
-                    if raw.contains("\"thinkingLevel\"")
+                    if has_legacy_thinking_level_options(&raw)
                         || looks_like_mojibake(&raw)
                         || !has_all_omos_roles(&raw)
                     {
@@ -1559,6 +1677,7 @@ pub(crate) fn save_global_preset_unlocked(
     mut preset: PresetConfig,
 ) -> AppResult<PresetConfig> {
     validate_safe_id(&preset.id, "preset id")?;
+    validate_worker_thinking_keys(&preset.session_policy.worker_thinking_by_kind)?;
     if let Some(parent) = &preset.extends {
         validate_safe_id(parent, "extends preset id")?;
         if parent == &preset.id {
@@ -1614,6 +1733,7 @@ pub(crate) fn save_project_preset_unlocked(
         )));
     }
     validate_safe_id(&preset.id, "preset id")?;
+    validate_worker_thinking_keys(&preset.session_policy.worker_thinking_by_kind)?;
     for (key, role) in &mut preset.roles {
         validate_safe_id(key, "role id")?;
         if role.id.is_empty() {
@@ -1905,8 +2025,8 @@ mod tests {
                 serde_json::to_string_pretty(seed).unwrap()
             );
             assert!(
-                !jsonc.contains("\"thinkingLevel\""),
-                "seed {} should not contain legacy thinkingLevel",
+                !has_legacy_thinking_level_options(&jsonc),
+                "seed {} should not contain legacy thinkingLevel in options maps",
                 seed.id
             );
 
@@ -1971,7 +2091,7 @@ mod tests {
         );
         assert_eq!(
             agy_dual.orchestrator.options.get("thinking_level").map(String::as_str),
-            Some("high")
+            Some("medium")
         );
         assert!(!agy_dual.orchestrator.options.contains_key("thinkingLevel"));
         for role in agy_dual.roles.values() {
@@ -1982,7 +2102,7 @@ mod tests {
         let hybrid = seeds.iter().find(|p| p.id == "hybrid-agy-codex").unwrap();
         assert_eq!(
             hybrid.orchestrator.options.get("thinking_level").map(String::as_str),
-            Some("high")
+            Some("medium")
         );
         assert!(!hybrid.orchestrator.options.contains_key("thinkingLevel"));
         assert!(hybrid.roles["explorer"].options.contains_key("thinking_level"));
@@ -2036,7 +2156,7 @@ mod tests {
         let upgraded_agy = resolve_global_preset(&presets_dir, "agy-dual").unwrap();
         assert_eq!(
             upgraded_agy.orchestrator.options.get("thinking_level").map(String::as_str),
-            Some("high")
+            Some("medium")
         );
         assert!(!upgraded_agy.orchestrator.options.contains_key("thinkingLevel"));
         assert!(!looks_like_mojibake(&upgraded_agy.description));
@@ -2278,5 +2398,141 @@ mod tests {
         let err = resolve_jsonc_against_globals(&paths.presets_dir, invalid_jsonc, "bad-tombstone")
             .unwrap_err();
         assert!(matches!(err, AppError::PathTraversal(_)));
+    }
+
+    #[test]
+    fn session_policy_defaults_when_absent_in_legacy_jsonc_and_merges_via_extends() {
+        let dir = tempdir().unwrap();
+        let presets_dir = dir.path().join("presets");
+        ensure_seed_presets(&presets_dir).unwrap();
+
+        // 1. Legacy JSONC without sessionPolicy deserializes with full defaults
+        let legacy_jsonc = r#"{
+            "id": "legacy-no-policy",
+            "name": "Legacy",
+            "roles": {}
+        }"#;
+        let parsed = parse_jsonc_preset(legacy_jsonc).unwrap();
+        assert_eq!(parsed.session_policy, SessionPolicy::default());
+        assert_eq!(parsed.session_policy.hardware_profile, "laptop-8gb");
+        assert_eq!(parsed.session_policy.max_concurrent_antigravity_workers, 2);
+        assert_eq!(parsed.session_policy.max_concurrent_workers_total, 3);
+        assert_eq!(parsed.session_policy.parent_max_turns_before_handoff, 15);
+        assert_eq!(parsed.session_policy.parent_max_items_before_handoff, 120);
+        assert_eq!(parsed.session_policy.parent_warn_input_tokens, 200_000);
+        assert_eq!(parsed.session_policy.parent_hard_input_tokens, 700_000);
+        assert_eq!(parsed.session_policy.parent_thinking_level, "medium");
+        assert_eq!(parsed.session_policy.delegate_mode, "async-default");
+        assert_eq!(parsed.session_policy.on_acp_session_dead, "advise-new-thread");
+        assert_eq!(
+            parsed.session_policy.worker_thinking_by_kind["research"],
+            WorkerThinkingRule {
+                model: "gemini-4-hydrogen".to_string(),
+                thinking_level: "low".to_string(),
+            }
+        );
+
+        // 2. Partial sessionPolicy patch inherits sibling fields & merges workerThinkingByKind key-by-key
+        let child_jsonc = r#"{
+            "id": "child-policy",
+            "name": "Child Policy",
+            "extends": "agy-dual",
+            "sessionPolicy": {
+                "hardwareProfile": "desktop-16gb",
+                "maxConcurrentAntigravityWorkers": 3,
+                "parentThinkingLevel": "high",
+                "workerThinkingByKind": {
+                    "frontend": { "thinkingLevel": "high" },
+                    "mobile": { "model": "gemini-4-hydrogen", "thinkingLevel": "medium" }
+                }
+            }
+        }"#;
+        let resolved =
+            resolve_jsonc_against_globals(&presets_dir, child_jsonc, "child-policy").unwrap();
+        assert_eq!(resolved.session_policy.hardware_profile, "desktop-16gb");
+        assert_eq!(resolved.session_policy.max_concurrent_antigravity_workers, 3);
+        assert_eq!(resolved.session_policy.max_concurrent_workers_total, 3);
+        assert_eq!(resolved.session_policy.parent_thinking_level, "high");
+        assert_eq!(
+            resolved.session_policy.worker_thinking_by_kind["frontend"],
+            WorkerThinkingRule {
+                model: "gemini-4-hydrogen".to_string(),
+                thinking_level: "high".to_string(),
+            }
+        );
+        assert_eq!(
+            resolved.session_policy.worker_thinking_by_kind["mobile"],
+            WorkerThinkingRule {
+                model: "gemini-4-hydrogen".to_string(),
+                thinking_level: "medium".to_string(),
+            }
+        );
+        assert_eq!(
+            resolved.session_policy.worker_thinking_by_kind["qa"],
+            WorkerThinkingRule {
+                model: "gemini-4-argon".to_string(),
+                thinking_level: "high".to_string(),
+            }
+        );
+        assert_eq!(
+            resolved.session_policy.forbidden_patterns,
+            SessionPolicy::default().forbidden_patterns
+        );
+
+        // 3. forbiddenPatterns replaces when Some
+        let child_forbidden = r#"{
+            "id": "child-forbidden",
+            "name": "Child Forbidden",
+            "extends": "agy-dual",
+            "sessionPolicy": {
+                "forbiddenPatterns": ["custom-rule-only"]
+            }
+        }"#;
+        let resolved_f =
+            resolve_jsonc_against_globals(&presets_dir, child_forbidden, "child-forbidden")
+                .unwrap();
+        assert_eq!(
+            resolved_f.session_policy.forbidden_patterns,
+            vec!["custom-rule-only".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_worker_thinking_by_kind_keys() {
+        let dir = tempdir().unwrap();
+        let presets_dir = dir.path().join("presets");
+        ensure_seed_presets(&presets_dir).unwrap();
+
+        let bad_traversal = r#"{
+            "id": "bad-kind",
+            "name": "Bad Kind",
+            "sessionPolicy": {
+                "workerThinkingByKind": {
+                    "../evil": { "model": "gemini-4-hydrogen", "thinkingLevel": "low" }
+                }
+            }
+        }"#;
+        assert!(matches!(
+            parse_jsonc_preset(bad_traversal),
+            Err(AppError::PathTraversal(_))
+        ));
+        assert!(matches!(
+            resolve_jsonc_against_globals(&presets_dir, bad_traversal, "bad-kind"),
+            Err(AppError::PathTraversal(_))
+        ));
+
+        let bad_chars = r#"{
+            "id": "bad-chars",
+            "name": "Bad Chars",
+            "sessionPolicy": {
+                "workerThinkingByKind": {
+                    "bad kind!": { "model": "gemini-4-hydrogen", "thinkingLevel": "low" }
+                }
+            }
+        }"#;
+        assert!(matches!(
+            parse_jsonc_preset(bad_chars),
+            Err(AppError::InvalidInput(_))
+        ));
     }
 }

@@ -180,6 +180,212 @@ pub struct RoleConfig {
     pub verification_commands: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerThinkingRule {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub thinking_level: String,
+}
+
+pub fn default_max_antigravity_for_profile(profile: &str) -> u32 {
+    match profile {
+        "laptop-8gb" => 2,
+        "desktop-16gb" => 3,
+        "desktop-32gb-plus" => 4,
+        _ => 2,
+    }
+}
+
+fn default_hardware_profile() -> String {
+    "laptop-8gb".to_string()
+}
+
+fn default_max_concurrent_antigravity_workers() -> u32 {
+    2
+}
+
+fn default_max_concurrent_workers_total() -> u32 {
+    3
+}
+
+fn default_parent_max_turns_before_handoff() -> u32 {
+    15
+}
+
+fn default_parent_max_items_before_handoff() -> u32 {
+    120
+}
+
+fn default_parent_warn_input_tokens() -> u64 {
+    200_000
+}
+
+fn default_parent_hard_input_tokens() -> u64 {
+    700_000
+}
+
+fn default_parent_thinking_level() -> String {
+    "medium".to_string()
+}
+
+fn default_worker_thinking_by_kind() -> BTreeMap<String, WorkerThinkingRule> {
+    BTreeMap::from([
+        (
+            "architecture".to_string(),
+            WorkerThinkingRule {
+                model: "gemini-4-argon".to_string(),
+                thinking_level: "high".to_string(),
+            },
+        ),
+        (
+            "backend".to_string(),
+            WorkerThinkingRule {
+                model: "gemini-4-hydrogen".to_string(),
+                thinking_level: "high".to_string(),
+            },
+        ),
+        (
+            "frontend".to_string(),
+            WorkerThinkingRule {
+                model: "gemini-4-hydrogen".to_string(),
+                thinking_level: "medium".to_string(),
+            },
+        ),
+        (
+            "qa".to_string(),
+            WorkerThinkingRule {
+                model: "gemini-4-argon".to_string(),
+                thinking_level: "high".to_string(),
+            },
+        ),
+        (
+            "research".to_string(),
+            WorkerThinkingRule {
+                model: "gemini-4-hydrogen".to_string(),
+                thinking_level: "low".to_string(),
+            },
+        ),
+    ])
+}
+
+fn default_delegate_mode() -> String {
+    "async-default".to_string()
+}
+
+fn default_on_acp_session_dead() -> String {
+    "advise-new-thread".to_string()
+}
+
+fn default_forbidden_patterns() -> Vec<String> {
+    vec![
+        "orquestrar+implementar no mesmo chat".to_string(),
+        "4 ACP simultâneos neste perfil".to_string(),
+        "thinking high no pai".to_string(),
+        "continuar thread após provider_error AcpRequestError".to_string(),
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPolicy {
+    #[serde(default = "default_hardware_profile")]
+    pub hardware_profile: String,
+    #[serde(default = "default_max_concurrent_antigravity_workers")]
+    pub max_concurrent_antigravity_workers: u32,
+    #[serde(default = "default_max_concurrent_workers_total")]
+    pub max_concurrent_workers_total: u32,
+    #[serde(default = "default_parent_max_turns_before_handoff")]
+    pub parent_max_turns_before_handoff: u32,
+    #[serde(default = "default_parent_max_items_before_handoff")]
+    pub parent_max_items_before_handoff: u32,
+    #[serde(default = "default_parent_warn_input_tokens")]
+    pub parent_warn_input_tokens: u64,
+    #[serde(default = "default_parent_hard_input_tokens")]
+    pub parent_hard_input_tokens: u64,
+    #[serde(default = "default_parent_thinking_level")]
+    pub parent_thinking_level: String,
+    #[serde(default = "default_worker_thinking_by_kind")]
+    pub worker_thinking_by_kind: BTreeMap<String, WorkerThinkingRule>,
+    #[serde(default = "default_delegate_mode")]
+    pub delegate_mode: String,
+    #[serde(default = "default_on_acp_session_dead")]
+    pub on_acp_session_dead: String,
+    #[serde(default = "default_forbidden_patterns")]
+    pub forbidden_patterns: Vec<String>,
+}
+
+impl Default for SessionPolicy {
+    fn default() -> Self {
+        Self {
+            hardware_profile: default_hardware_profile(),
+            max_concurrent_antigravity_workers: default_max_concurrent_antigravity_workers(),
+            max_concurrent_workers_total: default_max_concurrent_workers_total(),
+            parent_max_turns_before_handoff: default_parent_max_turns_before_handoff(),
+            parent_max_items_before_handoff: default_parent_max_items_before_handoff(),
+            parent_warn_input_tokens: default_parent_warn_input_tokens(),
+            parent_hard_input_tokens: default_parent_hard_input_tokens(),
+            parent_thinking_level: default_parent_thinking_level(),
+            worker_thinking_by_kind: default_worker_thinking_by_kind(),
+            delegate_mode: default_delegate_mode(),
+            on_acp_session_dead: default_on_acp_session_dead(),
+            forbidden_patterns: default_forbidden_patterns(),
+        }
+    }
+}
+
+/// Forces `parent_thinking_level` down to `"medium"` on `laptop-8gb` whenever configured as `"high"` or `"xhigh"`.
+pub fn effective_parent_thinking_level(policy: &SessionPolicy) -> String {
+    let configured = policy.parent_thinking_level.trim();
+    if policy.hardware_profile == "laptop-8gb" && matches!(configured, "high" | "xhigh") {
+        return "medium".to_string();
+    }
+    if configured.is_empty() {
+        "medium".to_string()
+    } else {
+        configured.to_string()
+    }
+}
+
+fn thinking_rank(level: &str) -> u8 {
+    match level {
+        "low" => 1,
+        "medium" => 2,
+        "high" => 3,
+        "xhigh" => 4,
+        _ => 2,
+    }
+}
+
+/// Normalizes orchestrator options and applies `effective_parent_thinking_level(&preset.session_policy)`.
+pub fn effective_orchestrator_options(preset: &PresetConfig) -> BTreeMap<String, String> {
+    let mut normalized = BTreeMap::new();
+    for (k, v) in &preset.orchestrator.options {
+        if k == "thinkingLevel" {
+            normalized
+                .entry("thinking_level".to_string())
+                .or_insert_with(|| v.clone());
+        } else {
+            normalized.insert(k.clone(), v.clone());
+        }
+    }
+
+    let eff_level = effective_parent_thinking_level(&preset.session_policy);
+    if preset.orchestrator.provider_instance_id.starts_with("antigravity")
+        || preset.orchestrator.model.starts_with("gemini-4-")
+        || normalized.contains_key("thinking_level")
+    {
+        normalized.insert("thinking_level".to_string(), eff_level);
+    } else if let Some(current_effort) = normalized.get("reasoningEffort").cloned() {
+        if thinking_rank(&eff_level) < thinking_rank(&current_effort) {
+            normalized.insert("reasoningEffort".to_string(), eff_level);
+        }
+    }
+
+    normalized
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PresetConfig {
@@ -199,6 +405,8 @@ pub struct PresetConfig {
     pub fallback_chain: Vec<FallbackStep>,
     #[serde(default)]
     pub contention: ContentionPolicy,
+    #[serde(default)]
+    pub session_policy: SessionPolicy,
     #[serde(default)]
     pub roles: BTreeMap<String, RoleConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -269,6 +477,101 @@ pub struct SubagentActivity {
     pub settled_at: Option<String>,
 }
 
+fn default_health_status() -> String {
+    "ok".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentThreadHealth {
+    pub thread_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub run_count: u32,
+    pub item_count: u32,
+    pub status: String,
+    pub last_error: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSessionHealth {
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default = "default_health_status")]
+    pub status: String,
+    #[serde(default)]
+    pub active_antigravity_workers: u32,
+    #[serde(default)]
+    pub active_workers_total: u32,
+    #[serde(default = "default_max_concurrent_antigravity_workers")]
+    pub max_concurrent_antigravity_workers: u32,
+    #[serde(default = "default_max_concurrent_workers_total")]
+    pub max_concurrent_workers_total: u32,
+    #[serde(default)]
+    pub ram_warning: bool,
+    #[serde(default)]
+    pub fat_parent_threads: Vec<ParentThreadHealth>,
+    #[serde(default)]
+    pub dead_acp_threads: Vec<ParentThreadHealth>,
+    #[serde(default)]
+    pub advisory: Option<String>,
+}
+
+impl Default for ProjectSessionHealth {
+    fn default() -> Self {
+        Self {
+            project_id: String::new(),
+            status: default_health_status(),
+            active_antigravity_workers: 0,
+            active_workers_total: 0,
+            max_concurrent_antigravity_workers: default_max_concurrent_antigravity_workers(),
+            max_concurrent_workers_total: default_max_concurrent_workers_total(),
+            ram_warning: false,
+            fat_parent_threads: Vec::new(),
+            dead_acp_threads: Vec::new(),
+            advisory: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSessionHealth {
+    #[serde(default = "default_health_status")]
+    pub status: String,
+    #[serde(default)]
+    pub active_antigravity_workers: u32,
+    #[serde(default)]
+    pub active_workers_total: u32,
+    #[serde(default = "default_max_concurrent_antigravity_workers")]
+    pub max_concurrent_antigravity_workers: u32,
+    #[serde(default = "default_max_concurrent_workers_total")]
+    pub max_concurrent_workers_total: u32,
+    #[serde(default)]
+    pub ram_warning: bool,
+    #[serde(default)]
+    pub affected_projects: Vec<String>,
+    #[serde(default)]
+    pub advisory: Option<String>,
+}
+
+impl Default for GlobalSessionHealth {
+    fn default() -> Self {
+        Self {
+            status: default_health_status(),
+            active_antigravity_workers: 0,
+            active_workers_total: 0,
+            max_concurrent_antigravity_workers: default_max_concurrent_antigravity_workers(),
+            max_concurrent_workers_total: default_max_concurrent_workers_total(),
+            ram_warning: false,
+            affected_projects: Vec::new(),
+            advisory: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
@@ -287,6 +590,8 @@ pub struct ProjectSummary {
     pub detected_squad_slug: Option<String>,
     pub detected_squad_path: Option<String>,
     pub active_subagent_count: usize,
+    #[serde(default)]
+    pub session_health: ProjectSessionHealth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -332,6 +637,8 @@ pub struct DashboardSnapshot {
     pub fallback_model_selection: Option<T3ModelSelection>,
     pub sqlite_available: bool,
     pub settings_available: bool,
+    #[serde(default)]
+    pub session_health: GlobalSessionHealth,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_global_swap_report: Option<GlobalSwapReport>,
 }

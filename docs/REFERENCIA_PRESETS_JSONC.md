@@ -52,7 +52,7 @@ Todos os objetos são serializados em `camelCase` (`#[serde(rename_all = "camelC
 
 ### Regras de validação de identificadores (`validate_safe_id`)
 
-Todo `id` de preset, valor de `extends`, chave em `roles` e nome de arquivo de preset ou papel passa por `validate_safe_id` antes de qualquer leitura ou escrita em disco:
+Todo `id` de preset, valor de `extends`, chave em `roles`, chave em `sessionPolicy.workerThinkingByKind` e nome de arquivo de preset ou papel passa por `validate_safe_id` antes de qualquer leitura ou escrita em disco:
 
 - Comprimento obrigatório entre `1` e `64` caracteres.
 - Caracteres permitidos: apenas `[a-zA-Z0-9_-]` (ASCII alfanumérico, hífen e underscore).
@@ -90,6 +90,7 @@ Define a estrutura completa de um preset de orquestração, sua cadeia de fallba
 | `orchestrator` | `OrchestratorSelection` | `{}` | Instância, modelo e opções do agente orquestrador principal |
 | `fallbackChain` | `FallbackStep[]` | `[]` | Lista ordenada de contingência usada quando cota ou disponibilidade falham |
 | `contention` | `ContentionPolicy` | Padrões de `shared` | Política de paralelismo, banco de testes, variáveis de ambiente e arquivos críticos |
+| `sessionPolicy` | `SessionPolicy` | Padrões de `SessionPolicy` | Política de sessão, perfil de RAM, limites de concorrência, handoff do chat pai e thinking dos workers |
 | `roles` | `Record<string, RoleConfig>` | `{}` | Mapa ordenado (`BTreeMap`) dos papéis especializados compilados em `roles/*.md` |
 | `disabledRoles` | `string[]` | `[]` *(omitido quando vazio)* | Lista ordenada e deduplicada (tombstone) de IDs de papéis herdados via `extends` que devem ser suprimidos (`validate_safe_id`) |
 
@@ -109,7 +110,7 @@ Ambos os objetos especificam qual instância de provedor e qual modelo o T3 Code
   "providerInstanceId": "antigravity_2",
   "model": "gemini-4-hydrogen",
   "options": {
-    "thinking_level": "high"
+    "thinking_level": "medium"
   }
 },
 "fallbackChain": [
@@ -132,7 +133,55 @@ Documenta no `SKILL.md` compilado os limites de concorrência do repositório pa
 | `envVars` | `Record<string, string>` | `{}` | Variáveis de ambiente obrigatórias impressas no playbook (ex.: `PARALLEL_WORKERS=1`) |
 | `gitIgnoredBuilds` | `string[]` | `[]` | Diretórios de build fora do controle de versão (ex.: `target/`, `dist/`) |
 | `conflictFiles` | `string[]` | `[]` | Arquivos de alta contenção que exigem ondas sequenciais (ex.: `Cargo.toml`, `package.json`) |
-| `defaultIsolation` | `string` | `"shared"` | Modo padrão de workspace para subagentes (`"shared"` ou `"worktree"`) |
+| `defaultIsolation` | `string` | `"shared"` | Modo padrão de workspace para subagentes (`"shared"` ou `"worktree"`). Também reutilizado como dica de isolamento pela política de sessão |
+
+### `SessionPolicy` e `WorkerThinkingRule`
+
+Controla o orçamento de RAM/concorrência por perfil de hardware, os limiares de handoff do chat pai (usados na saúde de sessão `ParentThreadHealth`, `ProjectSessionHealth` e `GlobalSessionHealth`), o *clamp* de raciocínio do orquestrador e o roteamento de modelo/thinking por tipo de sub-tarefa (`workerThinkingByKind`).
+
+| Campo | Tipo | Padrão | Valores / Observações |
+| :--- | :--- | :--- | :--- |
+| `hardwareProfile` | `string` | `"laptop-8gb"` | `"laptop-8gb"`, `"desktop-16gb"`, `"desktop-32gb-plus"` (ou string customizada). Helper `default_max_antigravity_for_profile`: `laptop-8gb` → `2`, `desktop-16gb` → `3`, `desktop-32gb-plus` → `4` |
+| `maxConcurrentAntigravityWorkers` | `number` (`u32`) | `2` | Teto simultâneo de workers em instâncias Antigravity (ACP) por onda |
+| `maxConcurrentWorkersTotal` | `number` (`u32`) | `3` | Teto simultâneo total de workers por onda somando todos os provedores |
+| `parentMaxTurnsBeforeHandoff` | `number` (`u32`) | `15` | Limite de turns no chat pai antes de recomendar handoff (`memory_handoff_begin`) |
+| `parentMaxItemsBeforeHandoff` | `number` (`u32`) | `120` | Limite de itens acumulados no chat pai antes do handoff |
+| `parentWarnInputTokens` | `number` (`u64`) | `200000` | Limiar de aviso de tokens de entrada no chat pai |
+| `parentHardInputTokens` | `number` (`u64`) | `700000` | Limiar crítico para handoff obrigatório do chat pai |
+| `parentThinkingLevel` | `string` | `"medium"` | `"low"`, `"medium"`, `"high"` ou `"xhigh"`. Em `"laptop-8gb"`, valores `"high"` e `"xhigh"` são sempre rebaixados para `"medium"` por `effective_parent_thinking_level` |
+| `workerThinkingByKind` | `Record<string, WorkerThinkingRule>` | 5 tipos padrão (`architecture`, `backend`, `frontend`, `qa`, `research`) | Mapa ordenado (`BTreeMap`) de regras de modelo e thinking por tipo de tarefa; todas as chaves passam por `validate_safe_id` |
+| `delegateMode` | `string` | `"async-default"` | Modo padrão de delegação orientado no playbook (`"async-default"`, etc.) |
+| `onAcpSessionDead` | `string` | `"advise-new-thread"` | Ação recomendada quando uma sessão ACP morre (`provider_error` / `AcpRequestError` ou falha em `< 1000ms`) |
+| `forbiddenPatterns` | `string[]` | 4 padrões padrão *(ver abaixo)* | Lista de anti-padrões impressa na Seção 5 do `SKILL.md` compilado |
+
+#### `WorkerThinkingRule` e defaults de `workerThinkingByKind`
+
+Cada entrada de `workerThinkingByKind` usa o tipo `WorkerThinkingRule` com dois campos em `camelCase`:
+
+| Campo | Tipo | Padrão | Descrição |
+| :--- | :--- | :--- | :--- |
+| `model` | `string` | `""` | Modelo recomendado para aquele tipo de sub-tarefa (ex.: `"gemini-4-hydrogen"`, `"gemini-4-argon"`) |
+| `thinkingLevel` | `string` | `""` | Nível de raciocínio recomendado (`"low"`, `"medium"`, `"high"`, `"xhigh"`). Campo próprio do schema `WorkerThinkingRule` (não confundir com a chave legada `options.thinkingLevel`) |
+
+Valores padrão em `SessionPolicy::default()`:
+
+| Tipo (`kind`) | `model` | `thinkingLevel` |
+| :--- | :--- | :--- |
+| `"architecture"` | `"gemini-4-argon"` | `"high"` |
+| `"backend"` | `"gemini-4-hydrogen"` | `"high"` |
+| `"frontend"` | `"gemini-4-hydrogen"` | `"medium"` |
+| `"qa"` | `"gemini-4-argon"` | `"high"` |
+| `"research"` | `"gemini-4-hydrogen"` | `"low"` |
+
+Os 4 padrões padrão de `forbiddenPatterns` são:
+- `"orquestrar+implementar no mesmo chat"`
+- `"4 ACP simultâneos neste perfil"`
+- `"thinking high no pai"`
+- `"continuar thread após provider_error AcpRequestError"`
+
+> [!NOTE]
+> **Isolamento efetivo (`contention.defaultIsolation` × concorrência)**: `SessionPolicy` não possui um campo separado `isolationHint` — ela reutiliza `contention.defaultIsolation` (`"shared"` ou `"worktree"`). Ao compilar a Seção 5 do `SKILL.md`, `render_squad_skill_md` cruza `contention.defaultIsolation` com `maxConcurrentAntigravityWorkers` e `maxConcurrentWorkersTotal`: se `defaultIsolation == "worktree"` e qualquer um dos limites `maxConcurrent*` for `<= 1`, a Seção 5 força ondas sequenciais com `isolation: "shared"` para evitar múltiplos worktrees simultâneos.
+
 
 ### `RoleConfig`
 
@@ -173,9 +222,9 @@ Ao combinar o preset pai (`base`) com o arquivo filho (`patch`), o algoritmo apl
 1. **Identificador (`id`)**: usa `patch.id` se presente; caso contrário, usa o `fallback_id` (nome do arquivo ou slug do projeto).
 2. **`name` e `description`**: sobrescrevem o valor do pai apenas quando presentes e não vazios após `.trim()`. Se omitidos, `""` ou só espaços, mantêm o valor do pai.
 3. **`enabled` e `topology`**: sobrescrevem o valor do pai se estiverem presentes no filho.
-4. **Dicionários (`orchestrator.options`, `contention.envVars`, `roles[id].options`)**: sofrem **merge chave a chave**. Chaves novas são inseridas e chaves com mesmo nome sobrescrevem o pai, preservando as demais chaves herdadas.
-5. **Escalar em `orchestrator` e `contention`**: `providerInstanceId`, `model`, `singleTestDb` e `defaultIsolation` substituem o valor do pai quando especificados no filho.
-6. **Vetores (arrays)**: `fallbackChain`, `contention.gitIgnoredBuilds`, `contention.conflictFiles` e todos os arrays de `RoleConfig` (`skills`, `mcps`, `allowedPaths`, `forbiddenPaths`, `invariants`, `verificationCommands`) **substituem integralmente** o array do pai quando especificados no filho; não há concatenação.
+4. **Dicionários (`orchestrator.options`, `contention.envVars`, `roles[id].options`, `sessionPolicy.workerThinkingByKind`)**: sofrem **merge chave a chave**. Chaves novas são inseridas e chaves com mesmo nome sobrescrevem o pai, preservando as demais chaves herdadas. Em `sessionPolicy.workerThinkingByKind`, todas as chaves passam por `validate_safe_id` e cada `WorkerThinkingRulePatch` mescla `model` e `thinkingLevel` individualmente (apenas quando presentes e não vazios após `.trim()`), mantendo o outro campo herdado daquela chave.
+5. **Escalares em `orchestrator`, `contention` e `sessionPolicy`**: `providerInstanceId`, `model`, `singleTestDb`, `defaultIsolation` e os escalares numéricos de `sessionPolicy` (`maxConcurrentAntigravityWorkers`, `maxConcurrentWorkersTotal`, `parentMaxTurnsBeforeHandoff`, `parentMaxItemsBeforeHandoff`, `parentWarnInputTokens`, `parentHardInputTokens`) substituem o valor do pai quando especificados no filho. Os escalares string de `sessionPolicy` (`hardwareProfile`, `parentThinkingLevel`, `delegateMode`, `onAcpSessionDead`) substituem o pai quando presentes e não vazios após `.trim()`.
+6. **Vetores (arrays)**: `fallbackChain`, `contention.gitIgnoredBuilds`, `contention.conflictFiles`, `sessionPolicy.forbiddenPatterns` e todos os arrays de `RoleConfig` (`skills`, `mcps`, `allowedPaths`, `forbiddenPaths`, `invariants`, `verificationCommands`) **substituem integralmente** o array do pai quando especificados no filho; não há concatenação.
 7. **Mapa `roles`**: se `role_id` já existir no pai, os campos definidos em `RolePatch` são mesclados sobre o papel do pai (preservando os demais campos do papel pai); se `role_id` não existir no pai, um novo papel é criado com `id` e `title` padronizados para `role_id`.
 
 > [!NOTE]
@@ -183,20 +232,20 @@ Ao combinar o preset pai (`base`) com o arquivo filho (`patch`), o algoritmo apl
 
 ### Exemplo prático comentado de `.t3code/preset.jsonc`
 
-O arquivo abaixo demonstra um override de projeto herdando de `default` que mantém `explorer`, `oracle`, `designer` e `qa-reviewer` intactos e personaliza apenas o papel `fixer` e a política de contenção:
+O arquivo abaixo demonstra um override de projeto herdando de `default` que mantém `explorer`, `oracle`, `designer` e `qa-reviewer` intactos e personaliza o papel `fixer`, a política de contenção e parte de `sessionPolicy`:
 
 ```jsonc
 // Salve em <workspace_root>/.t3code/preset.jsonc
 {
   "id": "meu-projeto",
   "name": "Meu Projeto (Custom)",
-  "description": "Herda de default e ajusta banco único de testes e comandos de verificação do fixer.",
+  "description": "Herda de default e ajusta banco único de testes, sessionPolicy e comandos do fixer.",
   "extends": "default",
   "enabled": true,
   "orchestrator": {
     // Mantém providerInstanceId ("codex") e model ("gpt-6.1-sol") do pai; merge chave a chave em options
     "options": {
-      "reasoningEffort": "high",
+      "reasoningEffort": "medium",
     },
   },
   "contention": {
@@ -207,6 +256,16 @@ O arquivo abaixo demonstra um override de projeto herdando de `default` que mant
     },
     // Substitui conflictFiles herdado do pai
     "conflictFiles": ["Cargo.toml", "package.json", "Makefile"],
+  },
+  "sessionPolicy": {
+    // Escalar numérico substitui o valor do pai (15 -> 12)
+    "parentMaxTurnsBeforeHandoff": 12,
+    // Merge chave a chave: ajusta apenas "frontend", preservando research/backend/architecture/qa do pai
+    "workerThinkingByKind": {
+      "frontend": {
+        "thinkingLevel": "high", // mantém model ("gemini-4-hydrogen") herdado do pai
+      },
+    },
   },
   "roles": {
     "fixer": {
@@ -225,17 +284,22 @@ O arquivo abaixo demonstra um override de projeto herdando de `default` que mant
 }
 ```
 
-## Preset integrado padrão (`default`) e presets customizados
+## Presets integrados (`default`, `agy-dual`, `codex-squad`, `hybrid-agy-codex`) e presets customizados
 
-Na inicialização (ou ao listar presets), `ensure_seed_presets` garante a presença do preset base **`default` (`Default (OMOS Standard)`)** em `~/.config/oh-my-t3code/presets/default.jsonc`, populado com os cinco papéis canônicos inspirados no `oh-my-opencode-slim` (OMOS): `explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`.
+Na inicialização (ou ao listar presets), `ensure_seed_presets` garante a presença dos 4 presets integrados em `~/.config/oh-my-t3code/presets/`: **`default` (`Default (OMOS Standard)`)**, **`agy-dual` (`Agy Dual (Veca + Principal)`)**, **`codex-squad` (`Codex Squad (Issue Threads)`)** e **`hybrid-agy-codex` (`Hybrid (Agy + Codex)`)**. Todos trazem os cinco papéis canônicos inspirados no `oh-my-opencode-slim` (OMOS) (`explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`) e `SessionPolicy::default()` preenchido (`hardwareProfile: "laptop-8gb"`, `maxConcurrentAntigravityWorkers: 2`, `maxConcurrentWorkersTotal: 3`, `parentThinkingLevel: "medium"`, `workerThinkingByKind` completo).
 
-Além do `default`, o diretório `~/.config/oh-my-t3code/presets/` aceita qualquer preset customizado criado pelo usuário (via Preset Studio ou arquivos `.jsonc` editados manualmente), permitindo definir outras combinações de provedores/modelos ou estender `default` com `"extends": "default"`.
+Nos presets baseados em Antigravity (`agy-dual` e `hybrid-agy-codex`), o orquestrador vem configurado em `antigravity_2` / `gemini-4-hydrogen` com `thinking_level: "medium"` para evitar sobrecarga de memória e contexto no chat pai.
 
-### Visão geral e estratégia de fallback do preset `default`
+Além dos 4 presets integrados, o diretório `~/.config/oh-my-t3code/presets/` aceita qualquer preset customizado criado pelo usuário (via Preset Studio ou arquivos `.jsonc` editados manualmente), permitindo definir outras combinações de provedores/modelos ou estender qualquer seed com `"extends": "<id>"`.
 
-| Preset (`id`) | Nome | Orquestrador | Topologia | `ContentionPolicy` | Fallback Chain (ordem 1 → 2 → 3) |
+### Visão geral dos presets integrados
+
+| Preset (`id`) | Nome | Orquestrador | Topologia | `ContentionPolicy` & `SessionPolicy` | Fallback Chain (ordem 1 → 2 → 3) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `default` | `Default (OMOS Standard)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=medium`, `serviceTier=default`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, builds `target/`, `dist/`, conflitos `package.json`, `Cargo.toml`, `tauri.conf.json` | 1. `codex` / `gpt-6.1-terra` (`high`)<br>2. `codex` / `gpt-6-astra` (`high`)<br>3. `codex` / `gpt-6-luna` (`medium`) |
+| `default` | `Default (OMOS Standard)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=medium`, `serviceTier=default`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3, `parentThinkingLevel: "medium"`) | 1. `codex` / `gpt-6.1-terra` (`high`)<br>2. `codex` / `gpt-6-astra` (`high`)<br>3. `codex` / `gpt-6-luna` (`medium`) |
+| `agy-dual` | `Agy Dual (Veca + Principal)` | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=medium`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3, `parentThinkingLevel: "medium"`) | 1. `antigravity` / `gemini-4-hydrogen` (`high`)<br>2. `antigravity_2` / `gemini-4-argon` (`high`)<br>3. `antigravity` / `gemini-4-argon` (`medium`) |
+| `codex-squad` | `Codex Squad (Issue Threads)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=high`, `serviceTier=default`) | `issue-thread-orchestrator` | `singleTestDb: true` (`PARALLEL_WORKERS=1`), `defaultIsolation: "shared"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3) | 1. `codex` / `gpt-6.1-sol` (`medium`)<br>2. `codex` / `gpt-6.1-terra` (`medium`)<br>3. `codex` / `gpt-6-astra` (`high`) |
+| `hybrid-agy-codex` | `Hybrid (Agy + Codex)` | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=medium`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "worktree"`, `laptop-8gb` (ACP ≤ 2, total ≤ 3, `parentThinkingLevel: "medium"`) | 1. `antigravity` / `gemini-4-hydrogen` (`high`)<br>2. `codex` / `gpt-6.1-sol` (`high`)<br>3. `antigravity_2` / `gemini-4-argon` (`high`) |
 
 ### Os 5 papéis canônicos OMOS no preset `default`
 
@@ -247,11 +311,11 @@ Além do `default`, o diretório `~/.config/oh-my-t3code/presets/` aceita qualqu
 | `fixer` | `codex` / `gpt-6.1-sol` | `low` | Implementação focada, correções e verificação local |
 | `qa-reviewer` | `codex` / `gpt-6-astra` | `high` | Auditoria de qualidade, segurança e execução de testes |
 
-### Regra de auto-reparo e migração do preset integrado
+### Regra de auto-reparo e migração dos presets integrados
 
-A função `ensure_seed_presets` em [`preset_engine.rs`](../src-tauri/src/preset_engine.rs) preserva edições do usuário no preset `default`, mas regrava automaticamente o arquivo se detectar qualquer uma das três condições de legado ou corrupção:
+A função `ensure_seed_presets` em [`preset_engine.rs`](../src-tauri/src/preset_engine.rs) preserva edições do usuário nos 4 presets integrados, mas regrava automaticamente o arquivo se detectar qualquer uma das três condições de legado ou corrupção:
 
-1. Presença da chave legada `"thinkingLevel"` em camelCase.
+1. Presença da chave legada `"thinkingLevel"` em camelCase dentro dos mapas `options` — verificada por `has_legacy_thinking_level_options`, que faz parse tipado com `parse_jsonc_preset` e inspeciona **apenas** `orchestrator.options`, `fallbackChain[*].options` e `roles[*].options`. Assim, o campo legítimo `sessionPolicy.workerThinkingByKind[*].thinkingLevel` **não** gera falso positivo no auto-reparo.
 2. Sequências de mojibake UTF-8 decodificadas como Latin-1 detectadas por `looks_like_mojibake` (por exemplo `NÃvel`, `instÃ¢ncia`, `â↔`).
 3. JSONC inválido ou ausência de qualquer um dos cinco papéis canônicos OMOS (`explorer`, `oracle`, `designer`, `fixer`, `qa-reviewer`).
 
@@ -263,21 +327,25 @@ Esses três módulos fecham o ciclo entre a declaração declarativa em JSONC, o
 
 ### Preset Compiler (`compiler.rs`)
 
-Dado um `PresetConfig` resolvido e um `workspace_root`, o compiler valida os identificadores, verifica que todo caminho de saída permanece dentro do workspace (`ensure_within_workspace`) e gera saída 100% determinística usando `BTreeMap` (zero timestamps ou UUIDs):
+Dado um `PresetConfig` resolvido e um `workspace_root`, o compiler valida os identificadores (incluindo as chaves de `sessionPolicy.workerThinkingByKind` via `validate_worker_thinking_keys`), verifica que todo caminho de saída permanece dentro do workspace (`ensure_within_workspace`) e gera saída 100% determinística usando `BTreeMap` (zero timestamps ou UUIDs):
 
 - **`<workspace>/.t3code/preset.jsonc`**: serializa o preset do projeto com cabeçalho `// Oh My T3Code project preset`.
-- **`<workspace>/.agents/skills/<slug>-squad/SKILL.md`**: gera frontmatter YAML (`name: <slug>-squad`, `description`) seguido pela assinatura `# <slug> Squad — Playbook do Orquestrador (T3 Code)` e quatro seções fixas (`1. Preparação do Orquestrador`, `2. Papéis da Squad (roles/)`, `3. Topologia, Contenção & Isolamento` e `4. Cadeia de Fallback`).
+- **`<workspace>/.agents/skills/<slug>-squad/SKILL.md`**: gera frontmatter YAML (`name: <slug>-squad`, `description`) seguido pela assinatura `# <slug> Squad — Playbook do Orquestrador (T3 Code)` e cinco seções fixas (`1. Preparação do Orquestrador`, `2. Papéis da Squad (roles/)`, `3. Topologia, Contenção & Isolamento`, `4. Cadeia de Fallback` e `5. Gestão de sessão e concorrência (oh-my-t3code)`).
 - **`<workspace>/.agents/skills/<slug>-squad/roles/<role-id>.md`**: gera um arquivo por papel contendo cabeçalho `# Role: <title> (<slug>)`, `## Modelo & Instância`, `## Escopo de arquivos`, `## Skills e MCPs recomendados`, `## Regras e Invariantes do Projeto` e `## Verificação obrigatória antes de concluir`.
 
-Tanto o compiler quanto o sincronizador de `settings.json` aplicam normalização automática da chave legada `thinkingLevel` para `thinking_level` (`normalize_options`). Além disso, `t3_reader.rs` usa a presença exata da string `— Playbook do Orquestrador (T3 Code)` no `SKILL.md` para distinguir squads geradas pelo compiler de squads manuais externos.
+Na renderização do `SKILL.md`, a Seção 5 (`## 5. Gestão de sessão e concorrência (oh-my-t3code)`) imprime o perfil de hardware, os limites simultâneos de workers (ACP e total), os limiares de handoff do chat pai (turns, itens e tokens warn/hard), o thinking efetivo do chat pai (`effective_parent_thinking_level`), o `delegateMode`, a ação `onAcpSessionDead`, a tabela `workerThinkingByKind`, os `forbiddenPatterns` e as 8 regras operacionais obrigatórias — incluindo o cruzamento entre `contention.defaultIsolation` e `maxConcurrent*` (forçando ondas sequenciais com `isolation: "shared"` caso `defaultIsolation == "worktree"` e algum limite de concorrência seja `<= 1`).
+
+Além disso, `effective_parent_thinking_level` e `effective_orchestrator_options` aplicam *clamp* automático: quando `hardwareProfile == "laptop-8gb"`, valores `"high"` ou `"xhigh"` no chat pai são sempre rebaixados para `"medium"` tanto no cabeçalho `Orquestrador` quanto na Seção 5 do `SKILL.md`. Tanto o compiler quanto o sincronizador de `settings.json` também normalizam a chave legada `thinkingLevel` para `thinking_level` (`normalize_options`). Por fim, `t3_reader.rs` usa a presença exata da string `— Playbook do Orquestrador (T3 Code)` no `SKILL.md` para distinguir squads geradas pelo compiler de squads manuais externos.
 
 ### Sincronização de `settings.json` (`settings_sync.rs`)
 
 Todas as mutações em `~/.t3/userdata/settings.json` criam primeiro um backup exato dos bytes originais em `~/.t3/userdata/settings.json.bak` via escrita atômica e preservam integralmente todas as chaves não gerenciadas (como `favorites`, `providerInstances` e chaves desconhecidas):
 
-- **Sync global (`sync_global_settings`)**: atualiza `defaultModelSelection` a partir de `preset.orchestrator` e `fallbackModelSelection` a partir de `preset.fallbackChain[0]` (quando existe ao menos uma etapa de fallback).
-- **Sync de projeto (`sync_project_settings`)**: atualiza apenas `projectSettingsOverrides[projectId].defaultModelSelection`, preservando outras chaves já presentes no objeto daquele projeto e overrides de outros projetos.
+- **Sync global (`sync_global_settings`)**: atualiza `defaultModelSelection` a partir de `preset.orchestrator` com opções filtradas por `effective_orchestrator_options(preset)`, e `fallbackModelSelection` a partir de `preset.fallbackChain[0]` (quando existe ao menos uma etapa de fallback).
+- **Sync de projeto (`sync_project_settings`)**: atualiza apenas `projectSettingsOverrides[projectId].defaultModelSelection` via `build_project_override_value` (também usando `effective_orchestrator_options(preset)`), preservando outras chaves já presentes no objeto daquele projeto e overrides de outros projetos.
 - **Remoção de override (`remove_project_settings_override`)**: remove `projectSettingsOverrides[projectId]` após salvar o backup `.bak`.
+
+Por causa de `effective_orchestrator_options`, quando `hardwareProfile == "laptop-8gb"`, o `defaultModelSelection` emitido em `settings.json` (global ou por projeto) **nunca** emite `thinking_level: "high"` nem `"xhigh"` para o orquestrador (rebaixando para `"medium"`), e também limita `reasoningEffort` caso seu nível exceda `effective_parent_thinking_level`; em perfis como `"desktop-16gb"` ou `"desktop-32gb-plus"`, `"high"` e `"xhigh"` são preservados.
 
 Em `settings.json`, o objeto `options` de cada `ModelSelection` é convertido de mapa `Record<string, string>` para o formato de array do T3 Code (`[{ "id": "<chave>", "value": "<valor>" }]`), com `thinkingLevel` normalizado para `thinking_level`.
 
@@ -286,9 +354,10 @@ Em `settings.json`, o objeto `options` de cada `ModelSelection` é convertido de
 Quando um projeto já possui uma squad manual em `<workspace>/.agents/skills/*-squad/` sem `.t3code/preset.jsonc`, o comando `import_project_squad` executa `import_existing_squad`:
 
 1. Localiza o primeiro diretório `*-squad` em `.agents/skills/` em ordem alfabética que contenha `SKILL.md`.
-2. Infere o preset base pelo conteúdo de `SKILL.md`: detecta o provedor predominante declarado na squad existente (por exemplo, `codex`, `antigravity` ou outro provedor configurado) para definir o `extends` inicial (como `default` ou um preset compatível) e importa os papéis encontrados em `roles/*.md`.
+2. Infere o preset base pelo conteúdo de `SKILL.md`: detecta o provedor predominante declarado na squad existente (por exemplo, `codex`, `antigravity` ou outro provedor configurado) para definir o `extends` inicial (`codex-squad` ou `agy-dual`) e importa os papéis encontrados em `roles/*.md`.
 3. Percorre `roles/*.md` validando os nomes de arquivo com `validate_safe_id` e extrai título, descrição, `whenToUse`, instância, modelo, opções (`thinkingLevel` normalizado para `thinking_level`), skills, MCPs, `allowedPaths`, `forbiddenPaths`, `invariants` e `verificationCommands`.
 4. Detecta heurísticas de modelo no corpo do Markdown (`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gemini-4-argon`, `gemini-4-hydrogen`) e pistas de contenção no `SKILL.md` (`parallel_workers=1` ou `banco único` ativam `singleTestDb: true`; `isolation: "worktree"` sem `isolation: "shared"` define `defaultIsolation: "worktree"`).
-5. Grava `.t3code/preset.jsonc` com `id: <project_slug>` e `extends: <base_preset_id>`.
+5. Extrai política de sessão de `SKILL.md` no formato **`t3-global`** via `parse_t3_global_session_policy`: ao identificar marcadores `t3-global`, `matriz padrão de distribuição` (`matriz padrao de distribuicao`) ou tabela com `thinking_level` e `tipo de tarefa`, lê as linhas da tabela mapeando os tipos (`research`, `architecture`, `frontend`, `backend`, `qa`) para `sessionPolicy.workerThinkingByKind` com `(model, thinkingLevel)`, define `sessionPolicy.parentThinkingLevel: "medium"` e, quando o orquestrador é Antigravity ou `gemini-4-hydrogen`, força `orchestrator.options.thinking_level = "medium"` (removendo eventual `thinkingLevel` legado).
+6. Grava `.t3code/preset.jsonc` com `id: <project_slug>` e `extends: <base_preset_id>`.
 
 Para o passo a passo operacional na interface, consulte o [Guia de Uso](GUIA_DE_USO.md). Para detalhes sobre arquitetura interna, invariantes de segurança, catálogo dos 15 comandos IPC e guia de resolução de problemas, consulte [Arquitetura e Troubleshooting](ARQUITETURA_E_TROUBLESHOOTING.md) e [Máquinas de Estado](STATE_MACHINES.md).

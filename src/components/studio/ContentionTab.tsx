@@ -1,8 +1,10 @@
 import { ShieldAlert } from "lucide-react";
+import { createDefaultSessionPolicy } from "../../lib/preset-utils";
 import { KeyValueEditor } from "../ui/KeyValueEditor";
 import { Select } from "../ui/Select";
 import { StringListEditor } from "../ui/StringListEditor";
 import type { ContentionPolicy, PresetConfig } from "../../types/ipc";
+import { SessionPolicySection } from "./SessionPolicySection";
 
 interface ContentionTabProps {
   preset: PresetConfig;
@@ -20,8 +22,20 @@ export function ContentionTab({ preset, onChange }: ContentionTabProps) {
     });
   };
 
+  const sessionPolicy = preset.sessionPolicy ?? createDefaultSessionPolicy();
+
   return (
     <div className="space-y-5">
+      <SessionPolicySection
+        sessionPolicy={sessionPolicy}
+        onChange={(nextSessionPolicy) =>
+          onChange({
+            ...preset,
+            sessionPolicy: nextSessionPolicy,
+          })
+        }
+      />
+
       <section className="surface-panel rounded-2xl p-5 space-y-5">
         <div className="flex items-start gap-2.5">
           <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border border-amber-400/30 bg-amber-500/15 text-amber-300">

@@ -2,16 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   ArrowLeftRight,
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Cpu,
   Download,
   FolderGit2,
   Globe,
   Layers,
   Lock,
+  MessageSquarePlus,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -25,10 +28,14 @@ import { Select } from "../components/ui/Select";
 import { StatusToggle } from "../components/ui/StatusToggle";
 import { invokeIpc, listenSnapshotUpdated } from "../lib/ipc-client";
 import {
+  buildSessionHandoffPrompt,
+  copyTextToClipboard,
   formatGlobalSwapFeedback,
+  formatProjectSessionSummary,
   formatProjectSwapFeedback,
   formatRelativeTime,
   formatSubagentStatusLabel,
+  getSessionHealthMeta,
   getSubagentStatusTone,
   isSubagentActive,
   resolveInstanceShortLabel,
@@ -99,6 +106,9 @@ export function PopoverView() {
     null,
   );
   const [syncedProjectIds, setSyncedProjectIds] = useState<Record<string, boolean>>({});
+  const [copiedHandoffProjectIds, setCopiedHandoffProjectIds] = useState<
+    Record<string, boolean>
+  >({});
   const [configuringProject, setConfiguringProject] = useState(false);
   const [newOverrideProjectId, setNewOverrideProjectId] = useState("");
   const [newOverridePresetId, setNewOverridePresetId] = useState("");
@@ -116,15 +126,19 @@ export function PopoverView() {
   const loadSeqRef = useRef(0);
   const lastSyncedPresetRef = useRef<Record<string, string>>({});
   const syncedTimersRef = useRef<Map<string, number>>(new Map());
+  const handoffTimersRef = useRef<Map<string, number>>(new Map());
   const isMountedRef = useRef(true);
 
   useEffect(() => {
     isMountedRef.current = true;
     const timers = syncedTimersRef.current;
+    const handoffTimers = handoffTimersRef.current;
     return () => {
       isMountedRef.current = false;
       timers.forEach((timerId) => window.clearTimeout(timerId));
       timers.clear();
+      handoffTimers.forEach((timerId) => window.clearTimeout(timerId));
+      handoffTimers.clear();
     };
   }, []);
 
@@ -711,6 +725,51 @@ export function PopoverView() {
     }
   };
 
+  const handleCopyHandoffPrompt = useCallback(
+    async (project: ProjectSummary) => {
+      const currentSnapshot = snapshotRef.current;
+      const activeGlobal = currentSnapshot
+        ? currentSnapshot.globalPresets.find(
+            (p) => p.id === currentSnapshot.globalConfig.activeGlobalPresetId,
+          ) ?? currentSnapshot.globalPresets[0]
+        : null;
+      const prompt = buildSessionHandoffPrompt({
+        project,
+        sessionPolicy: activeGlobal?.sessionPolicy,
+        globalPresetId: currentSnapshot?.globalConfig.activeGlobalPresetId,
+      });
+
+      const copied = await copyTextToClipboard(prompt);
+      const prevTimer = handoffTimersRef.current.get(project.projectId);
+      if (prevTimer !== undefined) {
+        window.clearTimeout(prevTimer);
+        handoffTimersRef.current.delete(project.projectId);
+      }
+
+      if (copied) {
+        setCopiedHandoffProjectIds((prev) => ({ ...prev, [project.projectId]: true }));
+        setStatusMessage(
+          "Prompt de handoff copiado para a área de transferência — abra um thread pai novo no T3 Code.",
+        );
+        if (isMountedRef.current) {
+          const timerId = window.setTimeout(() => {
+            handoffTimersRef.current.delete(project.projectId);
+            setCopiedHandoffProjectIds((prev) => ({
+              ...prev,
+              [project.projectId]: false,
+            }));
+          }, 2600);
+          handoffTimersRef.current.set(project.projectId, timerId);
+        }
+      } else {
+        setStatusMessage(
+          "Prompt de handoff preparado (área de transferência indisponível) — abra um thread pai novo no T3 Code.",
+        );
+      }
+    },
+    [],
+  );
+
   const globalInstanceId = activeGlobalPreset?.orchestrator.providerInstanceId ?? "codex";
   const globalModel = activeGlobalPreset?.orchestrator.model ?? "gpt-6.1-sol";
   const globalInstanceLabel = snapshot
@@ -821,6 +880,66 @@ export function PopoverView() {
             ))}
           </div>
         </div>
+      ) : null}
+
+      {/* Global Session Health & RAM Monitor Strip */}
+      {snapshot?.sessionHealth ? (
+        (() => {
+          const globalHealth = snapshot.sessionHealth;
+          const globalMeta = getSessionHealthMeta(globalHealth.status);
+          const hardwareProfile = activeGlobalPreset?.sessionPolicy?.hardwareProfile;
+          return (
+            <section
+              aria-label="Saúde global da sessão e RAM"
+              className={[
+                "shrink-0 border-b px-3.5 py-1.5 text-[10px] space-y-1",
+                globalHealth.ramWarning || globalHealth.status === "acp_dead"
+                  ? "border-rose-500/25 bg-rose-500/[0.08]"
+                  : globalHealth.status === "over_concurrency" ||
+                      globalHealth.status === "fat_parent"
+                    ? "border-amber-500/25 bg-amber-500/[0.07]"
+                    : "border-white/[0.06] bg-zinc-950/70",
+              ].join(" ")}
+            >
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <Badge tone={globalMeta.tone} dot>
+                    {globalMeta.label}
+                  </Badge>
+                  <span className="truncate font-medium tabular-nums text-zinc-200">
+                    Agy {globalHealth.activeAntigravityWorkers}/
+                    {globalHealth.maxConcurrentAntigravityWorkers} ·{" "}
+                    {globalHealth.activeWorkersTotal}/
+                    {globalHealth.maxConcurrentWorkersTotal} workers
+                  </span>
+                </div>
+                {hardwareProfile ? (
+                  <span className="shrink-0 rounded border border-white/10 bg-zinc-900/80 px-1.5 py-0.5 font-mono text-[9px] text-zinc-400">
+                    {hardwareProfile}
+                  </span>
+                ) : null}
+              </div>
+
+              {globalHealth.ramWarning ? (
+                <div className="flex items-start gap-1.5 rounded-md border border-rose-400/30 bg-rose-500/12 px-2 py-1 text-[10px] leading-snug text-rose-100">
+                  <AlertTriangle
+                    className="mt-0.5 size-3 shrink-0 text-rose-300"
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1 break-words">
+                    Alerta de RAM (8 GB):{" "}
+                    {globalHealth.advisory ??
+                      `Agy ${globalHealth.activeAntigravityWorkers}/${globalHealth.maxConcurrentAntigravityWorkers} acima do limite seguro.`}
+                  </span>
+                </div>
+              ) : globalHealth.advisory ? (
+                <p className="min-w-0 break-words text-[10px] leading-snug text-amber-200/90">
+                  {globalHealth.advisory}
+                </p>
+              ) : null}
+            </section>
+          );
+        })()
       ) : null}
 
       {/* Live polite status region rendered stably */}
@@ -1198,6 +1317,19 @@ export function PopoverView() {
                         const needsImport = Boolean(
                           project.detectedSquadSlug && !project.hasLocalPreset,
                         );
+                        const health = project.sessionHealth;
+                        const healthMeta = health ? getSessionHealthMeta(health.status) : null;
+                        const hasHealthAlert = Boolean(
+                          health &&
+                            (health.status !== "ok" ||
+                              health.ramWarning ||
+                              health.advisory ||
+                              health.fatParentThreads.length > 0 ||
+                              health.deadAcpThreads.length > 0),
+                        );
+                        const isHandoffCopied = Boolean(
+                          copiedHandoffProjectIds[project.projectId],
+                        );
 
                         return (
                           <li
@@ -1210,7 +1342,7 @@ export function PopoverView() {
                             {/* Row 1: Project identity + Active Subagents Badge + Toggle */}
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0 flex-1 space-y-1">
-                                <div className="flex min-w-0 items-center gap-1.5">
+                                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                                   <FolderGit2
                                     className={`size-3.5 shrink-0 ${
                                       project.presetEnabled
@@ -1222,6 +1354,15 @@ export function PopoverView() {
                                   <span className="truncate text-xs font-semibold text-zinc-100">
                                     {project.title}
                                   </span>
+                                  {healthMeta ? (
+                                    <Badge
+                                      tone={healthMeta.tone}
+                                      dot
+                                      className="shrink-0"
+                                    >
+                                      {healthMeta.label}
+                                    </Badge>
+                                  ) : null}
                                   {project.activeSubagentCount > 0 ? (
                                     <Badge
                                       tone="emerald"
@@ -1269,6 +1410,12 @@ export function PopoverView() {
                                     </>
                                   )}
                                 </div>
+
+                                {health ? (
+                                  <p className="truncate text-[10px] tabular-nums text-zinc-400">
+                                    {formatProjectSessionSummary(health)}
+                                  </p>
+                                ) : null}
                               </div>
 
                               <StatusToggle
@@ -1278,6 +1425,78 @@ export function PopoverView() {
                                 aria-label={`Alternar preset de ${project.title}`}
                               />
                             </div>
+
+                            {/* Project RAM / Session Health Alert + Copy Handoff CTA */}
+                            {hasHealthAlert && health ? (
+                              <div
+                                className={[
+                                  "rounded-lg border px-2 py-1.5 space-y-1.5",
+                                  health.status === "acp_dead" || health.ramWarning
+                                    ? "border-rose-400/28 bg-rose-500/[0.08]"
+                                    : "border-amber-400/28 bg-amber-500/[0.08]",
+                                ].join(" ")}
+                              >
+                                {health.ramWarning ? (
+                                  <p className="flex items-start gap-1.5 text-[10px] leading-snug text-rose-100">
+                                    <AlertTriangle
+                                      className="mt-0.5 size-3 shrink-0 text-rose-300"
+                                      aria-hidden="true"
+                                    />
+                                    <span className="min-w-0 flex-1 break-words">
+                                      Alerta de RAM (8 GB):{" "}
+                                      {health.advisory ??
+                                        `Agy ${health.activeAntigravityWorkers}/${health.maxConcurrentAntigravityWorkers} acima do limite.`}
+                                    </span>
+                                  </p>
+                                ) : health.advisory ? (
+                                  <p className="min-w-0 break-words text-[10px] leading-snug text-amber-100/90">
+                                    {health.advisory}
+                                  </p>
+                                ) : null}
+
+                                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                  <span className="min-w-0 truncate font-mono text-[9px] text-zinc-400">
+                                    {health.deadAcpThreads[0]?.lastError ??
+                                      health.deadAcpThreads[0]?.title ??
+                                      health.fatParentThreads[0]?.title ??
+                                      "Handoff recomendado"}
+                                  </span>
+                                  <Button
+                                    variant={
+                                      isHandoffCopied ? "secondary" : "caramel"
+                                    }
+                                    size="xs"
+                                    onClick={() =>
+                                      void handleCopyHandoffPrompt(project)
+                                    }
+                                    aria-label={`Abrir thread pai novo (${project.title})`}
+                                    className="shrink-0"
+                                  >
+                                    {isHandoffCopied ? (
+                                      <>
+                                        <Check
+                                          className="size-3 text-emerald-400"
+                                          aria-hidden="true"
+                                        />
+                                        <span>Handoff copiado!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <MessageSquarePlus
+                                          className="size-3"
+                                          aria-hidden="true"
+                                        />
+                                        <span>Abrir thread pai novo</span>
+                                        <Copy
+                                          className="size-2.5 opacity-75"
+                                          aria-hidden="true"
+                                        />
+                                      </>
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : null}
 
                             {/* Row 2: Active Instance Swap Pill + Swap Squad + Global */}
                             <div className="flex flex-wrap items-center justify-between gap-1.5">
@@ -1454,56 +1673,110 @@ export function PopoverView() {
                             project.activeInstanceId,
                             snapshot.providerInstances,
                           );
+                          const health = project.sessionHealth;
+                          const healthMeta = health
+                            ? getSessionHealthMeta(health.status)
+                            : null;
+                          const hasHealthAlert = Boolean(
+                            health &&
+                              (health.status !== "ok" ||
+                                health.ramWarning ||
+                                health.fatParentThreads.length > 0 ||
+                                health.deadAcpThreads.length > 0),
+                          );
+                          const isHandoffCopied = Boolean(
+                            copiedHandoffProjectIds[project.projectId],
+                          );
                           return (
                             <li
                               key={project.projectId}
-                              className="surface-card flex items-center justify-between gap-2 rounded-xl px-2.5 py-2"
+                              className="surface-card rounded-xl px-2.5 py-2 space-y-1.5"
                             >
-                              <div className="min-w-0 flex-1 space-y-0.5">
-                                <div className="flex min-w-0 items-center gap-1.5">
-                                  <FolderGit2
-                                    className="size-3.5 shrink-0 text-zinc-500"
-                                    aria-hidden="true"
-                                  />
-                                  <span className="truncate text-xs font-medium text-zinc-200">
-                                    {project.title}
-                                  </span>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0 flex-1 space-y-0.5">
+                                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                    <FolderGit2
+                                      className="size-3.5 shrink-0 text-zinc-500"
+                                      aria-hidden="true"
+                                    />
+                                    <span className="truncate text-xs font-medium text-zinc-200">
+                                      {project.title}
+                                    </span>
+                                    {healthMeta ? (
+                                      <Badge
+                                        tone={healthMeta.tone}
+                                        dot
+                                        className="shrink-0"
+                                      >
+                                        {healthMeta.label}
+                                      </Badge>
+                                    ) : null}
+                                  </div>
+                                  <p className="truncate text-[10px] text-zinc-500">
+                                    Seguindo Global Default · {instanceLabel}
+                                  </p>
+                                  {health ? (
+                                    <p className="truncate text-[10px] tabular-nums text-zinc-400">
+                                      {formatProjectSessionSummary(health)}
+                                    </p>
+                                  ) : null}
                                 </div>
-                                <p className="truncate text-[10px] text-zinc-500">
-                                  Seguindo Global Default · {instanceLabel}
-                                </p>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <Button
+                                    variant="secondary"
+                                    size="xs"
+                                    onClick={() => {
+                                      setNewOverrideProjectId(project.projectId);
+                                      setConfiguringProject(true);
+                                      configureFormRef.current?.scrollIntoView?.({
+                                        block: "nearest",
+                                      });
+                                    }}
+                                    aria-label={`Configurar ${project.title}`}
+                                  >
+                                    <Plus className="size-3" aria-hidden="true" />
+                                    <span>Configurar</span>
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="xs"
+                                    onClick={() =>
+                                      void handleOpenStudio(project.projectId, null)
+                                    }
+                                    aria-label={`Abrir ${project.title} no Studio`}
+                                    title="Abrir no Preset Studio"
+                                  >
+                                    <SlidersHorizontal
+                                      className="size-3.5"
+                                      aria-hidden="true"
+                                    />
+                                  </Button>
+                                </div>
                               </div>
-                              <div className="flex shrink-0 items-center gap-1">
-                                <Button
-                                  variant="secondary"
-                                  size="xs"
-                                  onClick={() => {
-                                    setNewOverrideProjectId(project.projectId);
-                                    setConfiguringProject(true);
-                                    configureFormRef.current?.scrollIntoView?.({
-                                      block: "nearest",
-                                    });
-                                  }}
-                                  aria-label={`Configurar ${project.title}`}
-                                >
-                                  <Plus className="size-3" aria-hidden="true" />
-                                  <span>Configurar</span>
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="xs"
-                                  onClick={() =>
-                                    void handleOpenStudio(project.projectId, null)
-                                  }
-                                  aria-label={`Abrir ${project.title} no Studio`}
-                                  title="Abrir no Preset Studio"
-                                >
-                                  <SlidersHorizontal
-                                    className="size-3.5"
-                                    aria-hidden="true"
-                                  />
-                                </Button>
-                              </div>
+
+                              {hasHealthAlert && health ? (
+                                <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg border border-amber-400/25 bg-amber-500/[0.08] px-2 py-1.5">
+                                  <span className="min-w-0 flex-1 break-words text-[10px] leading-snug text-amber-100/90">
+                                    {health.advisory ??
+                                      "Alerta de sessão detectado."}
+                                  </span>
+                                  <Button
+                                    variant={isHandoffCopied ? "secondary" : "caramel"}
+                                    size="xs"
+                                    onClick={() =>
+                                      void handleCopyHandoffPrompt(project)
+                                    }
+                                    aria-label={`Abrir thread pai novo (${project.title})`}
+                                    className="shrink-0"
+                                  >
+                                    {isHandoffCopied ? (
+                                      <span>Handoff copiado!</span>
+                                    ) : (
+                                      <span>Abrir thread pai novo</span>
+                                    )}
+                                  </Button>
+                                </div>
+                              ) : null}
                             </li>
                           );
                         })}

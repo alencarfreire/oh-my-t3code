@@ -1,3 +1,4 @@
+pub use crate::models::{effective_orchestrator_options, effective_parent_thinking_level};
 use crate::models::{
     AppError, AppPaths, AppResult, CompilePreviewResult, CompiledFilePreview, DashboardSnapshot,
     FailedProjectResync, GlobalAppConfig, GlobalSwapReport, PresetConfig, ResyncedProjectReport,
@@ -9,7 +10,7 @@ use crate::preset_engine::{
     normalize_disabled_roles, resolve_global_preset_unlocked,
     resolve_jsonc_against_globals_unlocked, resolve_preset_inheritance_unlocked,
     save_global_config_unlocked, save_global_preset_unlocked, save_project_preset_unlocked,
-    strip_jsonc_comments, validate_safe_id,
+    strip_jsonc_comments, validate_safe_id, validate_worker_thinking_keys,
 };
 use crate::settings_sync::{
     compute_unified_diff, preview_settings_override, remove_global_settings_override,
@@ -114,11 +115,12 @@ pub fn render_squad_skill_md(project_slug: &str, preset: &PresetConfig) -> Strin
         preset.id, preset.name
     ));
     out.push_str(&format!("- **Topologia:** `{}`\n", preset.topology));
+    let eff_orch_options = effective_orchestrator_options(preset);
     out.push_str(&format!(
         "- **Orquestrador:** `{}` / `{}` ({})\n\n",
         preset.orchestrator.provider_instance_id,
         preset.orchestrator.model,
-        format_options_inline(&preset.orchestrator.options)
+        format_options_inline(&eff_orch_options)
     ));
 
     out.push_str("## 1. Preparação do Orquestrador\n\n");
@@ -220,6 +222,96 @@ pub fn render_squad_skill_md(project_slug: &str, preset: &PresetConfig) -> Strin
             ));
         }
     }
+
+    let sp = &preset.session_policy;
+    let eff_parent_thinking = effective_parent_thinking_level(sp);
+    out.push_str("\n## 5. Gestão de sessão e concorrência (oh-my-t3code)\n\n");
+    out.push_str(&format!("- **Perfil de hardware:** `{}`\n", sp.hardware_profile));
+    out.push_str(&format!(
+        "- **Limite simultâneo Antigravity (ACP):** `{}` worker(s)\n",
+        sp.max_concurrent_antigravity_workers
+    ));
+    out.push_str(&format!(
+        "- **Limite simultâneo total de workers:** `{}` worker(s)\n",
+        sp.max_concurrent_workers_total
+    ));
+    out.push_str(&format!(
+        "- **Handoff do chat pai:** após `{}` turns ou `{}` itens\n",
+        sp.parent_max_turns_before_handoff, sp.parent_max_items_before_handoff
+    ));
+    out.push_str(&format!(
+        "- **Limiares de tokens do chat pai:** aviso em `{}` / handoff obrigatório em `{}`\n",
+        sp.parent_warn_input_tokens, sp.parent_hard_input_tokens
+    ));
+    out.push_str(&format!(
+        "- **Thinking efetivo do chat pai:** `{eff_parent_thinking}` (configurado: `{}`)\n",
+        sp.parent_thinking_level
+    ));
+    out.push_str(&format!("- **Modo padrão de delegação:** `{}`\n", sp.delegate_mode));
+    out.push_str(&format!(
+        "- **Ao detectar sessão ACP morta:** `{}`\n\n",
+        sp.on_acp_session_dead
+    ));
+
+    out.push_str("### Thinking dos workers por tipo\n\n");
+    if sp.worker_thinking_by_kind.is_empty() {
+        out.push_str("Nenhuma regra por tipo configurada.\n\n");
+    } else {
+        out.push_str("| Tipo | Modelo | Thinking |\n");
+        out.push_str("| :--- | :--- | :--- |\n");
+        for (kind, rule) in &sp.worker_thinking_by_kind {
+            out.push_str(&format!(
+                "| `{}` | `{}` | `{}` |\n",
+                kind, rule.model, rule.thinking_level
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("### Padrões proibidos\n\n");
+    if sp.forbidden_patterns.is_empty() {
+        out.push_str("Nenhum padrão proibido configurado.\n\n");
+    } else {
+        for pattern in &sp.forbidden_patterns {
+            out.push_str(&format!("- `{pattern}`\n"));
+        }
+        out.push('\n');
+    }
+
+    let isolation_rule = if preset.contention.default_isolation == "worktree"
+        && (sp.max_concurrent_antigravity_workers <= 1 || sp.max_concurrent_workers_total <= 1)
+    {
+        "como o limite de concorrência é `<= 1`, force ondas sequenciais com `isolation: \"shared\"` (não abra múltiplos worktrees simultâneos)."
+    } else {
+        "respeite o isolamento padrão configurado mantendo no máximo os limites de concorrência acima."
+    };
+
+    out.push_str("### Regras operacionais obrigatórias\n\n");
+    out.push_str("1. O orquestrador **nunca** edita código diretamente nem implementa no mesmo chat — delegue via `delegate_task` (`mode: \"async\"`).\n");
+    out.push_str(&format!(
+        "2. Respeite o teto de concorrência: no máximo `{}` worker(s) Antigravity (ACP) e `{}` worker(s) no total por onda.\n",
+        sp.max_concurrent_antigravity_workers, sp.max_concurrent_workers_total
+    ));
+    out.push_str(&format!(
+        "3. Mantenha `thinking_level: \"{eff_parent_thinking}\"` no chat pai (em `laptop-8gb`, `high`/`xhigh` são sempre rebaixados para `medium`).\n"
+    ));
+    out.push_str("4. Aplique `workerThinkingByKind` conforme a natureza da sub-tarefa (`research`, `frontend`, `backend`, `architecture`, `qa`).\n");
+    out.push_str(&format!(
+        "5. **Isolamento (`{}`):** {isolation_rule}\n",
+        preset.contention.default_isolation
+    ));
+    out.push_str(&format!(
+        "6. **Handoff proativo:** ao atingir `{}` turns, `{}` itens ou `{}`/`{}` tokens no chat pai, salve `memory_handoff_begin` no `ai-memory` e inicie uma nova thread.\n",
+        sp.parent_max_turns_before_handoff,
+        sp.parent_max_items_before_handoff,
+        sp.parent_warn_input_tokens,
+        sp.parent_hard_input_tokens
+    ));
+    out.push_str(&format!(
+        "7. **Sessão ACP morta:** diante de `provider_error` / `AcpRequestError` ou falha em `< 1000ms`, não insista na mesma thread — aplique `{}` e abra uma nova thread.\n",
+        sp.on_acp_session_dead
+    ));
+    out.push_str("8. Evite polling em loop (`task_status` / `sleep`); aguarde o retorno reativo das ondas.\n");
 
     out
 }
@@ -349,6 +441,7 @@ fn compile_preset_preview_unlocked(
         )));
     }
     validate_safe_id(&preset.id, "preset id")?;
+    validate_worker_thinking_keys(&preset.session_policy.worker_thinking_by_kind)?;
     for role_id in preset.roles.keys() {
         validate_safe_id(role_id, "role id")?;
     }
@@ -444,6 +537,7 @@ fn compile_resolved_project_unlocked(
         )));
     }
     validate_safe_id(&resolved.id, "preset id")?;
+    validate_worker_thinking_keys(&resolved.session_policy.worker_thinking_by_kind)?;
     for role_id in resolved.roles.keys() {
         validate_safe_id(role_id, "role id")?;
     }
@@ -564,6 +658,7 @@ fn apply_preset_to_project_unlocked(
     };
 
     validate_safe_id(&target_preset.id, "preset id")?;
+    validate_worker_thinking_keys(&target_preset.session_policy.worker_thinking_by_kind)?;
     for role_id in target_preset.roles.keys() {
         validate_safe_id(role_id, "role id")?;
     }
@@ -759,10 +854,10 @@ pub fn swap_project_primary_instance_with_options(
         }
         if !updated.orchestrator.model.starts_with("gemini-4-") {
             updated.orchestrator.model = "gemini-4-hydrogen".to_string();
-            updated
-                .orchestrator
-                .options
-                .insert("thinking_level".to_string(), "high".to_string());
+            updated.orchestrator.options.insert(
+                "thinking_level".to_string(),
+                effective_parent_thinking_level(&updated.session_policy),
+            );
         }
 
         if include_roles {
@@ -1021,10 +1116,10 @@ pub fn swap_global_instance_with_options(
         }
         if !preset.orchestrator.model.starts_with("gemini-4-") {
             preset.orchestrator.model = "gemini-4-hydrogen".to_string();
-            preset
-                .orchestrator
-                .options
-                .insert("thinking_level".to_string(), "high".to_string());
+            preset.orchestrator.options.insert(
+                "thinking_level".to_string(),
+                effective_parent_thinking_level(&preset.session_policy),
+            );
         }
 
         if let Some(first_fb) = preset.fallback_chain.first_mut() {
@@ -2435,6 +2530,44 @@ mod tests {
         assert!(!settings_after.project_overrides.contains_key("proj-paused"));
         assert!(!local_preset_path(&ws_no_local).exists());
         assert!(!settings_after.project_overrides.contains_key("proj-no-local"));
+    }
+
+    #[test]
+    fn render_squad_skill_md_includes_deterministic_section_5_and_effective_thinking() {
+        let mut preset = crate::preset_engine::default_seed_presets()
+            .into_iter()
+            .find(|p| p.id == "agy-dual")
+            .unwrap();
+        preset.session_policy.hardware_profile = "laptop-8gb".to_string();
+        preset.session_policy.parent_thinking_level = "high".to_string();
+        preset
+            .orchestrator
+            .options
+            .insert("thinking_level".to_string(), "high".to_string());
+
+        let md1 = render_squad_skill_md("demo", &preset);
+        let md2 = render_squad_skill_md("demo", &preset);
+        assert_eq!(md1, md2);
+        assert!(md1.contains("- **Orquestrador:** `antigravity_2` / `gemini-4-hydrogen` (thinking_level=medium)"));
+        assert!(md1.contains("## 5. Gestão de sessão e concorrência (oh-my-t3code)"));
+        assert!(md1.contains("- **Thinking efetivo do chat pai:** `medium` (configurado: `high`)"));
+        assert!(md1.contains("| `research` | `gemini-4-hydrogen` | `low` |"));
+        assert!(md1.contains("| `qa` | `gemini-4-argon` | `high` |"));
+        assert!(md1.contains("`orquestrar+implementar no mesmo chat`"));
+    }
+
+    #[test]
+    fn render_squad_skill_md_forces_shared_wave_rule_when_worktree_and_max_concurrent_le_1() {
+        let mut preset = crate::preset_engine::default_seed_presets()
+            .into_iter()
+            .find(|p| p.id == "agy-dual")
+            .unwrap();
+        preset.contention.default_isolation = "worktree".to_string();
+        preset.session_policy.max_concurrent_antigravity_workers = 1;
+        preset.session_policy.max_concurrent_workers_total = 1;
+
+        let md = render_squad_skill_md("demo", &preset);
+        assert!(md.contains("force ondas sequenciais com `isolation: \"shared\"`"));
     }
 }
 

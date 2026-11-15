@@ -1,6 +1,8 @@
 use crate::models::{
-    AppPaths, AppResult, DashboardSnapshot, GlobalAppConfig, PresetConfig, ProjectSummary,
-    ProviderInstanceInfo, SkillMetadata, SubagentActivity, T3ModelOption, T3ModelSelection,
+    effective_orchestrator_options, AppError, AppPaths, AppResult, DashboardSnapshot,
+    GlobalAppConfig, GlobalSessionHealth, ParentThreadHealth, PresetConfig, ProjectSessionHealth,
+    ProjectSummary, ProviderInstanceInfo, SessionPolicy, SkillMetadata, SubagentActivity,
+    T3ModelOption, T3ModelSelection,
 };
 use crate::preset_engine::{
     detect_squad_dir, list_global_presets_unlocked, load_global_config_unlocked,
@@ -222,14 +224,41 @@ fn build_provider_instances(raw_instances: &BTreeMap<String, Value>) -> Vec<Prov
 
 /// Opens `~/.t3/userdata/statev2.sqlite` strictly read-only (`SQLITE_OPEN_READ_ONLY`).
 pub fn open_sqlite_readonly(sqlite_path: &Path) -> AppResult<Connection> {
-    let conn = Connection::open_with_flags(
-        sqlite_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    conn.busy_timeout(Duration::from_millis(250))?;
-    // Enforce read-only at the SQLite engine level in addition to OS/VFS flags.
-    conn.pragma_update(None, "query_only", true)?;
-    Ok(conn)
+    let mut last_err = None;
+    for attempt in 0..4 {
+        match (|| -> Result<Connection, rusqlite::Error> {
+            let conn = Connection::open_with_flags(
+                sqlite_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            conn.busy_timeout(Duration::from_millis(250))?;
+            // Enforce read-only at the SQLite engine level in addition to OS/VFS flags.
+            conn.pragma_update(None, "query_only", true)?;
+            Ok(conn)
+        })() {
+            Ok(conn) => return Ok(conn),
+            Err(err) => {
+                let is_busy_or_locked = matches!(
+                    err,
+                    rusqlite::Error::SqliteFailure(ref f, _)
+                        if matches!(
+                            f.code,
+                            rusqlite::ErrorCode::DatabaseBusy
+                                | rusqlite::ErrorCode::DatabaseLocked
+                        )
+                );
+                if is_busy_or_locked && attempt < 3 {
+                    last_err = Some(err);
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                return Err(AppError::Sqlite(err));
+            }
+        }
+    }
+    Err(AppError::Sqlite(
+        last_err.expect("retry loop always captures last error"),
+    ))
 }
 
 fn table_columns(conn: &Connection, table: &str) -> HashSet<String> {
@@ -326,17 +355,11 @@ fn selections_differ(a: &T3ModelSelection, b: &T3ModelSelection) -> bool {
 }
 
 fn preset_selection(preset: &PresetConfig) -> T3ModelSelection {
-    let options = preset
-        .orchestrator
-        .options
-        .iter()
+    let options = effective_orchestrator_options(preset)
+        .into_iter()
         .map(|(k, v)| T3ModelOption {
-            id: if k == "thinkingLevel" {
-                "thinking_level".to_string()
-            } else {
-                k.clone()
-            },
-            value: Value::String(v.clone()),
+            id: k,
+            value: Value::String(v),
         })
         .collect();
     T3ModelSelection {
@@ -382,6 +405,7 @@ fn compute_has_custom_override(
                         || resolved_local.orchestrator != global_preset.orchestrator
                         || resolved_local.fallback_chain != global_preset.fallback_chain
                         || resolved_local.contention != global_preset.contention
+                        || resolved_local.session_policy != global_preset.session_policy
                         || resolved_local.topology != global_preset.topology
                     {
                         return true;
@@ -450,6 +474,168 @@ fn is_active_status(status: &str) -> bool {
     )
 }
 
+fn is_failed_status(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "failed" | "error" | "errored"
+    )
+}
+
+fn is_antigravity_worker(provider_instance_id: Option<&str>, model: Option<&str>) -> bool {
+    let by_provider = provider_instance_id
+        .map(|p| p.trim().to_ascii_lowercase().starts_with("antigravity"))
+        .unwrap_or(false);
+    let by_model = model
+        .map(|m| m.trim().to_ascii_lowercase().starts_with("gemini-4-"))
+        .unwrap_or(false);
+    by_provider || by_model
+}
+
+/// Pure-Rust ISO-8601 / RFC3339 timestamp parser returning Unix epoch milliseconds.
+pub(crate) fn parse_iso8601_to_epoch_ms(input: &str) -> Option<i64> {
+    let s = input.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b'T' | b't' | b' ')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: i64 = s.get(5..7)?.parse().ok()?;
+    let day: i64 = s.get(8..10)?.parse().ok()?;
+    let hour: i64 = s.get(11..13)?.parse().ok()?;
+    let minute: i64 = s.get(14..16)?.parse().ok()?;
+    let second: i64 = s.get(17..19)?.parse().ok()?;
+
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+
+    let mut rest = &s[19..];
+    let mut millis: i64 = 0;
+    if let Some(after_dot) = rest.strip_prefix('.') {
+        let frac_len = after_dot
+            .bytes()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let frac_str = &after_dot[..frac_len];
+        if !frac_str.is_empty() {
+            let mut digits = frac_str.chars().take(3).collect::<String>();
+            while digits.len() < 3 {
+                digits.push('0');
+            }
+            millis = digits.parse().ok()?;
+        }
+        rest = &after_dot[frac_len..];
+    }
+
+    let tz_offset_secs: i64 = if rest.is_empty() || rest.eq_ignore_ascii_case("z") {
+        0
+    } else {
+        let tz_rest = rest.strip_prefix('+').or_else(|| rest.strip_prefix('-'))?;
+        let sign = if rest.starts_with('-') { -1 } else { 1 };
+        let clean = tz_rest.replace(':', "");
+        let (tz_h, tz_m): (i64, i64) = if clean.len() == 4 {
+            (clean[0..2].parse().ok()?, clean[2..4].parse().ok()?)
+        } else if clean.len() == 2 {
+            (clean[0..2].parse().ok()?, 0)
+        } else {
+            return None;
+        };
+        if tz_h > 23 || tz_m > 59 {
+            return None;
+        }
+        sign * (tz_h * 3600 + tz_m * 60)
+    };
+
+    // Howard Hinnant's days_from_civil
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+
+    let total_secs = days * 86_400 + hour * 3600 + minute * 60 + second - tz_offset_secs;
+    Some(total_secs * 1000 + millis)
+}
+
+#[derive(Debug, Clone)]
+struct ThreadMeta {
+    thread_id: String,
+    project_id: String,
+    title: String,
+    updated_at: String,
+    archived: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RunHealthRecord {
+    status: String,
+    error_message: Option<String>,
+    started_at: Option<String>,
+    ended_at: Option<String>,
+    updated_at: String,
+    seq: usize,
+}
+
+fn run_indicates_acp_dead(run: &RunHealthRecord) -> bool {
+    if !is_failed_status(&run.status) {
+        return false;
+    }
+    let has_acp_error = run
+        .error_message
+        .as_deref()
+        .map(|e| e.to_ascii_lowercase().contains("acprequesterror"))
+        .unwrap_or(false);
+    if has_acp_error {
+        return true;
+    }
+    if let (Some(start), Some(end)) = (run.started_at.as_deref(), run.ended_at.as_deref()) {
+        if let (Some(start_ms), Some(end_ms)) = (
+            parse_iso8601_to_epoch_ms(start),
+            parse_iso8601_to_epoch_ms(end),
+        ) {
+            let duration = end_ms - start_ms;
+            if (0..1000).contains(&duration) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn resolve_project_session_policy(
+    local_meta: &LocalPresetMeta,
+    ctx: &GlobalOverrideContext<'_>,
+) -> SessionPolicy {
+    if local_meta.has_local_preset {
+        if let Some(raw) = local_meta.raw_jsonc.as_deref() {
+            let active_global_id = ctx.global_config.active_global_preset_id.as_str();
+            if let Ok(resolved) =
+                resolve_jsonc_against_globals_unlocked(ctx.presets_dir, raw, active_global_id)
+            {
+                return resolved.session_policy;
+            }
+        }
+    }
+    ctx.global_active_preset
+        .map(|p| p.session_policy.clone())
+        .unwrap_or_default()
+}
+
 /// Reads projects, threads, and subagent rows from `statev2.sqlite` (read-only).
 pub fn read_sqlite_state(
     sqlite_path: &Path,
@@ -476,37 +662,100 @@ pub fn read_sqlite_state_with_context(
     read_sqlite_state_with_context_unlocked(sqlite_path, ctx)
 }
 
+fn read_thread_table_into(
+    conn: &Connection,
+    table: &str,
+    thread_to_project: &mut HashMap<String, String>,
+    thread_metas: &mut HashMap<String, ThreadMeta>,
+) {
+    let thread_cols = table_columns(conn, table);
+    if thread_cols.is_empty()
+        || !thread_cols.contains("thread_id")
+        || !thread_cols.contains("project_id")
+    {
+        return;
+    }
+    let title_expr = if thread_cols.contains("title") {
+        "title"
+    } else {
+        "thread_id"
+    };
+    let updated_expr = if thread_cols.contains("updated_at") {
+        "updated_at"
+    } else if thread_cols.contains("created_at") {
+        "created_at"
+    } else {
+        "''"
+    };
+    let archived_expr = if thread_cols.contains("archived_at") {
+        "archived_at"
+    } else {
+        "NULL"
+    };
+    let deleted_filter = if thread_cols.contains("deleted_at") {
+        "WHERE deleted_at IS NULL"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT thread_id, project_id, COALESCE({title_expr}, thread_id), COALESCE({updated_expr}, ''), {archived_expr} \
+         FROM {table} {deleted_filter}"
+    );
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        if let Ok(mut rows) = stmt.query([]) {
+            while let Ok(Some(row)) = rows.next() {
+                if let (Ok(tid), Ok(pid)) = (row.get::<_, String>(0), row.get::<_, String>(1)) {
+                    let title: String = row.get(2).unwrap_or_else(|_| tid.clone());
+                    let updated_at: String = row.get(3).unwrap_or_default();
+                    let archived_at: Option<String> = row.get(4).ok().flatten();
+                    let archived = archived_at
+                        .as_deref()
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    thread_to_project.insert(tid.clone(), pid.clone());
+                    thread_metas.insert(
+                        tid.clone(),
+                        ThreadMeta {
+                            thread_id: tid,
+                            project_id: pid,
+                            title,
+                            updated_at,
+                            archived,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn read_sqlite_state_with_context_unlocked(
     sqlite_path: &Path,
     ctx: &GlobalOverrideContext<'_>,
 ) -> AppResult<(Vec<ProjectSummary>, Vec<SubagentActivity>)> {
     let conn = open_sqlite_readonly(sqlite_path)?;
 
-    // 1. Read thread -> project mapping (for attributing subagents to projects)
-    let thread_cols = table_columns(&conn, "projection_threads");
+    // 1. Read thread -> project mapping & thread metadata (preferring orchestration_v2_projection_threads over projection_threads)
     let mut thread_to_project: HashMap<String, String> = HashMap::new();
-    if !thread_cols.is_empty() {
-        let deleted_filter = if thread_cols.contains("deleted_at") {
-            "WHERE deleted_at IS NULL"
-        } else {
-            ""
-        };
-        let sql = format!("SELECT thread_id, project_id FROM projection_threads {deleted_filter}");
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(mut rows) = stmt.query([]) {
-                while let Ok(Some(row)) = rows.next() {
-                    if let (Ok(tid), Ok(pid)) = (row.get::<_, String>(0), row.get::<_, String>(1)) {
-                        thread_to_project.insert(tid, pid);
-                    }
-                }
-            }
-        }
-    }
+    let mut thread_metas: HashMap<String, ThreadMeta> = HashMap::new();
+    read_thread_table_into(
+        &conn,
+        "projection_threads",
+        &mut thread_to_project,
+        &mut thread_metas,
+    );
+    read_thread_table_into(
+        &conn,
+        "orchestration_v2_projection_threads",
+        &mut thread_to_project,
+        &mut thread_metas,
+    );
 
     // 2. Read projects
     let proj_cols = table_columns(&conn, "projection_projects");
     let mut projects = Vec::new();
     let mut project_titles: HashMap<String, String> = HashMap::new();
+    let mut project_policies: HashMap<String, SessionPolicy> = HashMap::new();
 
     if !proj_cols.is_empty() {
         let default_model_expr = if proj_cols.contains("default_model") {
@@ -564,10 +813,12 @@ pub(crate) fn read_sqlite_state_with_context_unlocked(
                 detected_squad.as_ref(),
                 ctx,
             );
+            let eff_policy = resolve_project_session_policy(&local_meta, ctx);
 
             project_titles.insert(project_id.clone(), title.clone());
+            project_policies.insert(project_id.clone(), eff_policy.clone());
             projects.push(ProjectSummary {
-                project_id,
+                project_id: project_id.clone(),
                 title,
                 workspace_root,
                 default_model,
@@ -582,6 +833,13 @@ pub(crate) fn read_sqlite_state_with_context_unlocked(
                 detected_squad_slug: detected_squad.as_ref().map(|(s, _)| s.clone()),
                 detected_squad_path: detected_squad.map(|(_, p)| p),
                 active_subagent_count: 0,
+                session_health: ProjectSessionHealth {
+                    project_id,
+                    max_concurrent_antigravity_workers: eff_policy
+                        .max_concurrent_antigravity_workers,
+                    max_concurrent_workers_total: eff_policy.max_concurrent_workers_total,
+                    ..Default::default()
+                },
             });
         }
     }
@@ -590,6 +848,9 @@ pub(crate) fn read_sqlite_state_with_context_unlocked(
     let sub_cols = table_columns(&conn, "orchestration_v2_projection_subagents");
     let mut subagents = Vec::new();
     let mut active_counts: HashMap<String, usize> = HashMap::new();
+    let mut active_workers: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    let mut parents_with_active_subagents: HashSet<String> = HashSet::new();
+    let mut subagent_child_threads: HashSet<String> = HashSet::new();
 
     if !sub_cols.is_empty() {
         let parent_col = if sub_cols.contains("parent_thread_id") {
@@ -722,14 +983,36 @@ pub(crate) fn read_sqlite_state_with_context_unlocked(
             }
 
             let project_id = thread_to_project.get(&parent_thread_id).cloned();
+            if let (Some(cid), Some(pid)) = (child_thread_id.as_deref(), project_id.as_ref()) {
+                subagent_child_threads.insert(cid.to_string());
+                thread_to_project
+                    .entry(cid.to_string())
+                    .or_insert_with(|| pid.clone());
+            } else if let Some(cid) = child_thread_id.as_deref() {
+                subagent_child_threads.insert(cid.to_string());
+            }
+
             let project_title = project_id
                 .as_ref()
                 .and_then(|pid| project_titles.get(pid).cloned());
 
             if is_active_status(&status) {
+                parents_with_active_subagents.insert(parent_thread_id.clone());
                 if let Some(pid) = &project_id {
                     *active_counts.entry(pid.clone()).or_insert(0) += 1;
                 }
+                let worker_key = if let Some(cid) = child_thread_id.as_deref() {
+                    format!("thread:{cid}")
+                } else {
+                    format!("subagent:{subagent_id}")
+                };
+                let is_agy = is_antigravity_worker(
+                    provider_instance_id.as_deref(),
+                    resolved_model.as_deref().or(requested_model.as_deref()),
+                );
+                active_workers
+                    .entry(worker_key)
+                    .or_insert((project_id.clone(), is_agy));
             }
 
             let prompt_preview = prompt.as_deref().map(extract_prompt_preview);
@@ -756,8 +1039,338 @@ pub(crate) fn read_sqlite_state_with_context_unlocked(
         }
     }
 
+    // 4. Read orchestration_v2_projection_runs for turn count, acp_dead detection, and active worker dedup
+    let run_cols = table_columns(&conn, "orchestration_v2_projection_runs");
+    let mut run_counts_by_thread: HashMap<String, u32> = HashMap::new();
+    let mut latest_run_by_thread: HashMap<String, RunHealthRecord> = HashMap::new();
+
+    if !run_cols.is_empty() && run_cols.contains("thread_id") {
+        let status_expr = if run_cols.contains("status") {
+            "status"
+        } else {
+            "'unknown'"
+        };
+        let provider_expr = if run_cols.contains("provider_instance_id") {
+            "provider_instance_id"
+        } else if run_cols.contains("provider") {
+            "provider"
+        } else {
+            "NULL"
+        };
+        let model_expr = if run_cols.contains("model") {
+            "model"
+        } else if run_cols.contains("resolved_model") {
+            "resolved_model"
+        } else if run_cols.contains("requested_model") {
+            "requested_model"
+        } else {
+            "NULL"
+        };
+        let err_expr = if run_cols.contains("error_message") {
+            "error_message"
+        } else if run_cols.contains("error") {
+            "error"
+        } else {
+            "NULL"
+        };
+        let started_expr = if run_cols.contains("started_at") {
+            "started_at"
+        } else if run_cols.contains("created_at") {
+            "created_at"
+        } else {
+            "NULL"
+        };
+        let ended_expr = if run_cols.contains("completed_at") {
+            "completed_at"
+        } else if run_cols.contains("settled_at") {
+            "settled_at"
+        } else if run_cols.contains("updated_at") {
+            "updated_at"
+        } else {
+            "NULL"
+        };
+        let updated_expr = if run_cols.contains("updated_at") {
+            "updated_at"
+        } else if run_cols.contains("created_at") {
+            "created_at"
+        } else if run_cols.contains("started_at") {
+            "started_at"
+        } else {
+            "''"
+        };
+        let payload_expr = if run_cols.contains("payload_json") {
+            "payload_json"
+        } else {
+            "NULL"
+        };
+
+        let sql = format!(
+            "SELECT thread_id, COALESCE({status_expr}, 'unknown'), {provider_expr}, {model_expr}, \
+             {err_expr}, {started_expr}, {ended_expr}, COALESCE({updated_expr}, ''), {payload_expr} \
+             FROM orchestration_v2_projection_runs ORDER BY rowid ASC"
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(mut rows) = stmt.query([]) {
+                let mut seq = 0usize;
+                while let Ok(Some(row)) = rows.next() {
+                    let Ok(thread_id) = row.get::<_, String>(0) else {
+                        continue;
+                    };
+                    let status: String = row.get(1).unwrap_or_else(|_| "unknown".to_string());
+                    let mut provider_instance_id: Option<String> = row.get(2).ok().flatten();
+                    let mut model: Option<String> = row.get(3).ok().flatten();
+                    let mut error_message: Option<String> = row.get(4).ok().flatten();
+                    let mut started_at: Option<String> = row.get(5).ok().flatten();
+                    let mut ended_at: Option<String> = row.get(6).ok().flatten();
+                    let updated_at: String = row.get(7).unwrap_or_default();
+                    let payload_json: Option<String> = row.get(8).ok().flatten();
+
+                    if let Some(raw_payload) = payload_json.as_deref() {
+                        if let Ok(payload) = serde_json::from_str::<Value>(raw_payload) {
+                            if provider_instance_id.is_none() {
+                                provider_instance_id = payload
+                                    .get("providerInstanceId")
+                                    .and_then(|v| v.as_str())
+                                    .map(ToString::to_string);
+                            }
+                            if model.is_none() {
+                                model = payload
+                                    .get("resolvedModel")
+                                    .or_else(|| payload.get("requestedModel"))
+                                    .or_else(|| payload.get("model"))
+                                    .and_then(|v| v.as_str())
+                                    .map(ToString::to_string);
+                            }
+                            if error_message.is_none() {
+                                error_message = payload
+                                    .get("errorMessage")
+                                    .or_else(|| payload.get("error"))
+                                    .and_then(|v| v.as_str())
+                                    .map(ToString::to_string);
+                            }
+                            if started_at.is_none() {
+                                started_at = payload
+                                    .get("startedAt")
+                                    .and_then(|v| v.as_str())
+                                    .map(ToString::to_string);
+                            }
+                            if ended_at.is_none() {
+                                ended_at = payload
+                                    .get("completedAt")
+                                    .or_else(|| payload.get("settledAt"))
+                                    .and_then(|v| v.as_str())
+                                    .map(ToString::to_string);
+                            }
+                        }
+                    }
+
+                    *run_counts_by_thread.entry(thread_id.clone()).or_insert(0) += 1;
+
+                    if is_active_status(&status)
+                        && !parents_with_active_subagents.contains(&thread_id)
+                    {
+                        let worker_key = format!("thread:{thread_id}");
+                        let pid = thread_to_project.get(&thread_id).cloned();
+                        let is_agy = is_antigravity_worker(
+                            provider_instance_id.as_deref(),
+                            model.as_deref(),
+                        );
+                        active_workers.entry(worker_key).or_insert((pid, is_agy));
+                    }
+
+                    let rec = RunHealthRecord {
+                        status,
+                        error_message,
+                        started_at,
+                        ended_at,
+                        updated_at,
+                        seq,
+                    };
+                    seq += 1;
+
+                    let replace = match latest_run_by_thread.get(&thread_id) {
+                        None => true,
+                        Some(existing) => {
+                            let new_ts = parse_iso8601_to_epoch_ms(&rec.updated_at)
+                                .or_else(|| rec.ended_at.as_deref().and_then(parse_iso8601_to_epoch_ms))
+                                .or_else(|| rec.started_at.as_deref().and_then(parse_iso8601_to_epoch_ms));
+                            let old_ts = parse_iso8601_to_epoch_ms(&existing.updated_at)
+                                .or_else(|| existing.ended_at.as_deref().and_then(parse_iso8601_to_epoch_ms))
+                                .or_else(|| existing.started_at.as_deref().and_then(parse_iso8601_to_epoch_ms));
+                            match (new_ts, old_ts) {
+                                (Some(n), Some(o)) if n != o => n > o,
+                                _ => {
+                                    (rec.updated_at.as_str(), rec.seq)
+                                        >= (existing.updated_at.as_str(), existing.seq)
+                                }
+                            }
+                        }
+                    };
+                    if replace {
+                        latest_run_by_thread.insert(thread_id, rec);
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Read orchestration_v2_projection_turn_items for item counts per thread
+    let item_cols = table_columns(&conn, "orchestration_v2_projection_turn_items");
+    let mut item_counts_by_thread: HashMap<String, u32> = HashMap::new();
+    if !item_cols.is_empty() && item_cols.contains("thread_id") {
+        let deleted_filter = if item_cols.contains("deleted_at") {
+            "WHERE deleted_at IS NULL"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT thread_id, COUNT(*) FROM orchestration_v2_projection_turn_items {deleted_filter} GROUP BY thread_id"
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(tid), Ok(cnt)) = (row.get::<_, String>(0), row.get::<_, i64>(1)) {
+                        item_counts_by_thread.insert(tid, cnt.max(0) as u32);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Aggregate active workers and thread health per project
+    let mut active_agy_by_project: HashMap<String, u32> = HashMap::new();
+    let mut active_total_by_project: HashMap<String, u32> = HashMap::new();
+    for (pid_opt, is_agy) in active_workers.values() {
+        if let Some(pid) = pid_opt {
+            *active_total_by_project.entry(pid.clone()).or_insert(0) += 1;
+            if *is_agy {
+                *active_agy_by_project.entry(pid.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut fat_threads_by_project: HashMap<String, Vec<ParentThreadHealth>> = HashMap::new();
+    let mut dead_threads_by_project: HashMap<String, Vec<ParentThreadHealth>> = HashMap::new();
+    for (tid, meta) in &thread_metas {
+        if meta.archived || subagent_child_threads.contains(tid) {
+            continue;
+        }
+        let Some(policy) = project_policies.get(&meta.project_id) else {
+            continue;
+        };
+        let run_count = run_counts_by_thread.get(tid).copied().unwrap_or(0);
+        let item_count = item_counts_by_thread.get(tid).copied().unwrap_or(0);
+        let is_fat = run_count >= policy.parent_max_turns_before_handoff
+            || item_count >= policy.parent_max_items_before_handoff;
+
+        let latest_run = latest_run_by_thread.get(tid);
+        let is_acp_dead = latest_run.map(run_indicates_acp_dead).unwrap_or(false);
+        let last_error = latest_run.and_then(|r| r.error_message.clone());
+
+        if is_acp_dead {
+            dead_threads_by_project
+                .entry(meta.project_id.clone())
+                .or_default()
+                .push(ParentThreadHealth {
+                    thread_id: meta.thread_id.clone(),
+                    project_id: meta.project_id.clone(),
+                    title: meta.title.clone(),
+                    run_count,
+                    item_count,
+                    status: "acp_dead".to_string(),
+                    last_error,
+                    updated_at: meta.updated_at.clone(),
+                });
+        } else if is_fat {
+            fat_threads_by_project
+                .entry(meta.project_id.clone())
+                .or_default()
+                .push(ParentThreadHealth {
+                    thread_id: meta.thread_id.clone(),
+                    project_id: meta.project_id.clone(),
+                    title: meta.title.clone(),
+                    run_count,
+                    item_count,
+                    status: "fat_parent".to_string(),
+                    last_error,
+                    updated_at: meta.updated_at.clone(),
+                });
+        }
+    }
+
     for proj in &mut projects {
         proj.active_subagent_count = active_counts.get(&proj.project_id).copied().unwrap_or(0);
+
+        let policy = project_policies
+            .get(&proj.project_id)
+            .cloned()
+            .unwrap_or_default();
+        let active_agy = active_agy_by_project
+            .get(&proj.project_id)
+            .copied()
+            .unwrap_or(0);
+        let active_total = active_total_by_project
+            .get(&proj.project_id)
+            .copied()
+            .unwrap_or(0);
+        let ram_warning = policy.hardware_profile == "laptop-8gb" && active_agy > 2;
+        let over_concurrency = active_agy > policy.max_concurrent_antigravity_workers
+            || active_total > policy.max_concurrent_workers_total
+            || ram_warning;
+
+        let mut fat_threads = fat_threads_by_project
+            .remove(&proj.project_id)
+            .unwrap_or_default();
+        fat_threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.thread_id.cmp(&b.thread_id)));
+
+        let mut dead_threads = dead_threads_by_project
+            .remove(&proj.project_id)
+            .unwrap_or_default();
+        dead_threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.thread_id.cmp(&b.thread_id)));
+
+        let status = if !dead_threads.is_empty() {
+            "acp_dead".to_string()
+        } else if over_concurrency {
+            "over_concurrency".to_string()
+        } else if !fat_threads.is_empty() {
+            "fat_parent".to_string()
+        } else {
+            "ok".to_string()
+        };
+
+        let advisory = match status.as_str() {
+            "acp_dead" => Some(format!(
+                "{} thread(s) com sessão ACP morta detectada — abra uma nova thread ({}) em vez de continuar na mesma.",
+                dead_threads.len(),
+                policy.on_acp_session_dead
+            )),
+            "over_concurrency" => Some(format!(
+                "Concorrência acima do limite ({active_agy}/{} Antigravity, {active_total}/{} total){}.",
+                policy.max_concurrent_antigravity_workers,
+                policy.max_concurrent_workers_total,
+                if ram_warning { " [alerta de RAM em laptop-8gb]" } else { "" }
+            )),
+            "fat_parent" => Some(format!(
+                "{} thread(s) pai atingiram o limiar de handoff ({} turns ou {} itens).",
+                fat_threads.len(),
+                policy.parent_max_turns_before_handoff,
+                policy.parent_max_items_before_handoff
+            )),
+            _ => None,
+        };
+
+        proj.session_health = ProjectSessionHealth {
+            project_id: proj.project_id.clone(),
+            status,
+            active_antigravity_workers: active_agy,
+            active_workers_total: active_total,
+            max_concurrent_antigravity_workers: policy.max_concurrent_antigravity_workers,
+            max_concurrent_workers_total: policy.max_concurrent_workers_total,
+            ram_warning,
+            fat_parent_threads: fat_threads,
+            dead_acp_threads: dead_threads,
+            advisory,
+        };
     }
 
     Ok((projects, subagents))
@@ -898,6 +1511,110 @@ pub fn build_dashboard_snapshot(paths: &AppPaths) -> AppResult<DashboardSnapshot
     build_dashboard_snapshot_unlocked(paths)
 }
 
+fn compute_global_session_health(
+    projects: &[ProjectSummary],
+    subagents: &[SubagentActivity],
+    global_active_preset: Option<&PresetConfig>,
+) -> GlobalSessionHealth {
+    let policy = global_active_preset
+        .map(|p| p.session_policy.clone())
+        .unwrap_or_default();
+
+    let mut active_agy: u32 = projects
+        .iter()
+        .map(|p| p.session_health.active_antigravity_workers)
+        .sum();
+    let mut active_total: u32 = projects
+        .iter()
+        .map(|p| p.session_health.active_workers_total)
+        .sum();
+
+    // Include any active subagents whose parent thread could not be mapped to a project
+    let mut unattributed_seen: HashSet<String> = HashSet::new();
+    for sub in subagents {
+        if sub.project_id.is_none() && is_active_status(&sub.status) {
+            let key = if let Some(cid) = sub.child_thread_id.as_deref() {
+                format!("thread:{cid}")
+            } else {
+                format!("subagent:{}", sub.subagent_id)
+            };
+            if unattributed_seen.insert(key) {
+                active_total += 1;
+                if is_antigravity_worker(
+                    sub.provider_instance_id.as_deref(),
+                    sub.resolved_model
+                        .as_deref()
+                        .or(sub.requested_model.as_deref()),
+                ) {
+                    active_agy += 1;
+                }
+            }
+        }
+    }
+
+    let ram_warning = (policy.hardware_profile == "laptop-8gb" && active_agy > 2)
+        || projects.iter().any(|p| p.session_health.ram_warning);
+    let over_concurrency = active_agy > policy.max_concurrent_antigravity_workers
+        || active_total > policy.max_concurrent_workers_total
+        || ram_warning
+        || projects
+            .iter()
+            .any(|p| p.session_health.status == "over_concurrency");
+
+    let has_acp_dead = projects
+        .iter()
+        .any(|p| p.session_health.status == "acp_dead");
+    let has_fat_parent = projects
+        .iter()
+        .any(|p| p.session_health.status == "fat_parent");
+
+    let status = if has_acp_dead {
+        "acp_dead".to_string()
+    } else if over_concurrency {
+        "over_concurrency".to_string()
+    } else if has_fat_parent {
+        "fat_parent".to_string()
+    } else {
+        "ok".to_string()
+    };
+
+    let affected_projects: Vec<String> = projects
+        .iter()
+        .filter(|p| p.session_health.status != "ok")
+        .map(|p| p.project_id.clone())
+        .collect();
+
+    let advisory = match status.as_str() {
+        "acp_dead" => Some(format!(
+            "Sessão ACP morta detectada em {} projeto(s). Abra uma nova thread ({}).",
+            affected_projects.len().max(1),
+            policy.on_acp_session_dead
+        )),
+        "over_concurrency" => Some(format!(
+            "Concorrência global acima do perfil ({active_agy}/{} Antigravity, {active_total}/{} total){}.",
+            policy.max_concurrent_antigravity_workers,
+            policy.max_concurrent_workers_total,
+            if ram_warning { " [alerta de RAM em laptop-8gb]" } else { "" }
+        )),
+        "fat_parent" => Some(format!(
+            "Thread pai extensa detectada em {} projeto(s). Recomenda-se handoff via ai-memory.",
+            affected_projects.len().max(1)
+        )),
+        _ => None,
+    };
+
+    GlobalSessionHealth {
+        status,
+        active_antigravity_workers: active_agy,
+        active_workers_total: active_total,
+        max_concurrent_antigravity_workers: policy.max_concurrent_antigravity_workers,
+        max_concurrent_workers_total: policy.max_concurrent_workers_total,
+        ram_warning,
+        affected_projects,
+        advisory,
+    }
+}
+
 pub(crate) fn build_dashboard_snapshot_unlocked(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let settings = read_t3_settings(&paths.settings_path());
     let global_presets = list_global_presets_unlocked(&paths.presets_dir)?;
@@ -926,6 +1643,8 @@ pub(crate) fn build_dashboard_snapshot_unlocked(paths: &AppPaths) -> AppResult<D
         (false, Vec::new(), Vec::new())
     };
 
+    let session_health =
+        compute_global_session_health(&projects, &subagents, global_active_preset);
     let skills = scan_global_skills(&paths.skill_roots);
 
     Ok(DashboardSnapshot {
@@ -939,6 +1658,7 @@ pub(crate) fn build_dashboard_snapshot_unlocked(paths: &AppPaths) -> AppResult<D
         fallback_model_selection: settings.fallback_model_selection,
         sqlite_available,
         settings_available: settings.available,
+        session_health,
         last_global_swap_report: None,
     })
 }
@@ -1024,6 +1744,9 @@ mod tests {
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].project_id, "p1");
         assert_eq!(projects[0].active_subagent_count, 1);
+        assert_eq!(projects[0].session_health.status, "ok");
+        assert_eq!(projects[0].session_health.active_antigravity_workers, 1);
+        assert_eq!(projects[0].session_health.active_workers_total, 1);
         assert_eq!(subagents.len(), 1);
         assert_eq!(subagents[0].role.as_deref(), Some("backend"));
         assert_eq!(subagents[0].project_title.as_deref(), Some("Demo Repo"));
@@ -1146,5 +1869,181 @@ mod tests {
             .provider_instances
             .iter()
             .any(|p| p.id == "antigravity" && p.label == "Agy Veca (antigravity)"));
+    }
+
+    #[test]
+    fn parses_iso8601_timestamps_and_subsecond_durations() {
+        let t0 = parse_iso8601_to_epoch_ms("1970-01-01T00:00:00Z").unwrap();
+        assert_eq!(t0, 0);
+
+        let a = parse_iso8601_to_epoch_ms("2026-11-15T12:00:00.100Z").unwrap();
+        let b = parse_iso8601_to_epoch_ms("2026-11-15T12:00:00.900Z").unwrap();
+        assert_eq!(b - a, 800);
+
+        let tz = parse_iso8601_to_epoch_ms("2026-11-15T09:00:00.100-03:00").unwrap();
+        assert_eq!(tz, a);
+    }
+
+    #[test]
+    fn detects_fat_parent_acp_dead_over_concurrency_priority_and_worker_dedup() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("statev2.sqlite");
+        let ws_ok = dir.path().join("repo-ok");
+        let ws_fat = dir.path().join("repo-fat");
+        let ws_dead = dir.path().join("repo-dead");
+        fs::create_dir_all(&ws_ok).unwrap();
+        fs::create_dir_all(&ws_fat).unwrap();
+        fs::create_dir_all(&ws_dead).unwrap();
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE projection_projects (
+                    project_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    workspace_root TEXT NOT NULL,
+                    default_model TEXT,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE TABLE orchestration_v2_projection_threads (
+                    thread_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT,
+                    deleted_at TEXT
+                );
+                CREATE TABLE orchestration_v2_projection_subagents (
+                    subagent_id TEXT PRIMARY KEY,
+                    parent_thread_id TEXT NOT NULL,
+                    child_thread_id TEXT,
+                    provider_instance_id TEXT,
+                    resolved_model TEXT,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE orchestration_v2_projection_runs (
+                    run_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    provider_instance_id TEXT,
+                    model TEXT,
+                    error_message TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE orchestration_v2_projection_turn_items (
+                    item_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+                ",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO projection_projects VALUES ('p-ok', 'OK Repo', ?1, 'gemini-4-hydrogen', '2026-11-15T01:00:00Z', NULL)",
+                [ws_ok.to_str().unwrap()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO projection_projects VALUES ('p-fat', 'Fat Repo', ?1, 'gemini-4-hydrogen', '2026-11-15T02:00:00Z', NULL)",
+                [ws_fat.to_str().unwrap()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO projection_projects VALUES ('p-dead', 'Dead Repo', ?1, 'gemini-4-hydrogen', '2026-11-15T03:00:00Z', NULL)",
+                [ws_dead.to_str().unwrap()],
+            ).unwrap();
+
+            // p-ok: 1 active subagent on child-ok-1 + matching active run on child-ok-1 (must dedup to 1!)
+            // plus active run on parent t-ok (must be excluded since t-ok has active subagent!)
+            conn.execute_batch(
+                "
+                INSERT INTO orchestration_v2_projection_threads VALUES ('t-ok', 'p-ok', 'OK Thread', '2026-11-15T01:00:00Z', NULL, NULL);
+                INSERT INTO orchestration_v2_projection_subagents VALUES ('s-ok-1', 't-ok', 'child-ok-1', 'antigravity', 'gemini-4-hydrogen', 'running', '2026-11-15T01:00:00Z');
+                INSERT INTO orchestration_v2_projection_runs VALUES ('r-ok-parent', 't-ok', 'running', 'antigravity_2', 'gemini-4-hydrogen', NULL, '2026-11-15T01:00:00Z', NULL, '2026-11-15T01:00:00Z');
+                INSERT INTO orchestration_v2_projection_runs VALUES ('r-ok-child', 'child-ok-1', 'running', 'antigravity', 'gemini-4-hydrogen', NULL, '2026-11-15T01:00:00Z', NULL, '2026-11-15T01:00:00Z');
+                ",
+            ).unwrap();
+
+            // p-fat: 120 turn items on t-fat -> triggers fat_parent
+            conn.execute_batch(
+                "
+                INSERT INTO orchestration_v2_projection_threads VALUES ('t-fat', 'p-fat', 'Fat Thread', '2026-11-15T02:00:00Z', NULL, NULL);
+                INSERT INTO orchestration_v2_projection_runs VALUES ('r-fat-1', 't-fat', 'completed', 'antigravity_2', 'gemini-4-hydrogen', NULL, '2026-11-15T02:00:00Z', '2026-11-15T02:00:10Z', '2026-11-15T02:00:10Z');
+                ",
+            ).unwrap();
+            for i in 0..120 {
+                conn.execute(
+                    "INSERT INTO orchestration_v2_projection_turn_items VALUES (?1, 't-fat', NULL)",
+                    [format!("item-{i}")],
+                )
+                .unwrap();
+            }
+
+            // p-dead: ALSO has 3 active antigravity workers (over_concurrency + ram_warning) AND 15 runs (fat_parent)
+            // AND latest run failed in 250ms with AcpRequestError -> status priority MUST be "acp_dead"!
+            conn.execute_batch(
+                "
+                INSERT INTO orchestration_v2_projection_threads VALUES ('t-dead', 'p-dead', 'Dead Thread', '2026-11-15T03:00:00Z', NULL, NULL);
+                INSERT INTO orchestration_v2_projection_subagents VALUES ('s-d1', 't-dead', 'c-d1', 'antigravity', 'gemini-4-hydrogen', 'running', '2026-11-15T03:00:00Z');
+                INSERT INTO orchestration_v2_projection_subagents VALUES ('s-d2', 't-dead', 'c-d2', 'antigravity_2', 'gemini-4-hydrogen', 'running', '2026-11-15T03:00:00Z');
+                INSERT INTO orchestration_v2_projection_subagents VALUES ('s-d3', 't-dead', 'c-d3', 'antigravity', 'gemini-4-argon', 'pending', '2026-11-15T03:00:00Z');
+                ",
+            ).unwrap();
+            for i in 0..14 {
+                conn.execute(
+                    "INSERT INTO orchestration_v2_projection_runs VALUES (?1, 't-dead', 'completed', 'antigravity_2', 'gemini-4-hydrogen', NULL, '2026-11-15T02:50:00Z', '2026-11-15T02:50:05Z', ?2)",
+                    [format!("r-dead-{i}"), format!("2026-11-15T02:{i:02}:00Z")],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO orchestration_v2_projection_runs VALUES ('r-dead-latest', 't-dead', 'failed', 'antigravity_2', 'gemini-4-hydrogen', 'provider_error: AcpRequestError session closed', '2026-11-15T03:05:00.100Z', '2026-11-15T03:05:00.350Z', '2026-11-15T03:05:00.350Z')",
+                [],
+            ).unwrap();
+        }
+
+        let (projects, subagents) = read_sqlite_state(&db_path, &HashMap::new()).unwrap();
+        let by_id: HashMap<&str, &ProjectSummary> = projects
+            .iter()
+            .map(|p| (p.project_id.as_str(), p))
+            .collect();
+
+        // p-ok: deduped to 1 active worker
+        assert_eq!(by_id["p-ok"].session_health.status, "ok");
+        assert_eq!(by_id["p-ok"].session_health.active_antigravity_workers, 1);
+        assert_eq!(by_id["p-ok"].session_health.active_workers_total, 1);
+        assert!(!by_id["p-ok"].session_health.ram_warning);
+
+        // p-fat: 120 turn items -> fat_parent
+        assert_eq!(by_id["p-fat"].session_health.status, "fat_parent");
+        assert_eq!(by_id["p-fat"].session_health.fat_parent_threads.len(), 1);
+        assert_eq!(
+            by_id["p-fat"].session_health.fat_parent_threads[0].item_count,
+            120
+        );
+
+        // p-dead: priority acp_dead > over_concurrency > fat_parent, and ram_warning = true (3 agy on laptop-8gb)
+        assert_eq!(by_id["p-dead"].session_health.status, "acp_dead");
+        assert!(by_id["p-dead"].session_health.ram_warning);
+        assert_eq!(by_id["p-dead"].session_health.active_antigravity_workers, 3);
+        assert_eq!(by_id["p-dead"].session_health.dead_acp_threads.len(), 1);
+        assert_eq!(
+            by_id["p-dead"].session_health.dead_acp_threads[0].run_count,
+            15
+        );
+
+        // Global session health aggregates across all projects
+        let global = compute_global_session_health(&projects, &subagents, None);
+        assert_eq!(global.status, "acp_dead");
+        assert_eq!(global.active_antigravity_workers, 4);
+        assert_eq!(global.active_workers_total, 4);
+        assert!(global.ram_warning);
+        assert!(global.affected_projects.contains(&"p-fat".to_string()));
+        assert!(global.affected_projects.contains(&"p-dead".to_string()));
+        assert!(!global.affected_projects.contains(&"p-ok".to_string()));
     }
 }

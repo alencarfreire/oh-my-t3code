@@ -204,14 +204,14 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     assert!(!looks_like_mojibake(&agy_dual.description));
     assert_eq!(
         agy_dual.orchestrator.options.get("thinking_level").map(String::as_str),
-        Some("high")
+        Some("medium")
     );
     assert!(!agy_dual.orchestrator.options.contains_key("thinkingLevel"));
 
     let hybrid = globals.iter().find(|p| p.id == "hybrid-agy-codex").unwrap();
     assert_eq!(
         hybrid.orchestrator.options.get("thinking_level").map(String::as_str),
-        Some("high")
+        Some("medium")
     );
     assert!(!looks_like_mojibake(&hybrid.description));
 
@@ -336,6 +336,10 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         "thinking_level"
     );
     assert_eq!(
+        settings_after["projectSettingsOverrides"]["proj-agy"]["defaultModelSelection"]["options"][0]["value"],
+        "medium"
+    );
+    assert_eq!(
         settings_after["projectSettingsOverrides"]["proj-codex"]["defaultModelSelection"]["instanceId"],
         "codex"
     );
@@ -371,6 +375,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         orchestrator: agy_dual.orchestrator.clone(),
         fallback_chain: agy_dual.fallback_chain.clone(),
         contention: agy_dual.contention.clone(),
+        session_policy: Default::default(),
         roles: custom_roles,
         disabled_roles: Vec::new(),
     };
@@ -406,6 +411,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     let skill_md = fs::read_to_string(agy_squad_dir.join("SKILL.md")).unwrap();
     assert!(skill_md.contains("Nível 1: Troca de instância mantendo gemini-4-hydrogen (Agy Principal ↔ Agy Veca)"));
     assert!(skill_md.contains("roles/observabilidade.md"));
+    assert!(skill_md.contains("## 5. Gestão de sessão e concorrência (oh-my-t3code)"));
     assert!(!skill_md.contains('Ã'));
     assert!(!looks_like_mojibake(&skill_md));
 

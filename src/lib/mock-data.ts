@@ -4,19 +4,28 @@ import type {
   DashboardSnapshot,
   FailedProjectResync,
   GlobalAppConfig,
+  GlobalSessionHealth,
   GlobalSwapReport,
   PresetConfig,
+  ProjectSessionHealth,
   ProjectSummary,
   ProviderInstanceInfo,
   ResolvedProjectPreset,
   ResyncedProjectReport,
   RoleConfig,
+  SessionPolicy,
   SkillMetadata,
   SubagentActivity,
   SyncResult,
   T3ModelSelection,
 } from "../types/ipc";
-import { isValidSafeId, normalizeDisabledRoles } from "./preset-utils";
+import {
+  createDefaultSessionPolicy,
+  effectiveOrchestratorOptions,
+  effectiveParentThinkingLevel,
+  isValidSafeId,
+  normalizeDisabledRoles,
+} from "./preset-utils";
 
 function deriveProjectSlug(workspaceRoot: string): string {
   const parts = workspaceRoot.split("/").filter(Boolean);
@@ -70,6 +79,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       conflictFiles: ["package.json", "Cargo.toml", "tauri.conf.json"],
       defaultIsolation: "shared",
     },
+    sessionPolicy: createDefaultSessionPolicy(),
     roles: {
       explorer: {
         id: "explorer",
@@ -208,7 +218,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     orchestrator: {
       providerInstanceId: "antigravity_2",
       model: "gemini-4-hydrogen",
-      options: { thinking_level: "high" },
+      options: { thinking_level: "medium" },
     },
     fallbackChain: [
       {
@@ -240,6 +250,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       conflictFiles: ["package.json", "Cargo.toml", "tauri.conf.json"],
       defaultIsolation: "shared",
     },
+    sessionPolicy: createDefaultSessionPolicy(),
     roles: {
       explorer: {
         id: "explorer",
@@ -391,6 +402,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       conflictFiles: ["db/schema.rb", "config/routes.rb", "Gemfile.lock"],
       defaultIsolation: "shared",
     },
+    sessionPolicy: createDefaultSessionPolicy(),
     roles: {
       explorer: {
         id: "explorer",
@@ -483,7 +495,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     orchestrator: {
       providerInstanceId: "antigravity_2",
       model: "gemini-4-hydrogen",
-      options: { thinking_level: "high" },
+      options: { thinking_level: "medium" },
     },
     fallbackChain: [
       {
@@ -506,6 +518,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       conflictFiles: ["package.json"],
       defaultIsolation: "worktree",
     },
+    sessionPolicy: createDefaultSessionPolicy(),
     roles: {
       ...agyDual.roles,
       fixer: {
@@ -689,6 +702,100 @@ function buildSeedSkills(): SkillMetadata[] {
   ];
 }
 
+function defaultProjectSessionHealth(
+  projectId: string,
+  activeAntigravityWorkers = 0,
+  activeWorkersTotal = 0,
+): ProjectSessionHealth {
+  return {
+    projectId,
+    status: "ok",
+    activeAntigravityWorkers,
+    activeWorkersTotal,
+    maxConcurrentAntigravityWorkers: 2,
+    maxConcurrentWorkersTotal: 3,
+    ramWarning: false,
+    fatParentThreads: [],
+    deadAcpThreads: [],
+    advisory: null,
+  };
+}
+
+export function createMockSessionHealthScenario(
+  scenario: "ok" | "fat_parent" | "acp_dead" | "over_concurrency",
+  projectId = "proj-oh-my-t3code",
+): ProjectSessionHealth {
+  const nowIso = new Date().toISOString();
+  if (scenario === "acp_dead") {
+    return {
+      projectId,
+      status: "acp_dead",
+      activeAntigravityWorkers: 1,
+      activeWorkersTotal: 1,
+      maxConcurrentAntigravityWorkers: 2,
+      maxConcurrentWorkersTotal: 3,
+      ramWarning: false,
+      fatParentThreads: [],
+      deadAcpThreads: [
+        {
+          threadId: "thr-acp-dead-6ms",
+          projectId,
+          title: "Squad — Sessão ACP interrompida",
+          runCount: 6,
+          itemCount: 42,
+          status: "acp_dead",
+          lastError: "provider_error: AcpRequestError — run failed in 6 ms",
+          updatedAt: nowIso,
+        },
+      ],
+      advisory:
+        "1 thread(s) com sessão ACP morta detectada — abra uma nova thread (advise-new-thread) em vez de continuar na mesma.",
+    };
+  }
+  if (scenario === "fat_parent") {
+    return {
+      projectId,
+      status: "fat_parent",
+      activeAntigravityWorkers: 2,
+      activeWorkersTotal: 2,
+      maxConcurrentAntigravityWorkers: 2,
+      maxConcurrentWorkersTotal: 3,
+      ramWarning: false,
+      fatParentThreads: [
+        {
+          threadId: "thr-fat-parent-18",
+          projectId,
+          title: "Tech Lead — Feature extensa (Onda 2)",
+          runCount: 18,
+          itemCount: 830,
+          status: "fat_parent",
+          lastError: null,
+          updatedAt: nowIso,
+        },
+      ],
+      deadAcpThreads: [],
+      advisory:
+        "1 thread(s) pai atingiram o limiar de handoff (15 turns ou 120 itens).",
+    };
+  }
+  if (scenario === "over_concurrency") {
+    return {
+      projectId,
+      status: "over_concurrency",
+      activeAntigravityWorkers: 3,
+      activeWorkersTotal: 4,
+      maxConcurrentAntigravityWorkers: 2,
+      maxConcurrentWorkersTotal: 3,
+      ramWarning: true,
+      fatParentThreads: [],
+      deadAcpThreads: [],
+      advisory:
+        "Concorrência acima do limite (3/2 Antigravity, 4/3 total) [alerta de RAM em laptop-8gb].",
+    };
+  }
+  return defaultProjectSessionHealth(projectId, 0, 0);
+}
+
 function buildSeedProjects(): ProjectSummary[] {
   const now = Date.now();
   return [
@@ -709,6 +816,7 @@ function buildSeedProjects(): ProjectSummary[] {
       detectedSquadPath:
         "/Users/alencarfreire/.t3/projects/oh-my-t3code/.agents/skills/oh-my-t3code-squad",
       activeSubagentCount: 1,
+      sessionHealth: defaultProjectSessionHealth("proj-oh-my-t3code", 1, 1),
     },
     {
       projectId: "proj-cabrito",
@@ -727,6 +835,7 @@ function buildSeedProjects(): ProjectSummary[] {
       detectedSquadPath:
         "/Users/alencarfreire/Workspace/cabrito/.agents/skills/cabrito-squad",
       activeSubagentCount: 1,
+      sessionHealth: defaultProjectSessionHealth("proj-cabrito", 1, 1),
     },
     {
       projectId: "proj-dashboard-meta",
@@ -745,6 +854,7 @@ function buildSeedProjects(): ProjectSummary[] {
       detectedSquadPath:
         "/Users/alencarfreire/Workspace/dashboard-meta/.agents/skills/dashboard-meta-squad",
       activeSubagentCount: 0,
+      sessionHealth: defaultProjectSessionHealth("proj-dashboard-meta", 0, 0),
     },
     {
       projectId: "proj-landing-page",
@@ -762,6 +872,7 @@ function buildSeedProjects(): ProjectSummary[] {
       detectedSquadSlug: null,
       detectedSquadPath: null,
       activeSubagentCount: 0,
+      sessionHealth: defaultProjectSessionHealth("proj-landing-page", 0, 0),
     },
   ];
 }
@@ -853,6 +964,7 @@ function renderSkillMd(projectSlug: string, preset: PresetConfig): string {
   const sortedRoles = Object.entries(preset.roles).sort(([a], [b]) => a.localeCompare(b));
   const roleNames = sortedRoles.map(([, r]) => r.id).join(", ") || "nenhum papel configurado";
 
+  const effOrchOptions = effectiveOrchestratorOptions(preset);
   const lines: string[] = [
     "---",
     `name: ${squadName}`,
@@ -866,7 +978,7 @@ function renderSkillMd(projectSlug: string, preset: PresetConfig): string {
     "",
     `- **Preset ativo:** \`${preset.id}\` (${preset.name})`,
     `- **Topologia:** \`${preset.topology}\``,
-    `- **Orquestrador:** \`${preset.orchestrator.providerInstanceId}\` / \`${preset.orchestrator.model}\` (${formatOptionsInline(preset.orchestrator.options)})`,
+    `- **Orquestrador:** \`${preset.orchestrator.providerInstanceId}\` / \`${preset.orchestrator.model}\` (${formatOptionsInline(effOrchOptions)})`,
     "",
     "## 1. Preparação do Orquestrador",
     "",
@@ -928,6 +1040,67 @@ function renderSkillMd(projectSlug: string, preset: PresetConfig): string {
       );
     });
   }
+
+  const sp = preset.sessionPolicy;
+  const effParentThinking = effectiveParentThinkingLevel(sp);
+  lines.push(
+    "",
+    "## 5. Gestão de sessão e concorrência (oh-my-t3code)",
+    "",
+    `- **Perfil de hardware:** \`${sp.hardwareProfile}\``,
+    `- **Limite simultâneo Antigravity (ACP):** \`${sp.maxConcurrentAntigravityWorkers}\` worker(s)`,
+    `- **Limite simultâneo total de workers:** \`${sp.maxConcurrentWorkersTotal}\` worker(s)`,
+    `- **Handoff do chat pai:** após \`${sp.parentMaxTurnsBeforeHandoff}\` turns ou \`${sp.parentMaxItemsBeforeHandoff}\` itens`,
+    `- **Limiares de tokens do chat pai:** aviso em \`${sp.parentWarnInputTokens}\` / handoff obrigatório em \`${sp.parentHardInputTokens}\``,
+    `- **Thinking efetivo do chat pai:** \`${effParentThinking}\` (configurado: \`${sp.parentThinkingLevel}\`)`,
+    `- **Modo padrão de delegação:** \`${sp.delegateMode}\``,
+    `- **Ao detectar sessão ACP morta:** \`${sp.onAcpSessionDead}\``,
+    "",
+    "### Thinking dos workers por tipo",
+    "",
+  );
+
+  const sortedKinds = Object.entries(sp.workerThinkingByKind).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  if (sortedKinds.length === 0) {
+    lines.push("Nenhuma regra por tipo configurada.", "");
+  } else {
+    lines.push("| Tipo | Modelo | Thinking |", "| :--- | :--- | :--- |");
+    for (const [kind, rule] of sortedKinds) {
+      lines.push(`| \`${kind}\` | \`${rule.model}\` | \`${rule.thinkingLevel}\` |`);
+    }
+    lines.push("");
+  }
+
+  lines.push("### Padrões proibidos", "");
+  if (sp.forbiddenPatterns.length === 0) {
+    lines.push("Nenhum padrão proibido configurado.", "");
+  } else {
+    for (const pattern of sp.forbiddenPatterns) {
+      lines.push(`- \`${pattern}\``);
+    }
+    lines.push("");
+  }
+
+  const isolationRule =
+    preset.contention.defaultIsolation === "worktree" &&
+    (sp.maxConcurrentAntigravityWorkers <= 1 || sp.maxConcurrentWorkersTotal <= 1)
+      ? 'como o limite de concorrência é `<= 1`, force ondas sequenciais com `isolation: "shared"` (não abra múltiplos worktrees simultâneos).'
+      : "respeite o isolamento padrão configurado mantendo no máximo os limites de concorrência acima.";
+
+  lines.push(
+    "### Regras operacionais obrigatórias",
+    "",
+    '1. O orquestrador **nunca** edita código diretamente nem implementa no mesmo chat — delegue via `delegate_task` (`mode: "async"`).',
+    `2. Respeite o teto de concorrência: no máximo \`${sp.maxConcurrentAntigravityWorkers}\` worker(s) Antigravity (ACP) e \`${sp.maxConcurrentWorkersTotal}\` worker(s) no total por onda.`,
+    `3. Mantenha \`thinking_level: "${effParentThinking}"\` no chat pai (em \`laptop-8gb\`, \`high\`/\`xhigh\` são sempre rebaixados para \`medium\`).`,
+    "4. Aplique `workerThinkingByKind` conforme a natureza da sub-tarefa (`research`, `frontend`, `backend`, `architecture`, `qa`).",
+    `5. **Isolamento (\`${preset.contention.defaultIsolation}\`):** ${isolationRule}`,
+    `6. **Handoff proativo:** ao atingir \`${sp.parentMaxTurnsBeforeHandoff}\` turns, \`${sp.parentMaxItemsBeforeHandoff}\` itens ou \`${sp.parentWarnInputTokens}\`/\`${sp.parentHardInputTokens}\` tokens no chat pai, salve \`memory_handoff_begin\` no \`ai-memory\` e inicie uma nova thread.`,
+    `7. **Sessão ACP morta:** diante de \`provider_error\` / \`AcpRequestError\` ou falha em \`< 1000ms\`, não insista na mesma thread — aplique \`${sp.onAcpSessionDead}\` e abra uma nova thread.`,
+    "8. Evite polling em loop (`task_status` / `sleep`); aguarde o retorno reativo das ondas.",
+  );
 
   return `${lines.join("\n")}\n`;
 }
@@ -1003,7 +1176,7 @@ const COMPILER_PLAYBOOK_SIGNATURE = "— Playbook do Orquestrador (T3 Code)";
 const MAX_INHERITANCE_DEPTH = 16;
 
 function selectionFromPreset(preset: PresetConfig): T3ModelSelection {
-  const normalizedOptions = normalizeOptionsRecord(preset.orchestrator.options);
+  const normalizedOptions = effectiveOrchestratorOptions(preset);
   return {
     instanceId: preset.orchestrator.providerInstanceId,
     model: preset.orchestrator.model,
@@ -1025,6 +1198,43 @@ function stripDisabledRoles(preset: PresetConfig): PresetConfig {
     delete cloned.disabledRoles;
   }
   return cloned;
+}
+
+function mergeSessionPolicy(base: SessionPolicy, patch?: Partial<SessionPolicy>): SessionPolicy {
+  if (!patch) return structuredClone(base);
+  const mergedWorkerThinking: Record<string, { model: string; thinkingLevel: string }> =
+    structuredClone(base.workerThinkingByKind);
+  if (patch.workerThinkingByKind) {
+    for (const [kind, rule] of Object.entries(patch.workerThinkingByKind)) {
+      const existing = mergedWorkerThinking[kind];
+      mergedWorkerThinking[kind] = {
+        model: rule.model || existing?.model || "",
+        thinkingLevel: rule.thinkingLevel || existing?.thinkingLevel || "",
+      };
+    }
+  }
+  return {
+    hardwareProfile: patch.hardwareProfile || base.hardwareProfile,
+    maxConcurrentAntigravityWorkers:
+      patch.maxConcurrentAntigravityWorkers ?? base.maxConcurrentAntigravityWorkers,
+    maxConcurrentWorkersTotal:
+      patch.maxConcurrentWorkersTotal ?? base.maxConcurrentWorkersTotal,
+    parentMaxTurnsBeforeHandoff:
+      patch.parentMaxTurnsBeforeHandoff ?? base.parentMaxTurnsBeforeHandoff,
+    parentMaxItemsBeforeHandoff:
+      patch.parentMaxItemsBeforeHandoff ?? base.parentMaxItemsBeforeHandoff,
+    parentWarnInputTokens:
+      patch.parentWarnInputTokens ?? base.parentWarnInputTokens,
+    parentHardInputTokens:
+      patch.parentHardInputTokens ?? base.parentHardInputTokens,
+    parentThinkingLevel: patch.parentThinkingLevel || base.parentThinkingLevel,
+    workerThinkingByKind: mergedWorkerThinking,
+    delegateMode: patch.delegateMode || base.delegateMode,
+    onAcpSessionDead: patch.onAcpSessionDead || base.onAcpSessionDead,
+    forbiddenPatterns: patch.forbiddenPatterns
+      ? [...patch.forbiddenPatterns]
+      : [...base.forbiddenPatterns],
+  };
 }
 
 function mergePresetPatch(base: PresetConfig, patch: PresetConfig): PresetConfig {
@@ -1060,6 +1270,8 @@ function mergePresetPatch(base: PresetConfig, patch: PresetConfig): PresetConfig
     defaultIsolation:
       patch.contention.defaultIsolation || base.contention.defaultIsolation,
   };
+
+  const sessionPolicy = mergeSessionPolicy(base.sessionPolicy, patch.sessionPolicy);
 
   const disabledSet = new Set<string>(base.disabledRoles ?? []);
   const patchDisabledSet = new Set<string>(patch.disabledRoles ?? []);
@@ -1099,6 +1311,7 @@ function mergePresetPatch(base: PresetConfig, patch: PresetConfig): PresetConfig
     orchestrator,
     fallbackChain,
     contention,
+    sessionPolicy,
     roles,
   };
   if (disabledRoles.length > 0) {
@@ -1194,6 +1407,16 @@ export class MockIpcStore {
     return this.projectSettingsOverrides.has(projectId);
   }
 
+  setProjectSessionHealth(
+    projectId: string,
+    health: ProjectSessionHealth,
+  ): void {
+    const proj = this.projects.find((p) => p.projectId === projectId);
+    if (proj) {
+      proj.sessionHealth = structuredClone(health);
+    }
+  }
+
   private assertValidPresetStructure(preset: PresetConfig): void {
     if (!isValidSafeId(preset.id)) {
       throw new Error(`Invalid preset id '${preset.id}'`);
@@ -1212,6 +1435,11 @@ export class MockIpcStore {
       }
       if (!role.id) {
         role.id = roleId;
+      }
+    }
+    for (const kind of Object.keys(preset.sessionPolicy?.workerThinkingByKind ?? {})) {
+      if (!isValidSafeId(kind)) {
+        throw new Error(`Invalid workerThinkingByKind key '${kind}'`);
       }
     }
   }
@@ -1308,6 +1536,55 @@ export class MockIpcStore {
       resolvedGlobalPresets[0];
     const firstFallback = activeGlobal?.fallbackChain[0];
     const globalEnabled = this.globalConfig.enabled;
+    const policy = activeGlobal?.sessionPolicy ?? createDefaultSessionPolicy();
+
+    const activeAntigravityWorkers = this.projects.reduce(
+      (sum, p) => sum + (p.sessionHealth?.activeAntigravityWorkers ?? 0),
+      0,
+    );
+    const activeWorkersTotal = this.projects.reduce(
+      (sum, p) => sum + (p.sessionHealth?.activeWorkersTotal ?? 0),
+      0,
+    );
+    const ramWarning =
+      (policy.hardwareProfile === "laptop-8gb" && activeAntigravityWorkers > 2) ||
+      this.projects.some((p) => p.sessionHealth?.ramWarning);
+    const overConcurrency =
+      activeAntigravityWorkers > policy.maxConcurrentAntigravityWorkers ||
+      activeWorkersTotal > policy.maxConcurrentWorkersTotal ||
+      ramWarning ||
+      this.projects.some((p) => p.sessionHealth?.status === "over_concurrency");
+    const hasAcpDead = this.projects.some((p) => p.sessionHealth?.status === "acp_dead");
+    const hasFatParent = this.projects.some((p) => p.sessionHealth?.status === "fat_parent");
+    const status = hasAcpDead
+      ? "acp_dead"
+      : overConcurrency
+        ? "over_concurrency"
+        : hasFatParent
+          ? "fat_parent"
+          : "ok";
+    const affectedProjects = this.projects
+      .filter((p) => p.sessionHealth && p.sessionHealth.status !== "ok")
+      .map((p) => p.projectId);
+    const advisory =
+      status === "acp_dead"
+        ? `Sessão ACP morta detectada em ${Math.max(1, affectedProjects.length)} projeto(s). Abra uma nova thread (${policy.onAcpSessionDead}).`
+        : status === "over_concurrency"
+          ? `Concorrência global acima do perfil (${activeAntigravityWorkers}/${policy.maxConcurrentAntigravityWorkers} Antigravity, ${activeWorkersTotal}/${policy.maxConcurrentWorkersTotal} total)${ramWarning ? " [alerta de RAM em laptop-8gb]" : ""}.`
+          : status === "fat_parent"
+            ? `Thread pai extensa detectada em ${Math.max(1, affectedProjects.length)} projeto(s). Recomenda-se handoff via ai-memory.`
+            : null;
+
+    const sessionHealth: GlobalSessionHealth = {
+      status,
+      activeAntigravityWorkers,
+      activeWorkersTotal,
+      maxConcurrentAntigravityWorkers: policy.maxConcurrentAntigravityWorkers,
+      maxConcurrentWorkersTotal: policy.maxConcurrentWorkersTotal,
+      ramWarning,
+      affectedProjects,
+      advisory,
+    };
 
     return structuredClone({
       globalConfig: this.globalConfig,
@@ -1317,16 +1594,7 @@ export class MockIpcStore {
       globalPresets: resolvedGlobalPresets,
       skills: this.skills,
       defaultModelSelection:
-        globalEnabled && activeGlobal
-          ? {
-              instanceId: activeGlobal.orchestrator.providerInstanceId,
-              model: activeGlobal.orchestrator.model,
-              options: Object.entries(activeGlobal.orchestrator.options).map(([id, value]) => ({
-                id,
-                value,
-              })),
-            }
-          : null,
+        globalEnabled && activeGlobal ? selectionFromPreset(activeGlobal) : null,
       fallbackModelSelection:
         globalEnabled && firstFallback
           ? {
@@ -1340,6 +1608,7 @@ export class MockIpcStore {
           : null,
       sqliteAvailable: true,
       settingsAvailable: true,
+      sessionHealth,
     });
   }
 
@@ -1773,7 +2042,9 @@ export class MockIpcStore {
         delete candidateLocal.orchestrator.options.thinkingLevel;
         if (!candidateLocal.orchestrator.model.startsWith("gemini-4-")) {
           candidateLocal.orchestrator.model = "gemini-4-hydrogen";
-          candidateLocal.orchestrator.options.thinking_level = "high";
+          candidateLocal.orchestrator.options.thinking_level = effectiveParentThinkingLevel(
+            candidateLocal.sessionPolicy,
+          );
         }
         nextModel = candidateLocal.orchestrator.model;
 
@@ -1943,7 +2214,9 @@ export class MockIpcStore {
       delete candidate.orchestrator.options.thinkingLevel;
       if (!candidate.orchestrator.model.startsWith("gemini-4-")) {
         candidate.orchestrator.model = "gemini-4-hydrogen";
-        candidate.orchestrator.options = { thinking_level: "high" };
+        candidate.orchestrator.options = {
+          thinking_level: effectiveParentThinkingLevel(candidate.sessionPolicy),
+        };
       }
       if (candidate.fallbackChain[0]?.providerInstanceId === nextInstance) {
         candidate.fallbackChain[0].providerInstanceId = oppositeInstance;

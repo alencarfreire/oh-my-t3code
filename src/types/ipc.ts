@@ -44,6 +44,32 @@ export interface GlobalAppConfig {
   enabled: boolean;
 }
 
+export type HardwareProfile =
+  | "laptop-8gb"
+  | "desktop-16gb"
+  | "desktop-32gb-plus"
+  | (string & {});
+
+export interface WorkerThinkingRule {
+  model: string;
+  thinkingLevel: string;
+}
+
+export interface SessionPolicy {
+  hardwareProfile: HardwareProfile;
+  maxConcurrentAntigravityWorkers: number;
+  maxConcurrentWorkersTotal: number;
+  parentMaxTurnsBeforeHandoff: number;
+  parentMaxItemsBeforeHandoff: number;
+  parentWarnInputTokens: number;
+  parentHardInputTokens: number;
+  parentThinkingLevel: string;
+  workerThinkingByKind: Record<string, WorkerThinkingRule>;
+  delegateMode: string;
+  onAcpSessionDead: string;
+  forbiddenPatterns: string[];
+}
+
 export interface PresetConfig {
   id: string;
   name: string;
@@ -54,6 +80,7 @@ export interface PresetConfig {
   orchestrator: OrchestratorSelection;
   fallbackChain: FallbackStep[];
   contention: ContentionPolicy;
+  sessionPolicy: SessionPolicy;
   roles: Record<string, RoleConfig>;
   disabledRoles?: string[];
 }
@@ -107,6 +134,41 @@ export interface SubagentActivity {
   settledAt: string | null;
 }
 
+export interface ParentThreadHealth {
+  threadId: string;
+  projectId: string;
+  title: string;
+  runCount: number;
+  itemCount: number;
+  status: string;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+export interface ProjectSessionHealth {
+  projectId: string;
+  status: string;
+  activeAntigravityWorkers: number;
+  activeWorkersTotal: number;
+  maxConcurrentAntigravityWorkers: number;
+  maxConcurrentWorkersTotal: number;
+  ramWarning: boolean;
+  fatParentThreads: ParentThreadHealth[];
+  deadAcpThreads: ParentThreadHealth[];
+  advisory: string | null;
+}
+
+export interface GlobalSessionHealth {
+  status: string;
+  activeAntigravityWorkers: number;
+  activeWorkersTotal: number;
+  maxConcurrentAntigravityWorkers: number;
+  maxConcurrentWorkersTotal: number;
+  ramWarning: boolean;
+  affectedProjects: string[];
+  advisory: string | null;
+}
+
 export interface ProjectSummary {
   projectId: string;
   title: string;
@@ -123,6 +185,7 @@ export interface ProjectSummary {
   detectedSquadSlug: string | null;
   detectedSquadPath: string | null;
   activeSubagentCount: number;
+  sessionHealth: ProjectSessionHealth;
 }
 
 export interface ResyncedProjectReport {
@@ -160,6 +223,7 @@ export interface DashboardSnapshot {
   fallbackModelSelection: T3ModelSelection | null;
   sqliteAvailable: boolean;
   settingsAvailable: boolean;
+  sessionHealth: GlobalSessionHealth;
   lastGlobalSwapReport?: GlobalSwapReport | null;
 }
 
