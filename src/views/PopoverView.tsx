@@ -444,7 +444,7 @@ export function PopoverView() {
   };
 
   const handleSwapInstance = async (project: ProjectSummary) => {
-    if (!snapshot) return;
+    if (!snapshot || !project.presetEnabled) return;
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "swap" }));
     setErrorMsg(null);
     try {
@@ -972,7 +972,7 @@ export function PopoverView() {
                         <div className="flex items-center justify-between gap-1.5">
                           <button
                             type="button"
-                            disabled={Boolean(busy)}
+                            disabled={Boolean(busy) || !project.presetEnabled}
                             onClick={() => void handleSwapInstance(project)}
                             aria-label={
                               project.activeInstanceId === "codex"
@@ -980,14 +980,16 @@ export function PopoverView() {
                                 : `Alternar instância Agy em ${project.title}`
                             }
                             title={
-                              project.activeInstanceId === "codex"
-                                ? "Alternar gpt-6.1-sol ⇄ gpt-6.1-terra (1 clique)"
-                                : "Alternar Agy Veca ⇄ Agy Principal (1 clique)"
+                              !project.presetEnabled
+                                ? "Ative o override do projeto para inverter a instância"
+                                : project.activeInstanceId === "codex"
+                                  ? "Alternar gpt-6.1-sol ⇄ gpt-6.1-terra (1 clique)"
+                                  : "Alternar Agy Veca ⇄ Agy Principal (1 clique)"
                             }
                             className={[
                               "inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
                               "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
-                              "enabled:active:scale-[0.96] disabled:opacity-50",
+                              "enabled:active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50",
                               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
                               SWAP_PILL_CLASSES[instanceTone] ?? SWAP_PILL_CLASSES.neutral,
                             ].join(" ")}

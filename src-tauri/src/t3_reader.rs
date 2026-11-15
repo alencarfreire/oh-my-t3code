@@ -378,6 +378,7 @@ fn compute_has_custom_override(
             match resolve_jsonc_against_globals_unlocked(ctx.presets_dir, raw, active_global_id) {
                 Ok(resolved_local) => {
                     if resolved_local.roles != global_preset.roles
+                        || resolved_local.disabled_roles != global_preset.disabled_roles
                         || resolved_local.orchestrator != global_preset.orchestrator
                         || resolved_local.fallback_chain != global_preset.fallback_chain
                         || resolved_local.contention != global_preset.contention

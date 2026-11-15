@@ -347,7 +347,22 @@ export function createEmptyRole(id: string): RoleConfig {
   };
 }
 
-export function createEmptyPreset(id: string, extendsId: string | null = "default"): PresetConfig {
+export function normalizeDisabledRoles(
+  disabledRoles?: readonly string[] | null,
+): string[] | undefined {
+  if (!disabledRoles || disabledRoles.length === 0) return undefined;
+  const normalized = Array.from(
+    new Set(disabledRoles.map((id) => id.trim()).filter((id) => isValidSafeId(id))),
+  ).sort();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+export function createEmptyPreset(
+  id: string,
+  extendsId: string | null = "default",
+  disabledRoles?: readonly string[] | null,
+): PresetConfig {
+  const normalizedDisabled = normalizeDisabledRoles(disabledRoles);
   return {
     id,
     name: id,
@@ -376,6 +391,7 @@ export function createEmptyPreset(id: string, extendsId: string | null = "defaul
       defaultIsolation: "shared",
     },
     roles: {},
+    ...(normalizedDisabled ? { disabledRoles: normalizedDisabled } : {}),
   };
 }
 
@@ -389,7 +405,14 @@ export function createDefaultFallbackStep(): FallbackStep {
 }
 
 export function clonePreset(preset: PresetConfig): PresetConfig {
-  return JSON.parse(JSON.stringify(preset)) as PresetConfig;
+  const cloned = JSON.parse(JSON.stringify(preset)) as PresetConfig;
+  const normalizedDisabled = normalizeDisabledRoles(cloned.disabledRoles);
+  if (normalizedDisabled) {
+    cloned.disabledRoles = normalizedDisabled;
+  } else {
+    delete cloned.disabledRoles;
+  }
+  return cloned;
 }
 
 export function formatRelativeTime(isoDate: string | null | undefined): string {

@@ -55,6 +55,7 @@ export interface PresetConfig {
   fallbackChain: FallbackStep[];
   contention: ContentionPolicy;
   roles: Record<string, RoleConfig>;
+  disabledRoles?: string[];
 }
 
 export interface SkillMetadata {

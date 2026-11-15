@@ -148,7 +148,6 @@ pub fn preview_settings_override(
     project_id: &str,
     preset: &PresetConfig,
 ) -> AppResult<SettingsOverridePreview> {
-    let new_override = build_project_override_value(preset);
     let existing_override = {
         let _guard = lock_settings_file();
         if settings_path.exists() {
@@ -167,8 +166,17 @@ pub fn preview_settings_override(
         .as_ref()
         .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
         .unwrap_or_default();
-    let new_str = serde_json::to_string_pretty(&new_override)?;
-    let changed = existing_override.as_ref() != Some(&new_override);
+
+    let (new_override, new_str, changed) = if preset.enabled {
+        let new_ov = build_project_override_value(preset);
+        let new_s = serde_json::to_string_pretty(&new_ov)?;
+        let is_changed = existing_override.as_ref() != Some(&new_ov);
+        (new_ov, new_s, is_changed)
+    } else {
+        let is_changed = existing_override.is_some();
+        (Value::Null, String::new(), is_changed)
+    };
+
     let unified_diff = if changed {
         compute_unified_diff(
             &format!("settings.json (projectSettingsOverrides.{project_id})"),

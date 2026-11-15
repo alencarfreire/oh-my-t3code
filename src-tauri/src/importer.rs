@@ -312,6 +312,7 @@ pub fn import_existing_squad(
         fallback_chain: base.fallback_chain,
         contention,
         roles: if roles.is_empty() { base.roles } else { roles },
+        disabled_roles: Vec::new(),
     };
 
     save_project_preset_unlocked(paths, project_id, workspace_root, imported)

@@ -201,6 +201,8 @@ pub struct PresetConfig {
     pub contention: ContentionPolicy,
     #[serde(default)]
     pub roles: BTreeMap<String, RoleConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_roles: Vec<String>,
 }
 
 fn default_topology() -> String {

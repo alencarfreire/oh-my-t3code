@@ -371,6 +371,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         fallback_chain: agy_dual.fallback_chain.clone(),
         contention: agy_dual.contention.clone(),
         roles: custom_roles,
+        disabled_roles: Vec::new(),
     };
 
     let saved_proj = save_project_preset(
@@ -723,4 +724,88 @@ fn vtech_116_sm1_global_pause_save_sync_and_fallback_flow() {
 
     // SM1-BUG-1: swap_global_instance rejects when paused
     assert!(swap_global_instance(&paths).is_err());
+}
+
+#[test]
+fn vtech_117_sm2_project_override_lifecycle_and_tombstones() {
+    let tmp = tempdir().unwrap();
+    let t3_home = tmp.path().join(".t3");
+    let userdata_dir = t3_home.join("userdata");
+    let presets_dir = tmp.path().join("config").join("presets");
+    let skills_root = tmp.path().join("skills");
+    let agy_ws = tmp.path().join("projeto-teste-agy");
+    let codex_ws = tmp.path().join("projeto-teste-codex");
+
+    fs::create_dir_all(&userdata_dir).unwrap();
+    fs::create_dir_all(&agy_ws).unwrap();
+    fs::create_dir_all(&codex_ws).unwrap();
+
+    seed_test_sqlite(&userdata_dir.join("statev2.sqlite"), &agy_ws, &codex_ws);
+    seed_test_skills(&skills_root);
+
+    let settings_path = userdata_dir.join("settings.json");
+    fs::write(&settings_path, "{}").unwrap();
+
+    let paths = AppPaths {
+        t3_home,
+        presets_dir,
+        skill_roots: vec![("skillshare".to_string(), skills_root)],
+    };
+    ensure_seed_presets(&paths.presets_dir).unwrap();
+
+    // 1. Apply agy-dual to proj-agy -> 5 roles/*.md + active settings override
+    apply_preset_to_project(
+        &paths,
+        "proj-agy",
+        agy_ws.to_str().unwrap(),
+        Some("agy-dual".to_string()),
+        None,
+    )
+    .unwrap();
+    let roles_dir = agy_ws.join(".agents/skills/projeto-teste-agy-squad/roles");
+    assert!(roles_dir.join("qa-reviewer.md").exists());
+
+    // 2. SM2-BUG-4 + SM2-BUG-2: Derive from agy-dual with tombstone for qa-reviewer -> save, reload, apply prunes qa-reviewer.md
+    let mut derived = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+    derived.id = "projeto-teste-agy".to_string();
+    derived.extends = Some("agy-dual".to_string());
+    derived.roles.remove("qa-reviewer");
+    derived.disabled_roles = vec!["qa-reviewer".to_string()];
+
+    let saved = save_project_preset(&paths, "proj-agy", agy_ws.to_str().unwrap(), derived.clone())
+        .unwrap();
+    assert!(!saved.resolved_preset.roles.contains_key("qa-reviewer"));
+
+    let reloaded = get_project_preset(&paths, "proj-agy", agy_ws.to_str().unwrap(), None).unwrap();
+    assert!(!reloaded.resolved_preset.roles.contains_key("qa-reviewer"));
+
+    apply_preset_to_project(
+        &paths,
+        "proj-agy",
+        agy_ws.to_str().unwrap(),
+        None,
+        Some(derived),
+    )
+    .unwrap();
+    assert!(!roles_dir.join("qa-reviewer.md").exists());
+    assert!(roles_dir.join("fixer.md").exists());
+
+    // 3. SM2-BUG-1: Pause override -> swap_project_primary_instance rejects without writing settings.json
+    set_project_preset_enabled(&paths, "proj-agy", agy_ws.to_str().unwrap(), false).unwrap();
+    assert!(swap_project_primary_instance(&paths, "proj-agy", agy_ws.to_str().unwrap()).is_err());
+    assert!(!read_t3_settings(&settings_path)
+        .project_overrides
+        .contains_key("proj-agy"));
+
+    // 4. SM2-BUG-3: remove_project_override cleans compiler-generated squad and returns has_custom_override == false
+    let snap_after_remove =
+        remove_project_override(&paths, "proj-agy", agy_ws.to_str().unwrap()).unwrap();
+    assert!(!agy_ws.join(".agents/skills/projeto-teste-agy-squad").exists());
+    assert!(!local_preset_path(&agy_ws).exists());
+    let proj_agy = snap_after_remove
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-agy")
+        .unwrap();
+    assert!(!proj_agy.has_custom_override);
 }

@@ -79,12 +79,17 @@ export function RolesMatrixTab({
       return;
     }
     const created = createEmptyRole(cleaned);
+    const nextDisabledRoles = (preset.disabledRoles ?? []).filter(
+      (id) => id !== cleaned,
+    );
     onChange({
       ...preset,
       roles: {
         ...preset.roles,
         [cleaned]: created,
       },
+      disabledRoles:
+        nextDisabledRoles.length > 0 ? nextDisabledRoles : undefined,
     });
     onSelectRole(cleaned);
     setAddingRole(false);
@@ -95,7 +100,17 @@ export function RolesMatrixTab({
   const handleDeleteRole = (roleId: string) => {
     const nextRoles = { ...preset.roles };
     delete nextRoles[roleId];
-    onChange({ ...preset, roles: nextRoles });
+    const nextDisabledRoles = preset.extends
+      ? Array.from(new Set([...(preset.disabledRoles ?? []), roleId])).sort()
+      : undefined;
+    onChange({
+      ...preset,
+      roles: nextRoles,
+      disabledRoles:
+        nextDisabledRoles && nextDisabledRoles.length > 0
+          ? nextDisabledRoles
+          : undefined,
+    });
     const remaining = Object.keys(nextRoles).sort();
     onSelectRole(remaining[0] ?? null);
   };

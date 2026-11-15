@@ -3,7 +3,7 @@ use crate::models::{
     OrchestratorSelection, PresetConfig, ResolvedProjectPreset, RoleConfig,
 };
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -218,6 +218,15 @@ struct RolePatch {
     verification_commands: Option<Vec<String>>,
 }
 
+pub(crate) fn normalize_disabled_roles(ids: &[String]) -> AppResult<Vec<String>> {
+    let mut set = BTreeSet::new();
+    for role_id in ids {
+        validate_safe_id(role_id, "disabled role id")?;
+        set.insert(role_id.clone());
+    }
+    Ok(set.into_iter().collect())
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct PresetPatch {
@@ -231,21 +240,23 @@ struct PresetPatch {
     fallback_chain: Option<Vec<FallbackStep>>,
     contention: Option<ContentionPatch>,
     roles: Option<BTreeMap<String, RolePatch>>,
+    disabled_roles: Option<Vec<String>>,
 }
 
 pub fn parse_jsonc_preset(raw: &str) -> AppResult<PresetConfig> {
     let clean = strip_jsonc_comments(raw);
-    let preset: PresetConfig = serde_json::from_str(&clean)?;
+    let mut preset: PresetConfig = serde_json::from_str(&clean)?;
     validate_safe_id(&preset.id, "preset id")?;
     for role_key in preset.roles.keys() {
         validate_safe_id(role_key, "role id")?;
     }
+    preset.disabled_roles = normalize_disabled_roles(&preset.disabled_roles)?;
     Ok(preset)
 }
 
 fn parse_jsonc_patch(raw: &str) -> AppResult<PresetPatch> {
     let clean = strip_jsonc_comments(raw);
-    let patch: PresetPatch = serde_json::from_str(&clean)?;
+    let mut patch: PresetPatch = serde_json::from_str(&clean)?;
     if let Some(id) = &patch.id {
         validate_safe_id(id, "preset id")?;
     }
@@ -256,6 +267,9 @@ fn parse_jsonc_patch(raw: &str) -> AppResult<PresetPatch> {
         for role_key in roles.keys() {
             validate_safe_id(role_key, "role id")?;
         }
+    }
+    if let Some(disabled_roles) = &patch.disabled_roles {
+        patch.disabled_roles = Some(normalize_disabled_roles(disabled_roles)?);
     }
     Ok(patch)
 }
@@ -311,9 +325,20 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         }
     }
 
+    let mut disabled_set: BTreeSet<String> = base.disabled_roles.into_iter().collect();
+    let patch_disabled_set: BTreeSet<String> = patch
+        .disabled_roles
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    disabled_set.extend(patch_disabled_set.iter().cloned());
+
     let mut roles = base.roles;
     if let Some(rp_map) = patch.roles {
         for (role_id, rp) in rp_map {
+            if !patch_disabled_set.contains(&role_id) {
+                disabled_set.remove(&role_id);
+            }
             let existing = roles.get(&role_id).cloned().unwrap_or_else(|| RoleConfig {
                 id: role_id.clone(),
                 title: role_id.clone(),
@@ -348,6 +373,11 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         }
     }
 
+    for disabled_id in &disabled_set {
+        roles.remove(disabled_id);
+    }
+    let disabled_roles: Vec<String> = disabled_set.into_iter().collect();
+
     PresetConfig {
         id,
         name,
@@ -359,6 +389,7 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         fallback_chain,
         contention,
         roles,
+        disabled_roles,
     }
 }
 
@@ -374,6 +405,7 @@ fn empty_base_preset(id: &str) -> PresetConfig {
         fallback_chain: Vec::new(),
         contention: ContentionPolicy::default(),
         roles: BTreeMap::new(),
+        disabled_roles: Vec::new(),
     }
 }
 
@@ -477,9 +509,14 @@ pub fn resolve_preset_inheritance(
 
 pub(crate) fn resolve_preset_inheritance_unlocked(
     presets_dir: &Path,
-    preset: PresetConfig,
+    mut preset: PresetConfig,
 ) -> AppResult<PresetConfig> {
     validate_safe_id(&preset.id, "preset id")?;
+    for role_id in preset.roles.keys() {
+        validate_safe_id(role_id, "role id")?;
+    }
+    preset.disabled_roles = normalize_disabled_roles(&preset.disabled_roles)?;
+
     if let Some(parent_id) = &preset.extends {
         validate_safe_id(parent_id, "extends preset id")?;
         if parent_id == &preset.id {
@@ -493,6 +530,9 @@ pub(crate) fn resolve_preset_inheritance_unlocked(
         let patch: PresetPatch = serde_json::from_str(&serialized)?;
         Ok(merge_patch(parent, patch, &preset.id))
     } else {
+        for disabled_id in &preset.disabled_roles {
+            preset.roles.remove(disabled_id);
+        }
         Ok(preset)
     }
 }
@@ -790,6 +830,7 @@ pub fn build_default_preset() -> PresetConfig {
             default_isolation: "shared".to_string(),
         },
         roles,
+        disabled_roles: Vec::new(),
     }
 }
 
@@ -978,6 +1019,7 @@ fn build_agy_dual_preset() -> PresetConfig {
             default_isolation: "shared".to_string(),
         },
         roles,
+        disabled_roles: Vec::new(),
     }
 }
 
@@ -1164,6 +1206,7 @@ fn build_codex_squad_preset() -> PresetConfig {
             default_isolation: "shared".to_string(),
         },
         roles,
+        disabled_roles: Vec::new(),
     }
 }
 
@@ -1318,6 +1361,7 @@ fn build_hybrid_preset() -> PresetConfig {
             default_isolation: "worktree".to_string(),
         },
         roles,
+        disabled_roles: Vec::new(),
     }
 }
 
@@ -1524,6 +1568,10 @@ pub(crate) fn save_global_preset_unlocked(
             role.id = key.clone();
         }
     }
+    preset.disabled_roles = normalize_disabled_roles(&preset.disabled_roles)?;
+    for disabled_id in &preset.disabled_roles {
+        preset.roles.remove(disabled_id);
+    }
 
     let path = presets_dir.join(format!("{}.jsonc", preset.id));
     let body = format!("{}\n", serde_json::to_string_pretty(&preset)?);
@@ -1564,6 +1612,10 @@ pub(crate) fn save_project_preset_unlocked(
         if role.id.is_empty() {
             role.id = key.clone();
         }
+    }
+    preset.disabled_roles = normalize_disabled_roles(&preset.disabled_roles)?;
+    for disabled_id in &preset.disabled_roles {
+        preset.roles.remove(disabled_id);
     }
 
     let resolved = resolve_preset_inheritance_unlocked(&paths.presets_dir, preset.clone())?;
@@ -2125,5 +2177,99 @@ mod tests {
             get_project_preset(&paths, "proj-codex", ws.to_str().unwrap(), Some("codex"))
                 .unwrap();
         assert_eq!(resolved_fallback.resolved_preset.id, "default");
+    }
+
+    #[test]
+    fn disabled_roles_tombstone_persists_across_extends_save_and_reload() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let config_root = dir.path().join("oh-my-t3code");
+        let presets_dir = config_root.join("presets");
+        let ws = dir.path().join("derived-proj");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+        ensure_seed_presets(&paths.presets_dir).unwrap();
+
+        // 1. In-memory Studio flow: derived preset with extends: Some("agy-dual") and disabled_roles: ["qa-reviewer"]
+        let mut derived = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        derived.id = "derived-proj".to_string();
+        derived.name = "Derived Project".to_string();
+        derived.extends = Some("agy-dual".to_string());
+        derived.roles.remove("qa-reviewer");
+        derived.disabled_roles = vec![
+            "qa-reviewer".to_string(),
+            "qa-reviewer".to_string(),
+            "explorer".to_string(),
+        ];
+        derived.roles.remove("explorer");
+
+        let saved =
+            save_project_preset(&paths, "proj-derived", ws.to_str().unwrap(), derived).unwrap();
+        assert!(!saved.resolved_preset.roles.contains_key("qa-reviewer"));
+        assert!(!saved.resolved_preset.roles.contains_key("explorer"));
+        assert!(saved.resolved_preset.roles.contains_key("fixer"));
+        assert_eq!(
+            saved.resolved_preset.disabled_roles,
+            vec!["explorer".to_string(), "qa-reviewer".to_string()]
+        );
+
+        // Reload from disk -> tombstoned roles must stay absent
+        let reloaded =
+            get_project_preset(&paths, "proj-derived", ws.to_str().unwrap(), None).unwrap();
+        assert!(!reloaded.resolved_preset.roles.contains_key("qa-reviewer"));
+        assert!(!reloaded.resolved_preset.roles.contains_key("explorer"));
+        assert!(reloaded.resolved_preset.roles.contains_key("fixer"));
+        assert_eq!(
+            reloaded.resolved_preset.disabled_roles,
+            vec!["explorer".to_string(), "qa-reviewer".to_string()]
+        );
+
+        // 2. Multi-level inheritance + explicit redeclaration in child removes tombstone
+        let mut parent_global = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        parent_global.id = "agy-no-qa".to_string();
+        parent_global.extends = Some("agy-dual".to_string());
+        parent_global.roles.remove("qa-reviewer");
+        parent_global.disabled_roles = vec!["qa-reviewer".to_string()];
+        let saved_parent = save_global_preset(&paths.presets_dir, parent_global).unwrap();
+        assert!(!saved_parent.roles.contains_key("qa-reviewer"));
+
+        let child_redeclare_jsonc = r#"{
+            "id": "child-redeclare",
+            "name": "Child Redeclare",
+            "extends": "agy-no-qa",
+            "roles": {
+                "qa-reviewer": {
+                    "id": "qa-reviewer",
+                    "title": "QA Restored",
+                    "providerInstanceId": "antigravity_2",
+                    "model": "gemini-4-argon"
+                }
+            }
+        }"#;
+        let resolved_child = resolve_jsonc_against_globals(
+            &paths.presets_dir,
+            child_redeclare_jsonc,
+            "child-redeclare",
+        )
+        .unwrap();
+        assert!(resolved_child.roles.contains_key("qa-reviewer"));
+        assert!(resolved_child.disabled_roles.is_empty());
+
+        // 3. Path traversal / unsafe ID in disabled_roles is rejected
+        let invalid_jsonc = r#"{
+            "id": "bad-tombstone",
+            "name": "Bad Tombstone",
+            "extends": "agy-dual",
+            "disabledRoles": ["../evil"]
+        }"#;
+        let err = resolve_jsonc_against_globals(&paths.presets_dir, invalid_jsonc, "bad-tombstone")
+            .unwrap_err();
+        assert!(matches!(err, AppError::PathTraversal(_)));
     }
 }

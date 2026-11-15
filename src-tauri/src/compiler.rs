@@ -5,7 +5,7 @@ use crate::models::{
 use crate::preset_engine::{
     atomic_write_file, derive_project_slug, ensure_seed_presets_unlocked,
     get_project_preset_unlocked, load_global_config_unlocked, local_preset_path, lock_config_state,
-    resolve_global_preset_unlocked, resolve_preset_inheritance_unlocked,
+    normalize_disabled_roles, resolve_global_preset_unlocked, resolve_preset_inheritance_unlocked,
     save_global_config_unlocked, save_global_preset_unlocked, save_project_preset_unlocked,
     validate_safe_id,
 };
@@ -348,8 +348,14 @@ fn compile_preset_preview_unlocked(
     for role_id in preset.roles.keys() {
         validate_safe_id(role_id, "role id")?;
     }
+    let mut normalized_preset = preset.clone();
+    normalized_preset.disabled_roles = normalize_disabled_roles(&preset.disabled_roles)?;
+    for disabled_id in &normalized_preset.disabled_roles {
+        normalized_preset.roles.remove(disabled_id);
+    }
 
-    let resolved = resolve_preset_inheritance_unlocked(&paths.presets_dir, preset.clone())?;
+    let resolved =
+        resolve_preset_inheritance_unlocked(&paths.presets_dir, normalized_preset.clone())?;
     let project_slug = derive_project_slug(workspace_root);
     let squad_dir = ws_root
         .join(".agents")
@@ -361,7 +367,7 @@ fn compile_preset_preview_unlocked(
     // 1. .t3code/preset.jsonc
     let preset_json_content = format!(
         "// Oh My T3Code project preset\n{}\n",
-        serde_json::to_string_pretty(preset)?
+        serde_json::to_string_pretty(&normalized_preset)?
     );
     files.push(build_file_preview(
         ws_root,
@@ -429,7 +435,7 @@ fn apply_preset_to_project_unlocked(
 ) -> AppResult<SyncResult> {
     ensure_seed_presets_unlocked(&paths.presets_dir)?;
 
-    let target_preset: PresetConfig = if let Some(custom) = custom_preset {
+    let mut target_preset: PresetConfig = if let Some(custom) = custom_preset {
         custom
     } else if let Some(preset_id) = preset_id_or_custom {
         if preset_id == "custom" {
@@ -449,6 +455,11 @@ fn apply_preset_to_project_unlocked(
             .unwrap_or(resolved_proj.resolved_preset)
     };
 
+    target_preset.disabled_roles = normalize_disabled_roles(&target_preset.disabled_roles)?;
+    for disabled_id in &target_preset.disabled_roles {
+        target_preset.roles.remove(disabled_id);
+    }
+
     let resolved =
         resolve_preset_inheritance_unlocked(&paths.presets_dir, target_preset.clone())?;
     let preview =
@@ -462,8 +473,47 @@ fn apply_preset_to_project_unlocked(
         }
     }
 
-    let (backup_path, _) =
-        sync_project_settings(&paths.settings_path(), project_id, &resolved)?;
+    let ws_root = Path::new(workspace_root);
+    let project_slug = derive_project_slug(workspace_root);
+    let roles_dir = ws_root
+        .join(".agents")
+        .join("skills")
+        .join(format!("{project_slug}-squad"))
+        .join("roles");
+    if roles_dir.exists() && roles_dir.is_dir() {
+        ensure_within_workspace(ws_root, &roles_dir)?;
+        let mut orphan_paths = Vec::new();
+        for entry in fs::read_dir(&roles_dir)? {
+            let entry = entry?;
+            let file_path = entry.path();
+            if !file_path.is_file() {
+                continue;
+            }
+            if file_path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                if !resolved.roles.contains_key(stem) {
+                    ensure_within_workspace(ws_root, &file_path)?;
+                    orphan_paths.push(file_path);
+                }
+            }
+        }
+        orphan_paths.sort();
+        for orphan_path in orphan_paths {
+            fs::remove_file(&orphan_path)?;
+            written_files.push(orphan_path.display().to_string());
+        }
+    }
+
+    let (backup_path, _) = if resolved.enabled {
+        sync_project_settings(&paths.settings_path(), project_id, &resolved)?
+    } else {
+        (
+            remove_project_settings_override(&paths.settings_path(), project_id)?,
+            serde_json::Value::Null,
+        )
+    };
 
     Ok(SyncResult {
         project_id: project_id.to_string(),
@@ -486,6 +536,17 @@ pub fn swap_project_primary_instance(
     let _guard = lock_config_state();
     let settings = read_t3_settings(&paths.settings_path());
     let current_resolved = get_project_preset_unlocked(paths, project_id, workspace_root, None)?;
+
+    if !current_resolved.resolved_preset.enabled
+        || current_resolved
+            .raw_local_preset
+            .as_ref()
+            .is_some_and(|p| !p.enabled)
+    {
+        return Err(AppError::InvalidInput(
+            "Override do projeto está pausado. Reative-o antes de inverter a instância.".into(),
+        ));
+    }
 
     let current_instance = settings
         .project_overrides
@@ -757,6 +818,35 @@ pub fn remove_project_override(
                     .unwrap_or(false)
             {
                 let _ = fs::remove_dir(t3code_dir);
+            }
+        }
+    }
+
+    let project_slug = derive_project_slug(workspace_root);
+    let agents_dir = ws_root.join(".agents");
+    let skills_dir = agents_dir.join("skills");
+    let squad_dir = skills_dir.join(format!("{project_slug}-squad"));
+    ensure_within_workspace(ws_root, &squad_dir)?;
+
+    let skill_md_path = squad_dir.join("SKILL.md");
+    ensure_within_workspace(ws_root, &skill_md_path)?;
+    if skill_md_path.is_file() {
+        let content = fs::read_to_string(&skill_md_path)?;
+        if content.contains("— Playbook do Orquestrador (T3 Code)") {
+            fs::remove_dir_all(&squad_dir)?;
+            if skills_dir.is_dir()
+                && fs::read_dir(&skills_dir)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(false)
+            {
+                let _ = fs::remove_dir(&skills_dir);
+            }
+            if agents_dir.is_dir()
+                && fs::read_dir(&agents_dir)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(false)
+            {
+                let _ = fs::remove_dir(&agents_dir);
             }
         }
     }
@@ -1288,5 +1378,248 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(paths.settings_path()).unwrap()).unwrap();
         assert!(settings_after_paused.get("defaultModelSelection").is_none());
         assert!(settings_after_paused.get("fallbackModelSelection").is_none());
+    }
+
+    #[test]
+    fn swap_project_primary_instance_rejects_when_paused_without_mutating_files() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws = dir.path().join("proj-paused-swap");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        apply_preset_to_project(
+            &paths,
+            "proj-paused",
+            ws.to_str().unwrap(),
+            Some("agy-dual".to_string()),
+            None,
+        )
+        .unwrap();
+        set_project_preset_enabled(&paths, "proj-paused", ws.to_str().unwrap(), false).unwrap();
+
+        let preset_before = fs::read_to_string(local_preset_path(&ws)).unwrap();
+        let settings_before = fs::read_to_string(paths.settings_path()).unwrap();
+        let settings_parsed: serde_json::Value = serde_json::from_str(&settings_before).unwrap();
+        assert!(settings_parsed["projectSettingsOverrides"]
+            .get("proj-paused")
+            .is_none());
+
+        let err =
+            swap_project_primary_instance(&paths, "proj-paused", ws.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(
+            err.to_string().contains("Override do projeto está pausado"),
+            "unexpected error: {err}"
+        );
+
+        let preset_after = fs::read_to_string(local_preset_path(&ws)).unwrap();
+        let settings_after = fs::read_to_string(paths.settings_path()).unwrap();
+        assert_eq!(preset_before, preset_after);
+        assert_eq!(settings_before, settings_after);
+    }
+
+    #[test]
+    fn apply_preset_to_project_prunes_orphan_roles_and_respects_enabled_false() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws = dir.path().join("proj-prune");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        // 1. Apply full agy-dual -> writes all 5 canonical roles/*.md and settings override
+        apply_preset_to_project(
+            &paths,
+            "proj-prune",
+            ws.to_str().unwrap(),
+            Some("agy-dual".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let roles_dir = ws
+            .join(".agents")
+            .join("skills")
+            .join("proj-prune-squad")
+            .join("roles");
+        assert!(roles_dir.join("qa-reviewer.md").exists());
+        assert!(roles_dir.join("designer.md").exists());
+
+        // Inject an extra orphan markdown file in roles/
+        fs::write(roles_dir.join("stale-role.md"), "# Stale\n").unwrap();
+
+        // 2. Apply reduced preset (disabled_roles removes qa-reviewer and designer)
+        let mut reduced = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        reduced.id = "proj-prune-custom".to_string();
+        reduced.extends = Some("agy-dual".to_string());
+        reduced.roles.remove("qa-reviewer");
+        reduced.roles.remove("designer");
+        reduced.disabled_roles = vec!["qa-reviewer".to_string(), "designer".to_string()];
+
+        let res_reduced = apply_preset_to_project(
+            &paths,
+            "proj-prune",
+            ws.to_str().unwrap(),
+            None,
+            Some(reduced.clone()),
+        )
+        .unwrap();
+
+        assert!(!roles_dir.join("qa-reviewer.md").exists());
+        assert!(!roles_dir.join("designer.md").exists());
+        assert!(!roles_dir.join("stale-role.md").exists());
+        assert!(roles_dir.join("explorer.md").exists());
+        assert!(roles_dir.join("oracle.md").exists());
+        assert!(roles_dir.join("fixer.md").exists());
+        assert!(res_reduced
+            .written_files
+            .iter()
+            .any(|p| p.ends_with("qa-reviewer.md")));
+        assert!(res_reduced
+            .written_files
+            .iter()
+            .any(|p| p.ends_with("stale-role.md")));
+
+        // Settings override exists while enabled == true
+        let settings_enabled = read_t3_settings(&paths.settings_path());
+        assert!(settings_enabled.project_overrides.contains_key("proj-prune"));
+
+        // 3. Preview and apply with enabled == false -> previews removal and removes settings.json override
+        let mut paused = reduced;
+        paused.enabled = false;
+
+        let preview_paused =
+            compile_preset_preview(&paths, "proj-prune", ws.to_str().unwrap(), &paused).unwrap();
+        assert!(preview_paused.settings_preview.changed);
+        assert!(preview_paused.settings_preview.new_override.is_null());
+        assert!(preview_paused
+            .settings_preview
+            .unified_diff
+            .contains("-  \"defaultModelSelection\""));
+
+        apply_preset_to_project(
+            &paths,
+            "proj-prune",
+            ws.to_str().unwrap(),
+            None,
+            Some(paused.clone()),
+        )
+        .unwrap();
+
+        let settings_disabled = read_t3_settings(&paths.settings_path());
+        assert!(!settings_disabled.project_overrides.contains_key("proj-prune"));
+
+        // Preview again when override is already absent -> settings_preview.changed == false
+        let preview_after_disabled =
+            compile_preset_preview(&paths, "proj-prune", ws.to_str().unwrap(), &paused).unwrap();
+        assert!(!preview_after_disabled.settings_preview.changed);
+        assert!(preview_after_disabled.settings_preview.new_override.is_null());
+    }
+
+    #[test]
+    fn remove_project_override_cleans_compiler_squad_but_preserves_manual_squad() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws_compiled = dir.path().join("compiled-app");
+        let ws_sibling = dir.path().join("sibling-app");
+        let ws_manual = dir.path().join("manual-app");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws_compiled).unwrap();
+        fs::create_dir_all(&ws_sibling).unwrap();
+        fs::create_dir_all(&ws_manual).unwrap();
+        fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        // Case A: Compiler-generated squad is removed along with empty .agents/skills and .agents
+        apply_preset_to_project(
+            &paths,
+            "proj-compiled",
+            ws_compiled.to_str().unwrap(),
+            Some("agy-dual".to_string()),
+            None,
+        )
+        .unwrap();
+        let compiled_squad_dir = ws_compiled.join(".agents/skills/compiled-app-squad");
+        assert!(compiled_squad_dir.join("SKILL.md").exists());
+
+        remove_project_override(&paths, "proj-compiled", ws_compiled.to_str().unwrap()).unwrap();
+        assert!(!local_preset_path(&ws_compiled).exists());
+        assert!(!compiled_squad_dir.exists());
+        assert!(!ws_compiled.join(".agents").exists());
+        assert!(!read_t3_settings(&paths.settings_path())
+            .project_overrides
+            .contains_key("proj-compiled"));
+
+        // Case B: Sibling non-squad skills in .agents/skills/ are preserved when compiler squad is removed
+        apply_preset_to_project(
+            &paths,
+            "proj-sibling",
+            ws_sibling.to_str().unwrap(),
+            Some("codex-squad".to_string()),
+            None,
+        )
+        .unwrap();
+        let sibling_skill = ws_sibling.join(".agents/skills/other-skill/SKILL.md");
+        fs::create_dir_all(sibling_skill.parent().unwrap()).unwrap();
+        fs::write(&sibling_skill, "---\nname: other-skill\n---\n# Keep\n").unwrap();
+
+        remove_project_override(&paths, "proj-sibling", ws_sibling.to_str().unwrap()).unwrap();
+        assert!(!ws_sibling.join(".agents/skills/sibling-app-squad").exists());
+        assert!(sibling_skill.exists());
+
+        // Case C: Manual squad without compiler signature is preserved intact
+        let manual_squad_dir = ws_manual.join(".agents/skills/manual-app-squad");
+        let manual_role = manual_squad_dir.join("roles/custom.md");
+        fs::create_dir_all(manual_role.parent().unwrap()).unwrap();
+        let manual_skill_content = "---\nname: manual-app-squad\n---\n# Hand-authored Squad\n";
+        fs::write(manual_squad_dir.join("SKILL.md"), manual_skill_content).unwrap();
+        fs::write(&manual_role, "# Custom Role\n").unwrap();
+
+        let preset = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        save_project_preset_unlocked(&paths, "proj-manual", ws_manual.to_str().unwrap(), preset.clone())
+            .unwrap();
+        sync_project_settings(&paths.settings_path(), "proj-manual", &preset).unwrap();
+
+        remove_project_override(&paths, "proj-manual", ws_manual.to_str().unwrap()).unwrap();
+        assert!(!local_preset_path(&ws_manual).exists());
+        assert!(!read_t3_settings(&paths.settings_path())
+            .project_overrides
+            .contains_key("proj-manual"));
+        assert!(manual_squad_dir.join("SKILL.md").exists());
+        assert_eq!(
+            fs::read_to_string(manual_squad_dir.join("SKILL.md")).unwrap(),
+            manual_skill_content
+        );
+        assert!(manual_role.exists());
     }
 }

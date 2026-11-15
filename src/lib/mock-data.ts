@@ -11,7 +11,9 @@ import type {
   SkillMetadata,
   SubagentActivity,
   SyncResult,
+  T3ModelSelection,
 } from "../types/ipc";
+import { normalizeDisabledRoles } from "./preset-utils";
 
 function deriveProjectSlug(workspaceRoot: string): string {
   const parts = workspaceRoot.split("/").filter(Boolean);
@@ -994,6 +996,114 @@ function computeSimpleUnifiedDiff(
   return `${out.join("\n")}\n`;
 }
 
+const COMPILER_PLAYBOOK_SIGNATURE = "— Playbook do Orquestrador (T3 Code)";
+const MAX_INHERITANCE_DEPTH = 16;
+
+function selectionFromPreset(preset: PresetConfig): T3ModelSelection {
+  const normalizedOptions = normalizeOptionsRecord(preset.orchestrator.options);
+  return {
+    instanceId: preset.orchestrator.providerInstanceId,
+    model: preset.orchestrator.model,
+    options: Object.entries(normalizedOptions)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, value]) => ({ id, value })),
+  };
+}
+
+function stripDisabledRoles(preset: PresetConfig): PresetConfig {
+  const cloned = structuredClone(preset);
+  const normalizedDisabled = normalizeDisabledRoles(cloned.disabledRoles);
+  if (normalizedDisabled) {
+    cloned.disabledRoles = normalizedDisabled;
+    for (const disabledId of normalizedDisabled) {
+      delete cloned.roles[disabledId];
+    }
+  } else {
+    delete cloned.disabledRoles;
+  }
+  return cloned;
+}
+
+function mergePresetPatch(base: PresetConfig, patch: PresetConfig): PresetConfig {
+  const id = patch.id || base.id;
+  const name = patch.name.trim() ? patch.name : base.name;
+  const description = patch.description.trim() ? patch.description : base.description;
+  const enabled = patch.enabled;
+  const topology = patch.topology || base.topology;
+
+  const orchestrator = {
+    providerInstanceId:
+      patch.orchestrator.providerInstanceId || base.orchestrator.providerInstanceId,
+    model: patch.orchestrator.model || base.orchestrator.model,
+    options: {
+      ...base.orchestrator.options,
+      ...patch.orchestrator.options,
+    },
+  };
+
+  const fallbackChain =
+    patch.fallbackChain !== undefined
+      ? structuredClone(patch.fallbackChain)
+      : structuredClone(base.fallbackChain);
+
+  const contention = {
+    singleTestDb: patch.contention.singleTestDb,
+    envVars: {
+      ...base.contention.envVars,
+      ...patch.contention.envVars,
+    },
+    gitIgnoredBuilds: [...patch.contention.gitIgnoredBuilds],
+    conflictFiles: [...patch.contention.conflictFiles],
+    defaultIsolation:
+      patch.contention.defaultIsolation || base.contention.defaultIsolation,
+  };
+
+  const disabledSet = new Set<string>(base.disabledRoles ?? []);
+  const patchDisabledSet = new Set<string>(patch.disabledRoles ?? []);
+  for (const disabledId of patchDisabledSet) {
+    disabledSet.add(disabledId);
+  }
+
+  const roles: Record<string, RoleConfig> = structuredClone(base.roles);
+  for (const [roleId, role] of Object.entries(patch.roles)) {
+    if (!patchDisabledSet.has(roleId)) {
+      disabledSet.delete(roleId);
+    }
+    const existing = roles[roleId];
+    roles[roleId] = {
+      ...(existing ? structuredClone(existing) : {}),
+      ...structuredClone(role),
+      options: {
+        ...(existing?.options ?? {}),
+        ...(role.options ?? {}),
+      },
+    };
+  }
+
+  for (const disabledId of disabledSet) {
+    delete roles[disabledId];
+  }
+
+  const disabledRoles = Array.from(disabledSet).sort();
+
+  const merged: PresetConfig = {
+    id,
+    name,
+    description,
+    extends: patch.extends,
+    enabled,
+    topology,
+    orchestrator,
+    fallbackChain,
+    contention,
+    roles,
+  };
+  if (disabledRoles.length > 0) {
+    merged.disabledRoles = disabledRoles;
+  }
+  return merged;
+}
+
 export class MockIpcStore {
   private globalConfig: GlobalAppConfig = {
     activeGlobalPresetId: "default",
@@ -1006,6 +1116,7 @@ export class MockIpcStore {
   private skills: SkillMetadata[] = [];
   private localPresetsByProject: Map<string, PresetConfig> = new Map();
   private compiledFilesByPath: Map<string, string> = new Map();
+  private projectSettingsOverrides: Map<string, T3ModelSelection> = new Map();
 
   constructor() {
     this.reset();
@@ -1023,6 +1134,7 @@ export class MockIpcStore {
     this.skills = buildSeedSkills();
     this.localPresetsByProject = new Map();
     this.compiledFilesByPath = new Map();
+    this.projectSettingsOverrides = new Map();
 
     // Seed baseline compiled files for oh-my-t3code so diffs look realistic on edit
     const basePreset =
@@ -1040,12 +1152,92 @@ export class MockIpcStore {
         renderRoleMd(slug, role),
       );
     }
+    this.projectSettingsOverrides.set(
+      "proj-oh-my-t3code",
+      selectionFromPreset(basePreset),
+    );
+
+    // Seed cabrito as a manual external squad (without compiler signature)
+    this.compiledFilesByPath.set(
+      "/Users/alencarfreire/Workspace/cabrito/.agents/skills/cabrito-squad/SKILL.md",
+      "# cabrito Squad — Manual\n",
+    );
+    this.projectSettingsOverrides.set("proj-cabrito", {
+      instanceId: "antigravity",
+      model: "gemini-4-hydrogen",
+      options: [],
+    });
+
+    const codexPreset = this.globalPresets.find((p) => p.id === "codex-squad");
+    if (codexPreset) {
+      this.projectSettingsOverrides.set(
+        "proj-dashboard-meta",
+        selectionFromPreset(codexPreset),
+      );
+    }
+  }
+
+  getCompiledFilePaths(): string[] {
+    return Array.from(this.compiledFilesByPath.keys()).sort();
+  }
+
+  hasProjectSettingsOverride(projectId: string): boolean {
+    return this.projectSettingsOverrides.has(projectId);
+  }
+
+  private resolvePresetInheritance(
+    preset: PresetConfig,
+    visited: Set<string> = new Set(),
+    depth = 0,
+  ): PresetConfig {
+    const normalized = stripDisabledRoles(preset);
+    if (!normalized.extends) {
+      return normalized;
+    }
+    if (depth >= MAX_INHERITANCE_DEPTH) {
+      throw new Error(`Inheritance depth exceeded ${MAX_INHERITANCE_DEPTH} at '${normalized.id}'`);
+    }
+    if (normalized.extends === normalized.id) {
+      throw new Error(`Preset '${normalized.id}' cannot extend itself`);
+    }
+    if (visited.has(normalized.extends)) {
+      throw new Error(`Preset '${normalized.extends}' participates in an inheritance cycle`);
+    }
+    const parentRaw = this.globalPresets.find((p) => p.id === normalized.extends);
+    if (!parentRaw) {
+      throw new Error(`Global preset '${normalized.extends}' not found`);
+    }
+    const nextVisited = new Set(visited);
+    nextVisited.add(normalized.id);
+    const resolvedParent = this.resolvePresetInheritance(parentRaw, nextVisited, depth + 1);
+    return mergePresetPatch(resolvedParent, normalized);
+  }
+
+  private resolveGlobalPresetById(id: string): PresetConfig | null {
+    const found = this.globalPresets.find((p) => p.id === id);
+    return found ? this.resolvePresetInheritance(found) : null;
+  }
+
+  private applyGlobalFallbackToProject(proj: ProjectSummary): void {
+    const activeGlobal =
+      this.resolveGlobalPresetById(this.globalConfig.activeGlobalPresetId) ??
+      this.resolveGlobalPresetById(this.globalPresets[0]?.id ?? "default");
+    if (this.globalConfig.enabled && activeGlobal) {
+      proj.activeInstanceId = activeGlobal.orchestrator.providerInstanceId;
+      proj.activeModel = activeGlobal.orchestrator.model;
+    } else {
+      proj.activeInstanceId = null;
+      proj.activeModel = proj.defaultModel;
+    }
   }
 
   getDashboardSnapshot(): DashboardSnapshot {
+    const resolvedGlobalPresets = this.globalPresets.map((p) =>
+      this.resolvePresetInheritance(p),
+    );
     const activeGlobal =
-      this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
-      this.globalPresets[0];
+      resolvedGlobalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
+      resolvedGlobalPresets[0];
     const firstFallback = activeGlobal?.fallbackChain[0];
     const globalEnabled = this.globalConfig.enabled;
 
@@ -1054,7 +1246,7 @@ export class MockIpcStore {
       projects: this.projects,
       subagents: this.subagents,
       providerInstances: this.providerInstances,
-      globalPresets: this.globalPresets,
+      globalPresets: resolvedGlobalPresets,
       skills: this.skills,
       defaultModelSelection:
         globalEnabled && activeGlobal
@@ -1084,7 +1276,9 @@ export class MockIpcStore {
   }
 
   listGlobalPresets(): PresetConfig[] {
-    return structuredClone(this.globalPresets);
+    return structuredClone(
+      this.globalPresets.map((p) => this.resolvePresetInheritance(p)),
+    );
   }
 
   getProjectPreset(projectId: string, workspaceRoot: string): ResolvedProjectPreset {
@@ -1094,16 +1288,15 @@ export class MockIpcStore {
 
     let resolved: PresetConfig;
     if (localPreset) {
-      resolved = structuredClone(localPreset);
+      resolved = this.resolvePresetInheritance(localPreset);
     } else if (project?.activeInstanceId === "codex") {
-      resolved = structuredClone(
-        this.globalPresets.find((p) => p.id === "codex-squad") ?? this.globalPresets[0],
-      );
+      resolved =
+        this.resolveGlobalPresetById("codex-squad") ??
+        this.resolvePresetInheritance(this.globalPresets[0]);
     } else {
-      resolved = structuredClone(
-        this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
-          this.globalPresets[0],
-      );
+      resolved =
+        this.resolveGlobalPresetById(this.globalConfig.activeGlobalPresetId) ??
+        this.resolvePresetInheritance(this.globalPresets[0]);
     }
 
     return {
@@ -1119,14 +1312,14 @@ export class MockIpcStore {
   }
 
   saveGlobalPreset(preset: PresetConfig): PresetConfig {
-    const idx = this.globalPresets.findIndex((p) => p.id === preset.id);
-    const saved = structuredClone(preset);
+    const saved = stripDisabledRoles(preset);
+    const idx = this.globalPresets.findIndex((p) => p.id === saved.id);
     if (idx >= 0) {
       this.globalPresets[idx] = saved;
     } else {
       this.globalPresets.push(saved);
     }
-    return structuredClone(saved);
+    return this.resolvePresetInheritance(saved);
   }
 
   saveProjectPreset(
@@ -1134,7 +1327,7 @@ export class MockIpcStore {
     workspaceRoot: string,
     preset: PresetConfig,
   ): ResolvedProjectPreset {
-    const saved = structuredClone(preset);
+    const saved = stripDisabledRoles(preset);
     this.localPresetsByProject.set(projectId, saved);
     const proj = this.projects.find((p) => p.projectId === projectId);
     if (proj) {
@@ -1154,13 +1347,14 @@ export class MockIpcStore {
     preset: PresetConfig,
   ): CompilePreviewResult {
     const projectSlug = deriveProjectSlug(workspaceRoot);
+    const resolved = this.resolvePresetInheritance(preset);
     const squadRelDir = `.agents/skills/${projectSlug}-squad`;
     const files: CompiledFilePreview[] = [];
 
     const skillRelative = `${squadRelDir}/SKILL.md`;
     const skillAbs = `${workspaceRoot}/${skillRelative}`;
     const existingSkill = this.compiledFilesByPath.get(skillAbs) ?? null;
-    const newSkill = renderSkillMd(projectSlug, preset);
+    const newSkill = renderSkillMd(projectSlug, resolved);
     files.push({
       path: skillAbs,
       relativePath: skillRelative,
@@ -1170,7 +1364,7 @@ export class MockIpcStore {
       changed: existingSkill !== newSkill,
     });
 
-    const sortedRoles = Object.entries(preset.roles).sort(([a], [b]) => a.localeCompare(b));
+    const sortedRoles = Object.entries(resolved.roles).sort(([a], [b]) => a.localeCompare(b));
     for (const [roleId, role] of sortedRoles) {
       const roleRelative = `${squadRelDir}/roles/${roleId}.md`;
       const roleAbs = `${workspaceRoot}/${roleRelative}`;
@@ -1186,43 +1380,33 @@ export class MockIpcStore {
       });
     }
 
-    const proj = this.projects.find((p) => p.projectId === projectId);
-    const existingOverride = proj?.activeInstanceId
-      ? {
-          defaultModelSelection: {
-            instanceId: proj.activeInstanceId,
-            model: proj.activeModel ?? "gemini-4-hydrogen",
-          },
-        }
+    const existingSelection = this.projectSettingsOverrides.get(projectId) ?? null;
+    const existingOverride = existingSelection
+      ? { defaultModelSelection: structuredClone(existingSelection) }
       : null;
 
-    const newOverride = {
-      defaultModelSelection: {
-        instanceId: preset.orchestrator.providerInstanceId,
-        model: preset.orchestrator.model,
-        options: Object.entries(
-          normalizeOptionsRecord(preset.orchestrator.options),
-        ).map(([id, value]) => ({
-          id,
-          value,
-        })),
-      },
-    };
+    const newOverride: Record<string, unknown> = resolved.enabled
+      ? {
+          defaultModelSelection: selectionFromPreset(resolved),
+        }
+      : {};
 
     const oldSettingsJson = existingOverride ? JSON.stringify(existingOverride, null, 2) : null;
-    const newSettingsJson = JSON.stringify(newOverride, null, 2);
+    const newSettingsJson = resolved.enabled ? JSON.stringify(newOverride, null, 2) : "";
     const settingsDiff = computeSimpleUnifiedDiff(
       "settings.json",
       oldSettingsJson,
       newSettingsJson,
     );
-    const settingsChanged = oldSettingsJson !== newSettingsJson;
+    const settingsChanged = resolved.enabled
+      ? oldSettingsJson !== newSettingsJson
+      : existingOverride !== null;
 
     return {
       projectId,
       workspaceRoot,
       projectSlug,
-      presetId: preset.id,
+      presetId: resolved.id,
       files,
       settingsPreview: {
         settingsPath: "/Users/alencarfreire/.t3/userdata/settings.json",
@@ -1242,38 +1426,76 @@ export class MockIpcStore {
     presetIdOrCustom?: string | null,
     customPreset?: PresetConfig | null,
   ): SyncResult {
-    let targetPreset: PresetConfig | undefined;
+    let targetPreset: PresetConfig;
     if (customPreset) {
-      targetPreset = structuredClone(customPreset);
+      targetPreset = stripDisabledRoles(customPreset);
+    } else if (presetIdOrCustom === "custom") {
+      targetPreset = stripDisabledRoles(
+        this.localPresetsByProject.get(projectId) ?? this.globalPresets[0],
+      );
     } else if (presetIdOrCustom) {
-      targetPreset = structuredClone(
+      targetPreset = stripDisabledRoles(
         this.globalPresets.find((p) => p.id === presetIdOrCustom) ??
           this.localPresetsByProject.get(projectId) ??
           this.globalPresets[0],
       );
     } else {
-      targetPreset = structuredClone(
+      targetPreset = stripDisabledRoles(
         this.localPresetsByProject.get(projectId) ?? this.globalPresets[0],
       );
     }
 
+    const resolved = this.resolvePresetInheritance(targetPreset);
     const preview = this.previewPresetSync(projectId, workspaceRoot, targetPreset);
     const writtenFiles: string[] = [];
     for (const file of preview.files) {
-      this.compiledFilesByPath.set(file.path, file.newContent);
-      writtenFiles.push(file.path);
+      if (file.changed) {
+        this.compiledFilesByPath.set(file.path, file.newContent);
+        writtenFiles.push(file.path);
+      } else if (!this.compiledFilesByPath.has(file.path)) {
+        this.compiledFilesByPath.set(file.path, file.newContent);
+      }
+    }
+
+    // Prune orphan roles/*.md files
+    const rolesPrefix = `${workspaceRoot}/.agents/skills/${preview.projectSlug}-squad/roles/`;
+    const orphanPaths = Array.from(this.compiledFilesByPath.keys())
+      .filter((existingPath) => {
+        if (!existingPath.startsWith(rolesPrefix) || !existingPath.endsWith(".md")) {
+          return false;
+        }
+        const fileName = existingPath.slice(rolesPrefix.length);
+        if (fileName.includes("/")) return false;
+        const roleId = fileName.slice(0, -3);
+        return !(roleId in resolved.roles);
+      })
+      .sort();
+
+    for (const orphanPath of orphanPaths) {
+      this.compiledFilesByPath.delete(orphanPath);
+      writtenFiles.push(orphanPath);
     }
 
     this.localPresetsByProject.set(projectId, structuredClone(targetPreset));
 
+    if (resolved.enabled) {
+      this.projectSettingsOverrides.set(projectId, selectionFromPreset(resolved));
+    } else {
+      this.projectSettingsOverrides.delete(projectId);
+    }
+
     const proj = this.projects.find((p) => p.projectId === projectId);
     if (proj) {
-      proj.activeInstanceId = targetPreset.orchestrator.providerInstanceId;
-      proj.activeModel = targetPreset.orchestrator.model;
+      if (resolved.enabled) {
+        proj.activeInstanceId = resolved.orchestrator.providerInstanceId;
+        proj.activeModel = resolved.orchestrator.model;
+      } else {
+        this.applyGlobalFallbackToProject(proj);
+      }
       proj.hasLocalPreset = true;
       proj.localPresetId = targetPreset.id;
       proj.localPresetExtends = targetPreset.extends ?? targetPreset.id;
-      proj.presetEnabled = targetPreset.enabled;
+      proj.presetEnabled = resolved.enabled;
       proj.hasCustomOverride = true;
       proj.detectedSquadSlug = `${preview.projectSlug}-squad`;
       proj.detectedSquadPath = `${workspaceRoot}/.agents/skills/${preview.projectSlug}-squad`;
@@ -1283,21 +1505,39 @@ export class MockIpcStore {
     return {
       projectId,
       workspaceRoot,
-      presetId: targetPreset.id,
+      presetId: resolved.id,
       writtenFiles,
       settingsPath: "/Users/alencarfreire/.t3/userdata/settings.json",
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
-      activeInstanceId: targetPreset.orchestrator.providerInstanceId,
-      activeModel: targetPreset.orchestrator.model,
+      activeInstanceId: resolved.orchestrator.providerInstanceId,
+      activeModel: resolved.orchestrator.model,
     };
   }
 
   swapProjectInstance(projectId: string, workspaceRoot: string): SyncResult {
     const proj = this.projects.find((p) => p.projectId === projectId);
+    const currentResolved = this.getProjectPreset(projectId, workspaceRoot);
+    if (
+      !currentResolved.resolvedPreset.enabled ||
+      currentResolved.rawLocalPreset?.enabled === false ||
+      proj?.presetEnabled === false
+    ) {
+      throw new Error(
+        "Override do projeto está pausado. Reative-o antes de inverter a instância.",
+      );
+    }
+
     const local = this.localPresetsByProject.get(projectId);
     const current =
-      proj?.activeInstanceId ?? local?.orchestrator.providerInstanceId ?? "antigravity_2";
-    const currentModel = proj?.activeModel ?? local?.orchestrator.model ?? "gemini-4-hydrogen";
+      this.projectSettingsOverrides.get(projectId)?.instanceId ??
+      proj?.activeInstanceId ??
+      currentResolved.resolvedPreset.orchestrator.providerInstanceId ??
+      "antigravity_2";
+    const currentModel =
+      this.projectSettingsOverrides.get(projectId)?.model ??
+      proj?.activeModel ??
+      currentResolved.resolvedPreset.orchestrator.model ??
+      "gemini-4-hydrogen";
 
     let nextInstance: string;
     let nextModel: string;
@@ -1325,6 +1565,16 @@ export class MockIpcStore {
       }
     }
 
+    if (local) {
+      return this.applyPresetSync(projectId, workspaceRoot, null, local);
+    }
+
+    this.projectSettingsOverrides.set(projectId, {
+      instanceId: nextInstance,
+      model: nextModel,
+      options: [],
+    });
+
     if (proj) {
       proj.activeInstanceId = nextInstance;
       proj.activeModel = nextModel;
@@ -1334,7 +1584,7 @@ export class MockIpcStore {
     return {
       projectId,
       workspaceRoot,
-      presetId: local?.id ?? proj?.localPresetId ?? "default",
+      presetId: proj?.localPresetId ?? currentResolved.resolvedPreset.id ?? "default",
       writtenFiles: [],
       settingsPath: "/Users/alencarfreire/.t3/userdata/settings.json",
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
@@ -1355,6 +1605,7 @@ export class MockIpcStore {
       enabled: true,
     };
     this.localPresetsByProject.set(projectId, imported);
+    this.projectSettingsOverrides.set(projectId, selectionFromPreset(imported));
     const proj = this.projects.find((p) => p.projectId === projectId);
     if (proj) {
       proj.hasLocalPreset = true;
@@ -1373,6 +1624,11 @@ export class MockIpcStore {
       activeGlobalPresetId: activePresetId,
       enabled,
     };
+    for (const proj of this.projects) {
+      if (!proj.presetEnabled || !proj.hasCustomOverride) {
+        this.applyGlobalFallbackToProject(proj);
+      }
+    }
     return this.getDashboardSnapshot();
   }
 
@@ -1439,32 +1695,63 @@ export class MockIpcStore {
       proj.localPresetId = updated.id;
       proj.localPresetExtends = updated.extends;
       proj.presetEnabled = enabled;
+      proj.hasCustomOverride = true;
       proj.updatedAt = new Date().toISOString();
     }
     if (enabled) {
       return this.applyPresetSync(projectId, workspaceRoot, null, updated);
     }
+
+    this.projectSettingsOverrides.delete(projectId);
+    if (proj) {
+      this.applyGlobalFallbackToProject(proj);
+    }
+    const resolved = this.resolvePresetInheritance(updated);
     return {
       projectId,
       workspaceRoot,
-      presetId: updated.id,
+      presetId: resolved.id,
       writtenFiles: [`${workspaceRoot}/.t3code/preset.jsonc`],
       settingsPath: "/Users/alencarfreire/.t3/userdata/settings.json",
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
-      activeInstanceId: updated.orchestrator.providerInstanceId,
-      activeModel: updated.orchestrator.model,
+      activeInstanceId: resolved.orchestrator.providerInstanceId,
+      activeModel: resolved.orchestrator.model,
     };
   }
 
-  removeProjectOverride(projectId: string, _workspaceRoot: string): DashboardSnapshot {
+  removeProjectOverride(projectId: string, workspaceRoot: string): DashboardSnapshot {
     this.localPresetsByProject.delete(projectId);
+    this.projectSettingsOverrides.delete(projectId);
+
+    const projectSlug = deriveProjectSlug(workspaceRoot);
+    const squadDir = `${workspaceRoot}/.agents/skills/${projectSlug}-squad`;
+    const skillMdPath = `${squadDir}/SKILL.md`;
+    const skillContent = this.compiledFilesByPath.get(skillMdPath);
+    const removedCompilerSquad = Boolean(
+      skillContent && skillContent.includes(COMPILER_PLAYBOOK_SIGNATURE),
+    );
+
+    if (removedCompilerSquad) {
+      const squadPrefix = `${squadDir}/`;
+      for (const pathKey of Array.from(this.compiledFilesByPath.keys())) {
+        if (pathKey.startsWith(squadPrefix)) {
+          this.compiledFilesByPath.delete(pathKey);
+        }
+      }
+    }
+
     const proj = this.projects.find((p) => p.projectId === projectId);
     if (proj) {
       proj.hasLocalPreset = false;
       proj.localPresetId = null;
       proj.localPresetExtends = null;
       proj.presetEnabled = true;
-      proj.hasCustomOverride = false;
+      if (removedCompilerSquad) {
+        proj.detectedSquadSlug = null;
+        proj.detectedSquadPath = null;
+      }
+      proj.hasCustomOverride = Boolean(proj.detectedSquadSlug);
+      this.applyGlobalFallbackToProject(proj);
       proj.updatedAt = new Date().toISOString();
     }
     return this.getDashboardSnapshot();
