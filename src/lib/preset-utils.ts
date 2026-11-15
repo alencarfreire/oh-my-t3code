@@ -278,6 +278,9 @@ export function resolvePresetFamilyTag(preset: PresetConfig): {
 } {
   const id = preset.id.toLowerCase();
   const base = (preset.extends ?? "").toLowerCase();
+  if (id === "default") {
+    return { label: "OMOS Standard", tone: "sky" };
+  }
   if (id.includes("hybrid") || base.includes("hybrid")) {
     return { label: "Hybrid", tone: "amber" };
   }
@@ -344,7 +347,7 @@ export function createEmptyRole(id: string): RoleConfig {
   };
 }
 
-export function createEmptyPreset(id: string, extendsId: string | null = "agy-dual"): PresetConfig {
+export function createEmptyPreset(id: string, extendsId: string | null = "default"): PresetConfig {
   return {
     id,
     name: id,

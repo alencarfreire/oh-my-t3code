@@ -48,7 +48,7 @@ function defaultPresetForProject(
     const codex = snapshot.globalPresets.find((p) => p.id === "codex-squad");
     if (codex) return codex.id;
   }
-  return snapshot.globalConfig.activeGlobalPresetId ?? snapshot.globalPresets[0]?.id ?? "agy-dual";
+  return snapshot.globalConfig.activeGlobalPresetId ?? snapshot.globalPresets[0]?.id ?? "default";
 }
 
 const SWAP_PILL_CLASSES: Record<string, string> = {
@@ -170,16 +170,31 @@ export function PopoverView() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleOpenStudio]);
 
+  const sortedGlobalPresets = useMemo(() => {
+    if (!snapshot) return [];
+    const rank = (id: string) => {
+      if (id === "default") return 0;
+      if (id === "agy-dual") return 1;
+      if (id === "codex-squad") return 2;
+      if (id === "hybrid-agy-codex") return 3;
+      return 4;
+    };
+    return [...snapshot.globalPresets].sort((a, b) => {
+      const diff = rank(a.id) - rank(b.id);
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    });
+  }, [snapshot]);
+
   const activeGlobalPreset: PresetConfig | null = useMemo(() => {
     if (!snapshot) return null;
     return (
       snapshot.globalPresets.find(
         (p) => p.id === snapshot.globalConfig.activeGlobalPresetId,
       ) ??
-      snapshot.globalPresets[0] ??
+      sortedGlobalPresets[0] ??
       null
     );
-  }, [snapshot]);
+  }, [snapshot, sortedGlobalPresets]);
 
   const overrideProjects = useMemo(() => {
     if (!snapshot) return [];
@@ -290,7 +305,9 @@ export function PopoverView() {
         updated.providerInstances,
       );
       setStatusMessage(
-        `Instância global invertida: ${nextLabel} (${nextPreset?.orchestrator.model ?? "gemini-4-hydrogen"}).`,
+        nextPreset?.orchestrator.providerInstanceId === "codex"
+          ? `Modelo global alternado: ${nextLabel} (${nextPreset.orchestrator.model}).`
+          : `Instância global invertida: ${nextLabel} (${nextPreset?.orchestrator.model ?? "gemini-4-hydrogen"}).`,
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -440,7 +457,9 @@ export function PopoverView() {
         snapshot.providerInstances,
       );
       setStatusMessage(
-        `Instância alternada em ${project.title}: ${label} (${result.activeModel}).`,
+        result.activeInstanceId === "codex"
+          ? `Modelo alternado em ${project.title}: ${label} (${result.activeModel}).`
+          : `Instância alternada em ${project.title}: ${label} (${result.activeModel}).`,
       );
       await loadSnapshot(true);
     } catch (err) {
@@ -454,13 +473,22 @@ export function PopoverView() {
     }
   };
 
-  const globalInstanceId = activeGlobalPreset?.orchestrator.providerInstanceId ?? "antigravity_2";
+  const globalInstanceId = activeGlobalPreset?.orchestrator.providerInstanceId ?? "codex";
+  const globalModel = activeGlobalPreset?.orchestrator.model ?? "gpt-6.1-sol";
   const globalInstanceLabel = snapshot
     ? resolveInstanceShortLabel(globalInstanceId, snapshot.providerInstances)
-    : "Agy Principal";
+    : "Codex";
   const globalInstanceTone = getInstanceBadgeTone(globalInstanceId);
   const canSwapGlobal =
-    globalInstanceId === "antigravity" || globalInstanceId === "antigravity_2";
+    globalInstanceId === "antigravity" ||
+    globalInstanceId === "antigravity_2" ||
+    globalInstanceId === "codex";
+  const globalSwapLabel =
+    globalInstanceId === "codex" ? `${globalInstanceLabel} · ${globalModel}` : globalInstanceLabel;
+  const globalSwapTitle =
+    globalInstanceId === "codex"
+      ? "Alternar modelo global Codex (gpt-6.1-sol ⇄ gpt-6.1-terra)"
+      : "Inverter instância global (Agy Veca ⇄ Agy Principal)";
 
   return (
     <div className="surface-backdrop flex h-full w-full flex-col overflow-hidden text-zinc-100">
@@ -588,11 +616,14 @@ export function PopoverView() {
                     >
                       Preset Global (Default)
                     </h2>
+                    {activeGlobalPreset?.id === "default" ? (
+                      <Badge tone="sky">Instalado por padrão</Badge>
+                    ) : null}
                   </div>
                   <p className="truncate text-[10px] text-zinc-400">
                     {snapshot.globalConfig.enabled
                       ? `Padrão para todos os projetos · ${
-                          activeGlobalPreset?.orchestrator.model ?? "gemini-4-hydrogen"
+                          activeGlobalPreset?.orchestrator.model ?? "gpt-6.1-sol"
                         }`
                       : "Desativado — projetos sem override usam config padrão do T3 Code"}
                   </p>
@@ -620,9 +651,11 @@ export function PopoverView() {
                   onChange={(e) => void handleChangeGlobalPreset(e.target.value)}
                   wrapperClassName="min-w-0 flex-1"
                 >
-                  {snapshot.globalPresets.map((preset) => (
+                  {sortedGlobalPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
-                      {preset.id} — {preset.name}
+                      {preset.id === "default"
+                        ? `${preset.id} — ${preset.name} (Instalado por padrão)`
+                        : `${preset.id} — ${preset.name}`}
                     </option>
                   ))}
                 </Select>
@@ -633,7 +666,7 @@ export function PopoverView() {
                     disabled={busyGlobalAction !== null}
                     onClick={() => void handleSwapGlobalInstance()}
                     aria-label="Inverter instância global"
-                    title="Inverter instância global (Agy Veca ⇄ Agy Principal)"
+                    title={globalSwapTitle}
                     className={[
                       "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
                       "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
@@ -643,7 +676,7 @@ export function PopoverView() {
                     ].join(" ")}
                   >
                     <Cpu className="size-3 shrink-0" aria-hidden="true" />
-                    <span>{globalInstanceLabel}</span>
+                    <span>{globalSwapLabel}</span>
                     <ArrowLeftRight
                       className={`size-3 shrink-0 opacity-85 ${
                         busyGlobalAction === "swap" ? "motion-safe:animate-pulse" : ""
@@ -761,7 +794,7 @@ export function PopoverView() {
                           value={newOverridePresetId}
                           onChange={(e) => setNewOverridePresetId(e.target.value)}
                         >
-                          {snapshot.globalPresets.map((preset) => (
+                          {sortedGlobalPresets.map((preset) => (
                             <option key={preset.id} value={preset.id}>
                               {preset.id} — {preset.name}
                             </option>
@@ -940,8 +973,16 @@ export function PopoverView() {
                             type="button"
                             disabled={Boolean(busy)}
                             onClick={() => void handleSwapInstance(project)}
-                            aria-label={`Alternar instância Agy em ${project.title}`}
-                            title="Alternar Agy Veca ⇄ Agy Principal (1 clique)"
+                            aria-label={
+                              project.activeInstanceId === "codex"
+                                ? `Alternar modelo Codex em ${project.title}`
+                                : `Alternar instância Agy em ${project.title}`
+                            }
+                            title={
+                              project.activeInstanceId === "codex"
+                                ? "Alternar gpt-6.1-sol ⇄ gpt-6.1-terra (1 clique)"
+                                : "Alternar Agy Veca ⇄ Agy Principal (1 clique)"
+                            }
                             className={[
                               "inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
                               "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
@@ -951,7 +992,11 @@ export function PopoverView() {
                             ].join(" ")}
                           >
                             <Cpu className="size-3 shrink-0" aria-hidden="true" />
-                            <span>{activeInstanceLabel}</span>
+                            <span>
+                              {project.activeInstanceId === "codex"
+                                ? `${activeInstanceLabel} · ${project.activeModel ?? "gpt-6.1-sol"}`
+                                : activeInstanceLabel}
+                            </span>
                             <ArrowLeftRight
                               className={`size-3 shrink-0 opacity-85 ${
                                 busy === "swap" ? "motion-safe:animate-pulse" : ""
@@ -993,7 +1038,7 @@ export function PopoverView() {
                             }
                             wrapperClassName="min-w-0 flex-1"
                           >
-                            {snapshot.globalPresets.map((preset) => (
+                            {sortedGlobalPresets.map((preset) => (
                               <option key={preset.id} value={preset.id}>
                                 {preset.id} — {preset.name}
                               </option>

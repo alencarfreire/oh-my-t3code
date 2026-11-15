@@ -81,7 +81,7 @@ pub fn default_true() -> bool {
 }
 
 fn default_global_preset_id() -> String {
-    "agy-dual".to_string()
+    "default".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

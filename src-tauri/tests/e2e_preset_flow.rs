@@ -179,10 +179,21 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         skill_roots: vec![("skillshare".to_string(), skills_root)],
     };
 
-    // Passo 1: ensure_seed_presets + list_global_presets com UTF-8 perfeito e thinking_level
+    // Passo 1: ensure_seed_presets + list_global_presets com default (OMOS Standard) + UTF-8 perfeito
     ensure_seed_presets(&paths.presets_dir).unwrap();
     let globals = list_global_presets(&paths.presets_dir).unwrap();
-    assert_eq!(globals.len(), 3);
+    assert_eq!(globals.len(), 4);
+    assert_eq!(globals[0].id, "default");
+
+    let default_preset = &globals[0];
+    assert_eq!(default_preset.name, "Default (OMOS Standard)");
+    assert_eq!(default_preset.orchestrator.provider_instance_id, "codex");
+    assert_eq!(default_preset.orchestrator.model, "gpt-6.1-sol");
+    assert_eq!(default_preset.roles["explorer"].model, "gpt-6-luna");
+    assert_eq!(default_preset.roles["oracle"].model, "gpt-6.1-sol");
+    assert_eq!(default_preset.roles["designer"].model, "gpt-6-luna");
+    assert_eq!(default_preset.roles["fixer"].model, "gpt-6.1-sol");
+    assert_eq!(default_preset.roles["qa-reviewer"].model, "gpt-6-astra");
 
     let agy_dual = globals.iter().find(|p| p.id == "agy-dual").unwrap();
     assert_eq!(
@@ -207,12 +218,13 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     let snapshot = get_dashboard_snapshot_from_paths(&paths).unwrap();
     assert!(snapshot.sqlite_available);
     assert!(snapshot.settings_available);
-    assert_eq!(snapshot.global_config.active_global_preset_id, "agy-dual");
+    assert_eq!(snapshot.global_config.active_global_preset_id, "default");
     assert!(snapshot.global_config.enabled);
     assert_eq!(snapshot.projects.len(), 2);
     assert_eq!(snapshot.subagents.len(), 2);
     assert_eq!(snapshot.skills.len(), 3);
-    assert_eq!(snapshot.global_presets.len(), 3);
+    assert_eq!(snapshot.global_presets.len(), 4);
+    assert_eq!(snapshot.global_presets[0].id, "default");
     for gp in &snapshot.global_presets {
         assert!(gp.enabled);
         for role_id in OMOS_CANONICAL_ROLES {
@@ -483,14 +495,47 @@ fn vtech_110_global_config_toggle_and_override_filtering_flow() {
         skill_roots: vec![("skillshare".to_string(), skills_root)],
     };
 
-    // 1. Default snapshot when config.jsonc doesn't exist: agy-dual + enabled: true + no overrides
+    // 1. Default snapshot when config.jsonc doesn't exist: default + enabled: true + no overrides
     let snap0 = get_dashboard_snapshot_from_paths(&paths).unwrap();
-    assert_eq!(snap0.global_config.active_global_preset_id, "agy-dual");
+    assert_eq!(snap0.global_config.active_global_preset_id, "default");
     assert!(snap0.global_config.enabled);
+    assert!(paths.global_config_path().exists());
+    assert!(paths.presets_dir.join("default.jsonc").exists());
     assert!(snap0.projects.iter().all(|p| !p.has_custom_override));
     assert!(snap0.projects.iter().all(|p| p.preset_enabled));
 
-    // 2. set_global_preset_config syncs defaultModelSelection & fallbackModelSelection
+    // Swap on default preset toggles codex gpt-6.1-sol -> gpt-6.1-terra -> gpt-6.1-sol
+    let snap_default_sync = set_global_preset_config(&paths, "default".to_string(), true).unwrap();
+    assert_eq!(
+        snap_default_sync.default_model_selection.as_ref().unwrap().instance_id,
+        "codex"
+    );
+    assert_eq!(
+        snap_default_sync.default_model_selection.as_ref().unwrap().model,
+        "gpt-6.1-sol"
+    );
+    let snap_default_swap = swap_global_instance(&paths).unwrap();
+    assert_eq!(
+        snap_default_swap.default_model_selection.as_ref().unwrap().model,
+        "gpt-6.1-terra"
+    );
+    assert_eq!(
+        snap_default_swap.fallback_model_selection.as_ref().unwrap().model,
+        "gpt-6.1-sol"
+    );
+    let snap_default_unswap = swap_global_instance(&paths).unwrap();
+    assert_eq!(
+        snap_default_unswap.default_model_selection.as_ref().unwrap().model,
+        "gpt-6.1-sol"
+    );
+
+    // Can switch freely across all 4 global presets (hybrid-agy-codex, codex-squad, agy-dual, default)
+    let snap_hybrid = set_global_preset_config(&paths, "hybrid-agy-codex".to_string(), true).unwrap();
+    assert_eq!(snap_hybrid.global_config.active_global_preset_id, "hybrid-agy-codex");
+    let snap_codex = set_global_preset_config(&paths, "codex-squad".to_string(), true).unwrap();
+    assert_eq!(snap_codex.global_config.active_global_preset_id, "codex-squad");
+
+    // 2. set_global_preset_config("agy-dual") syncs defaultModelSelection & fallbackModelSelection
     let snap1 = set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
     assert_eq!(
         snap1.default_model_selection.as_ref().unwrap().instance_id,

@@ -22,12 +22,12 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       // Header logo & summary (no subagent monitor)
       expect(await screen.findByText("Oh My T3Code")).toBeInTheDocument();
       expect(screen.getByAltText("Oh My T3Code")).toHaveAttribute("src", "/logo.png");
-      expect(screen.getByText("Global Ativo · 3 overrides · 3 presets")).toBeInTheDocument();
+      expect(screen.getByText("Global Ativo · 3 overrides · 4 presets")).toBeInTheDocument();
       expect(
         screen.queryByRole("region", { name: /Subagentes/i }),
       ).not.toBeInTheDocument();
 
-      // 1. Featured Global Default Card at the top
+      // 1. Featured Global Default Card at the top ('default' OMOS Standard active initially)
       const globalCard = screen.getByRole("region", {
         name: /Preset Global \(Default\)/i,
       });
@@ -36,6 +36,11 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       });
       expect(globalToggle).toHaveAttribute("aria-pressed", "true");
       expect(within(globalCard).getByText("Ativo")).toBeInTheDocument();
+      expect(within(globalCard).getByText("Instalado por padrão")).toBeInTheDocument();
+
+      const globalSelect = within(globalCard).getByLabelText("Preset Global Default") as HTMLSelectElement;
+      expect(globalSelect).toHaveValue("default");
+      expect(globalSelect.options[0].value).toBe("default");
 
       // Toggle Global Default off and back on
       await user.click(globalToggle);
@@ -49,36 +54,50 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         expect(globalToggle).toHaveAttribute("aria-pressed", "true");
       });
 
-      // Swap Global Instance (Agy Principal -> Agy Veca)
+      // Swap Global Model on 'default' preset (Codex · gpt-6.1-sol -> Codex · gpt-6.1-terra)
       const globalSwapBtn = within(globalCard).getByRole("button", {
         name: "Inverter instância global",
       });
-      expect(globalSwapBtn).toHaveTextContent("Agy Principal");
+      expect(globalSwapBtn).toHaveTextContent("Codex · gpt-6.1-sol");
       await user.click(globalSwapBtn);
+      await waitFor(() => {
+        expect(
+          within(globalCard).getByRole("button", { name: "Inverter instância global" }),
+        ).toHaveTextContent("Codex · gpt-6.1-terra");
+      });
+
+      // Switch Global Preset Default select to agy-dual and swap Agy Principal -> Agy Veca
+      await user.selectOptions(globalSelect, "agy-dual");
+      await waitFor(() => {
+        expect(
+          within(globalCard).getByRole("button", { name: "Inverter instância global" }),
+        ).toHaveTextContent("Agy Principal");
+      });
+      await user.click(
+        within(globalCard).getByRole("button", { name: "Inverter instância global" }),
+      );
       await waitFor(() => {
         expect(
           within(globalCard).getByRole("button", { name: "Inverter instância global" }),
         ).toHaveTextContent("Agy Veca");
       });
 
-      // Switch Global Preset Default select to codex-squad and back to agy-dual
-      const globalSelect = within(globalCard).getByLabelText("Preset Global Default");
+      // Switch across codex-squad, hybrid-agy-codex, and back to default
       await user.selectOptions(globalSelect, "codex-squad");
       await waitFor(() => {
         expect(screen.getByRole("status")).toHaveTextContent(
           /Preset Global Default alterado para codex-squad/i,
         );
       });
-      expect(
-        within(globalCard).queryByRole("button", { name: "Inverter instância global" }),
-      ).not.toBeInTheDocument();
-      expect(within(globalCard).getByText("Codex")).toBeInTheDocument();
-
-      await user.selectOptions(globalSelect, "agy-dual");
+      await user.selectOptions(globalSelect, "hybrid-agy-codex");
       await waitFor(() => {
-        expect(
-          within(globalCard).getByRole("button", { name: "Inverter instância global" }),
-        ).toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveTextContent(
+          /Preset Global Default alterado para hybrid-agy-codex/i,
+        );
+      });
+      await user.selectOptions(globalSelect, "default");
+      await waitFor(() => {
+        expect(within(globalCard).getByText("Instalado por padrão")).toBeInTheDocument();
       });
 
       // 2. Strict "Projetos com Override (3)" section: excludes landing-page
@@ -166,7 +185,7 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       });
       expect(screen.getByText("Sincronizado!")).toBeInTheDocument();
 
-      // Click 1-click Swap Instance button on oh-my-t3code
+      // Click 1-click Swap Instance button on oh-my-t3code (Agy) and dashboard-meta (Codex)
       const swapBtn = screen.getByRole("button", {
         name: "Alternar instância Agy em oh-my-t3code",
       });
@@ -175,6 +194,16 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       await waitFor(() => {
         expect(screen.getByRole("status")).toHaveTextContent(
           /Instância alternada em oh-my-t3code: Agy Veca/i,
+        );
+      });
+
+      const codexSwapBtn = screen.getByRole("button", {
+        name: "Alternar modelo Codex em dashboard-meta",
+      });
+      await user.click(codexSwapBtn);
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent(
+          /Modelo alternado em dashboard-meta: Codex \(gpt-6\.1-terra\)/i,
         );
       });
 
@@ -193,7 +222,7 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
 
       render(<App />);
 
-      // Sidebar renders logo, Global Presets with Default badge, and ONLY override projects
+      // Sidebar renders logo, Global Presets with Default (OMOS Standard) first & highlighted, and ONLY override projects
       const sidebar = await screen.findByRole("complementary", {
         name: "Navegação de Presets e Projetos",
       });
@@ -201,11 +230,21 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         "src",
         "/logo.png",
       );
+      const globalPresetsSection = within(sidebar).getByRole("region", {
+        name: /Presets Globais/i,
+      });
+      const presetItems = within(globalPresetsSection).getAllByRole("listitem");
+      expect(presetItems).toHaveLength(4);
+      expect(presetItems[0]).toHaveTextContent("Default (OMOS Standard)");
+      expect(presetItems[0]).toHaveTextContent("Default · Ativo");
+      expect(presetItems[0]).toHaveTextContent("Instalado por padrão");
+      expect(presetItems[0]).toHaveTextContent("OMOS Standard");
+
       expect(
         within(sidebar).getByText("Agy Dual (Veca + Principal)"),
       ).toBeInTheDocument();
-      expect(within(sidebar).getByText("Default · Ativo")).toBeInTheDocument();
       expect(within(sidebar).getByText("Codex Squad (Sol + Terra)")).toBeInTheDocument();
+      expect(within(sidebar).getByText("Hybrid (Agy + Codex)")).toBeInTheDocument();
       expect(within(sidebar).getByText("cabrito")).toBeInTheDocument();
       expect(within(sidebar).getByText("oh-my-t3code")).toBeInTheDocument();
 

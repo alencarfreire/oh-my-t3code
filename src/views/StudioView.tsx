@@ -590,7 +590,7 @@ export function StudioView({
       <StudioSidebar
         globalConfig={
           snapshot?.globalConfig ?? {
-            activeGlobalPresetId: "agy-dual",
+            activeGlobalPresetId: "default",
             enabled: true,
           }
         }
@@ -636,6 +636,9 @@ export function StudioView({
                       >
                         Default Global
                       </Badge>
+                    ) : null}
+                    {draftPreset?.id === "default" ? (
+                      <Badge tone="sky">Instalado por padrão</Badge>
                     ) : null}
                   </>
                 )}

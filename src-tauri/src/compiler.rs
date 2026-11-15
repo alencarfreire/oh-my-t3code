@@ -445,7 +445,7 @@ pub fn apply_preset_to_project(
     })
 }
 
-/// Quick toggle between `antigravity` (Agy Veca) and `antigravity_2` (Agy Principal) for a project.
+/// Quick toggle between `antigravity` ↔ `antigravity_2` or `gpt-6.1-sol` ↔ `gpt-6.1-terra` (for `codex`) for a project.
 pub fn swap_project_primary_instance(
     paths: &AppPaths,
     project_id: &str,
@@ -457,38 +457,66 @@ pub fn swap_project_primary_instance(
     let current_instance = settings
         .project_overrides
         .get(project_id)
-        .map(|s| s.instance_id.as_str())
-        .unwrap_or(
+        .map(|s| s.instance_id.clone())
+        .unwrap_or_else(|| {
             current_resolved
                 .resolved_preset
                 .orchestrator
                 .provider_instance_id
-                .as_str(),
-        );
-
-    let next_instance = if current_instance == "antigravity_2" {
-        "antigravity".to_string()
-    } else {
-        "antigravity_2".to_string()
-    };
+                .clone()
+        });
+    let current_model = settings
+        .project_overrides
+        .get(project_id)
+        .map(|s| s.model.clone())
+        .unwrap_or_else(|| current_resolved.resolved_preset.orchestrator.model.clone());
 
     let mut updated = current_resolved
         .raw_local_preset
         .unwrap_or(current_resolved.resolved_preset);
-    updated.orchestrator.provider_instance_id = next_instance.clone();
-    if let Some(legacy_val) = updated.orchestrator.options.remove("thinkingLevel") {
+
+    if current_instance == "codex" {
+        let next_model = if current_model == "gpt-6.1-sol" {
+            "gpt-6.1-terra".to_string()
+        } else {
+            "gpt-6.1-sol".to_string()
+        };
+        updated.orchestrator.provider_instance_id = "codex".to_string();
+        updated.orchestrator.model = next_model;
+        updated.orchestrator.options.remove("thinkingLevel");
+        updated.orchestrator.options.remove("thinking_level");
         updated
             .orchestrator
             .options
-            .entry("thinking_level".to_string())
-            .or_insert(legacy_val);
-    }
-    if !updated.orchestrator.model.starts_with("gemini-4-") {
-        updated.orchestrator.model = "gemini-4-hydrogen".to_string();
+            .entry("reasoningEffort".to_string())
+            .or_insert_with(|| "medium".to_string());
         updated
             .orchestrator
             .options
-            .insert("thinking_level".to_string(), "high".to_string());
+            .entry("serviceTier".to_string())
+            .or_insert_with(|| "default".to_string());
+    } else {
+        let next_instance = if current_instance == "antigravity_2" {
+            "antigravity".to_string()
+        } else {
+            "antigravity_2".to_string()
+        };
+
+        updated.orchestrator.provider_instance_id = next_instance;
+        if let Some(legacy_val) = updated.orchestrator.options.remove("thinkingLevel") {
+            updated
+                .orchestrator
+                .options
+                .entry("thinking_level".to_string())
+                .or_insert(legacy_val);
+        }
+        if !updated.orchestrator.model.starts_with("gemini-4-") {
+            updated.orchestrator.model = "gemini-4-hydrogen".to_string();
+            updated
+                .orchestrator
+                .options
+                .insert("thinking_level".to_string(), "high".to_string());
+        }
     }
 
     apply_preset_to_project(paths, project_id, workspace_root, None, Some(updated))
@@ -518,42 +546,77 @@ pub fn set_global_preset_config(
     build_dashboard_snapshot(paths)
 }
 
-/// Quick toggle between `antigravity` (Agy Veca) and `antigravity_2` (Agy Principal) on the active global preset.
+/// Quick toggle on the active global preset:
+/// - For Agy presets (`antigravity` / `antigravity_2`): toggles `antigravity` ↔ `antigravity_2`.
+/// - For Codex presets (`codex`, such as `default`): toggles orchestrator model `gpt-6.1-sol` ↔ `gpt-6.1-terra`.
 pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     ensure_seed_presets(&paths.presets_dir)?;
     let global_cfg = load_global_config(&paths.global_config_path());
     let mut preset = resolve_global_preset(&paths.presets_dir, &global_cfg.active_global_preset_id)?;
 
-    let next_instance = if preset.orchestrator.provider_instance_id == "antigravity_2" {
-        "antigravity".to_string()
-    } else {
-        "antigravity_2".to_string()
-    };
-    let opposite_instance = if next_instance == "antigravity_2" {
-        "antigravity".to_string()
-    } else {
-        "antigravity_2".to_string()
-    };
+    if preset.orchestrator.provider_instance_id == "codex" {
+        let next_model = if preset.orchestrator.model == "gpt-6.1-sol" {
+            "gpt-6.1-terra".to_string()
+        } else {
+            "gpt-6.1-sol".to_string()
+        };
+        let opposite_model = if next_model == "gpt-6.1-sol" {
+            "gpt-6.1-terra".to_string()
+        } else {
+            "gpt-6.1-sol".to_string()
+        };
 
-    preset.orchestrator.provider_instance_id = next_instance.clone();
-    if let Some(legacy_val) = preset.orchestrator.options.remove("thinkingLevel") {
+        preset.orchestrator.model = next_model.clone();
+        preset.orchestrator.options.remove("thinkingLevel");
+        preset.orchestrator.options.remove("thinking_level");
         preset
             .orchestrator
             .options
-            .entry("thinking_level".to_string())
-            .or_insert(legacy_val);
-    }
-    if !preset.orchestrator.model.starts_with("gemini-4-") {
-        preset.orchestrator.model = "gemini-4-hydrogen".to_string();
+            .entry("reasoningEffort".to_string())
+            .or_insert_with(|| "medium".to_string());
         preset
             .orchestrator
             .options
-            .insert("thinking_level".to_string(), "high".to_string());
-    }
+            .entry("serviceTier".to_string())
+            .or_insert_with(|| "default".to_string());
 
-    if let Some(first_fb) = preset.fallback_chain.first_mut() {
-        if first_fb.provider_instance_id == next_instance {
-            first_fb.provider_instance_id = opposite_instance;
+        if let Some(first_fb) = preset.fallback_chain.first_mut() {
+            if first_fb.provider_instance_id == "codex" && first_fb.model == next_model {
+                first_fb.model = opposite_model;
+            }
+        }
+    } else {
+        let next_instance = if preset.orchestrator.provider_instance_id == "antigravity_2" {
+            "antigravity".to_string()
+        } else {
+            "antigravity_2".to_string()
+        };
+        let opposite_instance = if next_instance == "antigravity_2" {
+            "antigravity".to_string()
+        } else {
+            "antigravity_2".to_string()
+        };
+
+        preset.orchestrator.provider_instance_id = next_instance.clone();
+        if let Some(legacy_val) = preset.orchestrator.options.remove("thinkingLevel") {
+            preset
+                .orchestrator
+                .options
+                .entry("thinking_level".to_string())
+                .or_insert(legacy_val);
+        }
+        if !preset.orchestrator.model.starts_with("gemini-4-") {
+            preset.orchestrator.model = "gemini-4-hydrogen".to_string();
+            preset
+                .orchestrator
+                .options
+                .insert("thinking_level".to_string(), "high".to_string());
+        }
+
+        if let Some(first_fb) = preset.fallback_chain.first_mut() {
+            if first_fb.provider_instance_id == next_instance {
+                first_fb.provider_instance_id = opposite_instance;
+            }
         }
     }
 
@@ -691,13 +754,15 @@ mod tests {
     }
 
     #[test]
-    fn swap_project_primary_instance_toggles_antigravity_accounts() {
+    fn swap_project_primary_instance_toggles_codex_and_antigravity_accounts() {
         let dir = tempdir().unwrap();
         let t3_home = dir.path().join(".t3");
         let presets_dir = dir.path().join("presets");
         let ws = dir.path().join("swap-app");
+        let ws_agy = dir.path().join("swap-agy-app");
         fs::create_dir_all(t3_home.join("userdata")).unwrap();
         fs::create_dir_all(&ws).unwrap();
+        fs::create_dir_all(&ws_agy).unwrap();
         fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
 
         let paths = AppPaths {
@@ -706,12 +771,34 @@ mod tests {
             skill_roots: Vec::new(),
         };
 
-        // Default agy-dual uses antigravity_2 -> first swap switches to antigravity
-        let res1 = swap_project_primary_instance(&paths, "proj-swap", ws.to_str().unwrap()).unwrap();
+        // Default preset uses codex / gpt-6.1-sol -> swaps to gpt-6.1-terra and back
+        let codex_1 =
+            swap_project_primary_instance(&paths, "proj-swap-codex", ws.to_str().unwrap()).unwrap();
+        assert_eq!(codex_1.active_instance_id, "codex");
+        assert_eq!(codex_1.active_model, "gpt-6.1-terra");
+
+        let codex_2 =
+            swap_project_primary_instance(&paths, "proj-swap-codex", ws.to_str().unwrap()).unwrap();
+        assert_eq!(codex_2.active_instance_id, "codex");
+        assert_eq!(codex_2.active_model, "gpt-6.1-sol");
+
+        // Agy project using agy-dual toggles antigravity_2 <-> antigravity
+        apply_preset_to_project(
+            &paths,
+            "proj-swap-agy",
+            ws_agy.to_str().unwrap(),
+            Some("agy-dual".to_string()),
+            None,
+        )
+        .unwrap();
+        let res1 =
+            swap_project_primary_instance(&paths, "proj-swap-agy", ws_agy.to_str().unwrap())
+                .unwrap();
         assert_eq!(res1.active_instance_id, "antigravity");
 
-        // Second swap switches back to antigravity_2
-        let res2 = swap_project_primary_instance(&paths, "proj-swap", ws.to_str().unwrap()).unwrap();
+        let res2 =
+            swap_project_primary_instance(&paths, "proj-swap-agy", ws_agy.to_str().unwrap())
+                .unwrap();
         assert_eq!(res2.active_instance_id, "antigravity_2");
     }
 
@@ -734,6 +821,44 @@ mod tests {
             skill_roots: Vec::new(),
         };
 
+        // Initial default preset: codex / gpt-6.1-sol -> swap flips gpt-6.1-sol <-> gpt-6.1-terra
+        let snap0 = set_global_preset_config(&paths, "default".to_string(), true).unwrap();
+        assert_eq!(snap0.global_config.active_global_preset_id, "default");
+        assert!(snap0.global_config.enabled);
+        assert_eq!(
+            snap0.default_model_selection.as_ref().unwrap().instance_id,
+            "codex"
+        );
+        assert_eq!(
+            snap0.default_model_selection.as_ref().unwrap().model,
+            "gpt-6.1-sol"
+        );
+        assert_eq!(
+            snap0.fallback_model_selection.as_ref().unwrap().model,
+            "gpt-6.1-terra"
+        );
+
+        let snap0_swapped = swap_global_instance(&paths).unwrap();
+        assert_eq!(
+            snap0_swapped.default_model_selection.as_ref().unwrap().instance_id,
+            "codex"
+        );
+        assert_eq!(
+            snap0_swapped.default_model_selection.as_ref().unwrap().model,
+            "gpt-6.1-terra"
+        );
+        assert_eq!(
+            snap0_swapped.fallback_model_selection.as_ref().unwrap().model,
+            "gpt-6.1-sol"
+        );
+
+        let snap0_restored = swap_global_instance(&paths).unwrap();
+        assert_eq!(
+            snap0_restored.default_model_selection.as_ref().unwrap().model,
+            "gpt-6.1-sol"
+        );
+
+        // Switching to agy-dual and swapping toggles antigravity_2 <-> antigravity
         let snap1 = set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
         assert_eq!(snap1.global_config.active_global_preset_id, "agy-dual");
         assert!(snap1.global_config.enabled);

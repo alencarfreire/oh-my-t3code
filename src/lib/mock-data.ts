@@ -24,6 +24,174 @@ function deriveProjectSlug(workspaceRoot: string): string {
 }
 
 function buildSeedGlobalPresets(): PresetConfig[] {
+  const defaultPreset: PresetConfig = {
+    id: "default",
+    name: "Default (OMOS Standard)",
+    description:
+      "Preset global padrão de instalação (inspirado no default do oh-my-opencode-slim): orquestrador, oracle e fixer em gpt-6.1-sol, explorer e designer em gpt-6-luna, e qa-reviewer em gpt-6-astra.",
+    extends: null,
+    enabled: true,
+    topology: "intra-thread-squad",
+    orchestrator: {
+      providerInstanceId: "codex",
+      model: "gpt-6.1-sol",
+      options: { reasoningEffort: "medium", serviceTier: "default" },
+    },
+    fallbackChain: [
+      {
+        providerInstanceId: "codex",
+        model: "gpt-6.1-terra",
+        options: { reasoningEffort: "high", serviceTier: "default" },
+        reason: "Nível 1: Fallback rápido mantendo raciocínio alto em gpt-6.1-terra",
+      },
+      {
+        providerInstanceId: "codex",
+        model: "gpt-6-astra",
+        options: { reasoningEffort: "high", serviceTier: "default" },
+        reason:
+          "Nível 2: Fallback alternativo em gpt-6-astra quando o modelo primário atingir limite",
+      },
+      {
+        providerInstanceId: "codex",
+        model: "gpt-6-luna",
+        options: { reasoningEffort: "medium", serviceTier: "default" },
+        reason: "Nível 3: Fallback leve de continuidade em gpt-6-luna antes de pausar",
+      },
+    ],
+    contention: {
+      singleTestDb: false,
+      envVars: {},
+      gitIgnoredBuilds: ["target/", "dist/"],
+      conflictFiles: ["package.json", "Cargo.toml", "tauri.conf.json"],
+      defaultIsolation: "shared",
+    },
+    roles: {
+      explorer: {
+        id: "explorer",
+        title: "Explorer",
+        description:
+          "Pesquisa rápida read-only no codebase e documentação (context7, ai-memory).",
+        whenToUse:
+          "Descoberta inicial de arquivos, símbolos, contratos IPC e documentação via context7/ai-memory.",
+        providerInstanceId: "codex",
+        model: "gpt-6-luna",
+        options: { reasoningEffort: "low", serviceTier: "default" },
+        skills: ["ai-memory-retrieval", "systematic-debugging"],
+        mcps: ["context7", "ai-memory"],
+        allowedPaths: ["**/* (read-only)"],
+        forbiddenPaths: ["Edições em arquivos de código ou configuração"],
+        invariants: [
+          "Atuar estritamente em modo read-only retornando paths e símbolos verificados.",
+        ],
+        verificationCommands: [],
+      },
+      oracle: {
+        id: "oracle",
+        title: "Oracle",
+        description:
+          "Revisão de arquitetura, decisões de alto risco, simplificação e debug de último recurso.",
+        whenToUse:
+          "Decisões estruturais, migrações críticas, concorrência e análise de causa raiz difícil.",
+        providerInstanceId: "codex",
+        model: "gpt-6.1-sol",
+        options: { reasoningEffort: "high", serviceTier: "default" },
+        skills: [
+          "systematic-debugging",
+          "code-review-and-security",
+          "ai-memory-retrieval",
+        ],
+        mcps: ["ai-memory", "context7"],
+        allowedPaths: ["**/* (arquitetura e diagnóstico)"],
+        forbiddenPaths: ["Mudanças cosméticas fora do escopo arquitetural"],
+        invariants: [
+          "Preservar acesso read-only ao statev2.sqlite e escrita atômica com backup em settings.json.",
+        ],
+        verificationCommands: ["cargo check --manifest-path src-tauri/Cargo.toml"],
+      },
+      designer: {
+        id: "designer",
+        title: "Designer",
+        description:
+          "Implementação de UI/UX, layout, hierarquia visual, responsividade e Tailwind CSS v4.",
+        whenToUse:
+          "Telas, estados vazios, interações, acessibilidade, design tokens e componentes visuais.",
+        providerInstanceId: "codex",
+        model: "gpt-6-luna",
+        options: { reasoningEffort: "medium", serviceTier: "default" },
+        skills: [
+          "tailwind-v4-design",
+          "frontend-design",
+          "better-ui",
+          "better-accessibility",
+          "better-layout",
+        ],
+        mcps: ["context7", "playwright", "ai-memory"],
+        allowedPaths: ["src/**", "app/views/**", "app/javascript/**"],
+        forbiddenPaths: ["src-tauri/**", "db/migrate/**"],
+        invariants: [
+          "Preservar paridade estrita com o contrato IPC/API.",
+          "Garantir foco visível, contraste WCAG e copy claro.",
+        ],
+        verificationCommands: ["bun run typecheck", "bun run test", "bun run build"],
+      },
+      fixer: {
+        id: "fixer",
+        title: "Fixer",
+        description:
+          "Especialista de implementação rápida e mudanças mecânicas/multi-arquivo bem definidas.",
+        whenToUse:
+          "Implementações de domínio, APIs, persistência, CLIs, módulos Rust/Rails e correções com testes.",
+        providerInstanceId: "codex",
+        model: "gpt-6.1-sol",
+        options: { reasoningEffort: "low", serviceTier: "default" },
+        skills: [
+          "tdd-and-testing",
+          "systems-rust-go-crystal",
+          "rails-8-modern",
+          "systematic-debugging",
+        ],
+        mcps: ["ai-memory", "context7"],
+        allowedPaths: ["src-tauri/**", "app/**", "db/**"],
+        forbiddenPaths: ["src/components/**", "app/views/**"],
+        invariants: [
+          "Executar ciclo Red-Green-Refactor antes de declarar conclusão.",
+          "Nunca quebrar contratos de API/IPC sem alinhar com Frontend.",
+        ],
+        verificationCommands: [
+          "cargo check --manifest-path src-tauri/Cargo.toml",
+          "cargo test --manifest-path src-tauri/Cargo.toml",
+        ],
+      },
+      "qa-reviewer": {
+        id: "qa-reviewer",
+        title: "QA / Security Reviewer",
+        description:
+          "Auditoria independente de qualidade, segurança e execução completa da suíte de testes/CI.",
+        whenToUse: "Revisão final após implementação ou antes de encerrar entrega/PR.",
+        providerInstanceId: "codex",
+        model: "gpt-6-astra",
+        options: { reasoningEffort: "high", serviceTier: "default" },
+        skills: [
+          "code-review-and-security",
+          "security-audit",
+          "web-design-guidelines",
+          "webapp-testing",
+        ],
+        mcps: ["ai-memory", "playwright"],
+        allowedPaths: ["**/* (read-only audit)"],
+        forbiddenPaths: ["Edições diretas de feature — devolver achados para o papel dono"],
+        invariants: [
+          "Auditar de forma independente sem editar arquivos de feature.",
+          "Reportar saídas literais de testes, lint e build sem mascarar falhas.",
+        ],
+        verificationCommands: [
+          "cargo test --manifest-path src-tauri/Cargo.toml",
+          "bun run typecheck && bun run build",
+        ],
+      },
+    },
+  };
+
   const agyDual: PresetConfig = {
     id: "agy-dual",
     name: "Agy Dual (Veca + Principal)",
@@ -344,7 +512,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     },
   };
 
-  return [agyDual, codexSquad, hybridPreset];
+  return [defaultPreset, agyDual, codexSquad, hybridPreset];
 }
 
 function buildSeedProviderInstances(): ProviderInstanceInfo[] {
@@ -828,7 +996,7 @@ function computeSimpleUnifiedDiff(
 
 export class MockIpcStore {
   private globalConfig: GlobalAppConfig = {
-    activeGlobalPresetId: "agy-dual",
+    activeGlobalPresetId: "default",
     enabled: true,
   };
   private projects: ProjectSummary[] = [];
@@ -845,7 +1013,7 @@ export class MockIpcStore {
 
   reset(): void {
     this.globalConfig = {
-      activeGlobalPresetId: "agy-dual",
+      activeGlobalPresetId: "default",
       enabled: true,
     };
     this.projects = buildSeedProjects();
@@ -857,7 +1025,8 @@ export class MockIpcStore {
     this.compiledFilesByPath = new Map();
 
     // Seed baseline compiled files for oh-my-t3code so diffs look realistic on edit
-    const basePreset = this.globalPresets[0];
+    const basePreset =
+      this.globalPresets.find((p) => p.id === "agy-dual") ?? this.globalPresets[0];
     const ohMyRoot = "/Users/alencarfreire/.t3/projects/oh-my-t3code";
     const slug = deriveProjectSlug(ohMyRoot);
     this.localPresetsByProject.set("proj-oh-my-t3code", structuredClone(basePreset));
@@ -896,9 +1065,12 @@ export class MockIpcStore {
             })),
           }
         : {
-            instanceId: "antigravity_2",
-            model: "gemini-4-hydrogen",
-            options: [{ id: "thinking_level", value: "high" }],
+            instanceId: "codex",
+            model: "gpt-6.1-sol",
+            options: [
+              { id: "reasoningEffort", value: "medium" },
+              { id: "serviceTier", value: "default" },
+            ],
           },
       fallbackModelSelection: firstFallback
         ? {
@@ -910,9 +1082,12 @@ export class MockIpcStore {
             })),
           }
         : {
-            instanceId: "antigravity",
-            model: "gemini-4-hydrogen",
-            options: [{ id: "thinking_level", value: "high" }],
+            instanceId: "codex",
+            model: "gpt-6.1-terra",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "default" },
+            ],
           },
       sqliteAvailable: true,
       settingsAvailable: true,
@@ -1130,12 +1305,36 @@ export class MockIpcStore {
 
   swapProjectInstance(projectId: string, workspaceRoot: string): SyncResult {
     const proj = this.projects.find((p) => p.projectId === projectId);
-    const current = proj?.activeInstanceId ?? "antigravity_2";
-    const nextInstance = current === "antigravity" ? "antigravity_2" : "antigravity";
-    const nextModel =
-      proj?.activeModel && proj.activeModel.startsWith("gemini-")
-        ? proj.activeModel
-        : "gemini-4-hydrogen";
+    const local = this.localPresetsByProject.get(projectId);
+    const current =
+      proj?.activeInstanceId ?? local?.orchestrator.providerInstanceId ?? "antigravity_2";
+    const currentModel = proj?.activeModel ?? local?.orchestrator.model ?? "gemini-4-hydrogen";
+
+    let nextInstance: string;
+    let nextModel: string;
+
+    if (current === "codex") {
+      nextInstance = "codex";
+      nextModel = currentModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+      if (local) {
+        local.orchestrator.providerInstanceId = "codex";
+        local.orchestrator.model = nextModel;
+        delete local.orchestrator.options.thinkingLevel;
+        delete local.orchestrator.options.thinking_level;
+        local.orchestrator.options.reasoningEffort ??= "medium";
+        local.orchestrator.options.serviceTier ??= "default";
+      }
+    } else {
+      nextInstance = current === "antigravity" ? "antigravity_2" : "antigravity";
+      nextModel =
+        currentModel && currentModel.startsWith("gemini-")
+          ? currentModel
+          : "gemini-4-hydrogen";
+      if (local) {
+        local.orchestrator.providerInstanceId = nextInstance;
+        local.orchestrator.model = nextModel;
+      }
+    }
 
     if (proj) {
       proj.activeInstanceId = nextInstance;
@@ -1143,16 +1342,10 @@ export class MockIpcStore {
       proj.updatedAt = new Date().toISOString();
     }
 
-    const local = this.localPresetsByProject.get(projectId);
-    if (local) {
-      local.orchestrator.providerInstanceId = nextInstance;
-      local.orchestrator.model = nextModel;
-    }
-
     return {
       projectId,
       workspaceRoot,
-      presetId: local?.id ?? proj?.localPresetId ?? "agy-dual",
+      presetId: local?.id ?? proj?.localPresetId ?? "default",
       writtenFiles: [],
       settingsPath: "/Users/alencarfreire/.t3/userdata/settings.json",
       backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
@@ -1169,7 +1362,7 @@ export class MockIpcStore {
       id: slug,
       name: `${slug} (Importado)`,
       description: `Preset importado automaticamente de .agents/skills/${slug}-squad/`,
-      extends: "agy-dual",
+      extends: "default",
       enabled: true,
     };
     this.localPresetsByProject.set(projectId, imported);
@@ -1199,19 +1392,37 @@ export class MockIpcStore {
       this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
       this.globalPresets[0];
     if (active) {
-      const nextInstance =
-        active.orchestrator.providerInstanceId === "antigravity_2"
-          ? "antigravity"
-          : "antigravity_2";
-      const oppositeInstance =
-        nextInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
-      active.orchestrator.providerInstanceId = nextInstance;
-      if (!active.orchestrator.model.startsWith("gemini-4-")) {
-        active.orchestrator.model = "gemini-4-hydrogen";
-        active.orchestrator.options = { thinking_level: "high" };
-      }
-      if (active.fallbackChain[0]?.providerInstanceId === nextInstance) {
-        active.fallbackChain[0].providerInstanceId = oppositeInstance;
+      if (active.orchestrator.providerInstanceId === "codex") {
+        const nextModel =
+          active.orchestrator.model === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+        const oppositeModel =
+          nextModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+        active.orchestrator.model = nextModel;
+        delete active.orchestrator.options.thinkingLevel;
+        delete active.orchestrator.options.thinking_level;
+        active.orchestrator.options.reasoningEffort ??= "medium";
+        active.orchestrator.options.serviceTier ??= "default";
+        if (
+          active.fallbackChain[0]?.providerInstanceId === "codex" &&
+          active.fallbackChain[0].model === nextModel
+        ) {
+          active.fallbackChain[0].model = oppositeModel;
+        }
+      } else {
+        const nextInstance =
+          active.orchestrator.providerInstanceId === "antigravity_2"
+            ? "antigravity"
+            : "antigravity_2";
+        const oppositeInstance =
+          nextInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
+        active.orchestrator.providerInstanceId = nextInstance;
+        if (!active.orchestrator.model.startsWith("gemini-4-")) {
+          active.orchestrator.model = "gemini-4-hydrogen";
+          active.orchestrator.options = { thinking_level: "high" };
+        }
+        if (active.fallbackChain[0]?.providerInstanceId === nextInstance) {
+          active.fallbackChain[0].providerInstanceId = oppositeInstance;
+        }
       }
     }
     return this.getDashboardSnapshot();

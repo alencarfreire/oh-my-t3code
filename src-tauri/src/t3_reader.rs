@@ -847,8 +847,8 @@ pub fn scan_global_skills(skill_roots: &[(String, std::path::PathBuf)]) -> Vec<S
 /// Builds the full dashboard snapshot read-only.
 pub fn build_dashboard_snapshot(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let settings = read_t3_settings(&paths.settings_path());
-    let global_config = load_global_config(&paths.global_config_path());
     let global_presets = list_global_presets(&paths.presets_dir)?;
+    let global_config = load_global_config(&paths.global_config_path());
     let global_active_preset = global_presets
         .iter()
         .find(|p| p.id == global_config.active_global_preset_id);

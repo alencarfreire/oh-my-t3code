@@ -52,8 +52,22 @@ export function StudioSidebar({
 }: StudioSidebarProps) {
   const [creatingGlobal, setCreatingGlobal] = useState(false);
   const [newPresetId, setNewPresetId] = useState("");
-  const [newPresetBase, setNewPresetBase] = useState<string>("agy-dual");
+  const [newPresetBase, setNewPresetBase] = useState<string>("default");
   const [createError, setCreateError] = useState<string | null>(null);
+
+  const sortedGlobalPresets = useMemo(() => {
+    const rank = (id: string) => {
+      if (id === "default") return 0;
+      if (id === "agy-dual") return 1;
+      if (id === "codex-squad") return 2;
+      if (id === "hybrid-agy-codex") return 3;
+      return 4;
+    };
+    return [...globalPresets].sort((a, b) => {
+      const diff = rank(a.id) - rank(b.id);
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    });
+  }, [globalPresets]);
 
   const [configuringProject, setConfiguringProject] = useState(false);
   const [selectedUnconfiguredId, setSelectedUnconfiguredId] = useState("");
@@ -208,7 +222,7 @@ export function StudioSidebar({
                   wrapperClassName="mt-1"
                 >
                   <option value="">Nenhum (Base)</option>
-                  {globalPresets.map((p) => (
+                  {sortedGlobalPresets.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.id}
                     </option>
@@ -236,10 +250,11 @@ export function StudioSidebar({
           ) : null}
 
           <ul className="space-y-1.5">
-            {globalPresets.map((preset) => {
+            {sortedGlobalPresets.map((preset) => {
               const active =
                 selection?.kind === "global" && selection.presetId === preset.id;
               const isDefaultGlobal = preset.id === globalConfig.activeGlobalPresetId;
+              const isBuiltinInstallDefault = preset.id === "default";
               const family = resolvePresetFamilyTag(preset);
               const roleCount = Object.keys(preset.roles).length;
 
@@ -285,6 +300,9 @@ export function StudioSidebar({
                           </Badge>
                         ) : !preset.enabled ? (
                           <Badge tone="neutral">Desativado</Badge>
+                        ) : null}
+                        {isBuiltinInstallDefault ? (
+                          <Badge tone="sky">Instalado por padrão</Badge>
                         ) : null}
                         <Badge tone={family.tone}>{family.label}</Badge>
                         <span className="text-zinc-400 tabular-nums">
@@ -383,7 +401,7 @@ export function StudioSidebar({
                       onChange={(e) => setSelectedPresetForOverride(e.target.value)}
                       wrapperClassName="mt-1"
                     >
-                      {globalPresets.map((preset) => (
+                      {sortedGlobalPresets.map((preset) => (
                         <option key={preset.id} value={preset.id}>
                           {preset.id} — {preset.name}
                         </option>
