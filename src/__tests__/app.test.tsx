@@ -10,7 +10,7 @@ function setLocationSearch(search: string) {
 
 describe("Oh My T3Code — Popover & Preset Studio", () => {
   describe("Menu Bar Popover View", () => {
-    it("renders synced/presets summary, filters T3 projects, supports 1-click preset sync, instance swap, and Escape close without subagent monitor", async () => {
+    it("renders featured Global Default card, strictly filters Override projects (hiding landing-page), supports toggles, + Configurar Projeto, sync, swap, and Escape close", async () => {
       const user = userEvent.setup();
       setLocationSearch("?view=popover");
 
@@ -19,30 +19,125 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
 
       render(<App />);
 
-      // Header logo & synced/presets summary (no redundant subagents badge or list)
+      // Header logo & summary (no subagent monitor)
       expect(await screen.findByText("Oh My T3Code")).toBeInTheDocument();
       expect(screen.getByAltText("Oh My T3Code")).toHaveAttribute("src", "/logo.png");
-      expect(screen.getByText("2/3 sincronizados · 3 presets")).toBeInTheDocument();
-      expect(screen.queryByText("2 ativos")).not.toBeInTheDocument();
+      expect(screen.getByText("Global Ativo · 3 overrides · 3 presets")).toBeInTheDocument();
       expect(
         screen.queryByRole("region", { name: /Subagentes/i }),
       ).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("Implementar Popover & Preset Studio (Onda 2)"),
-      ).not.toBeInTheDocument();
 
-      // Projects section
-      const projectsSection = screen.getByRole("region", {
-        name: /Projetos & 1-Click Sync/i,
+      // 1. Featured Global Default Card at the top
+      const globalCard = screen.getByRole("region", {
+        name: /Preset Global \(Default\)/i,
       });
+      const globalToggle = within(globalCard).getByRole("button", {
+        name: "Alternar status do Preset Global",
+      });
+      expect(globalToggle).toHaveAttribute("aria-pressed", "true");
+      expect(within(globalCard).getByText("Ativo")).toBeInTheDocument();
+
+      // Toggle Global Default off and back on
+      await user.click(globalToggle);
+      await waitFor(() => {
+        expect(globalToggle).toHaveAttribute("aria-pressed", "false");
+      });
+      expect(within(globalCard).getByText("Desativado")).toBeInTheDocument();
+
+      await user.click(globalToggle);
+      await waitFor(() => {
+        expect(globalToggle).toHaveAttribute("aria-pressed", "true");
+      });
+
+      // Swap Global Instance (Agy Principal -> Agy Veca)
+      const globalSwapBtn = within(globalCard).getByRole("button", {
+        name: "Inverter instância global",
+      });
+      expect(globalSwapBtn).toHaveTextContent("Agy Principal");
+      await user.click(globalSwapBtn);
+      await waitFor(() => {
+        expect(
+          within(globalCard).getByRole("button", { name: "Inverter instância global" }),
+        ).toHaveTextContent("Agy Veca");
+      });
+
+      // Switch Global Preset Default select to codex-squad and back to agy-dual
+      const globalSelect = within(globalCard).getByLabelText("Preset Global Default");
+      await user.selectOptions(globalSelect, "codex-squad");
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent(
+          /Preset Global Default alterado para codex-squad/i,
+        );
+      });
+      expect(
+        within(globalCard).queryByRole("button", { name: "Inverter instância global" }),
+      ).not.toBeInTheDocument();
+      expect(within(globalCard).getByText("Codex")).toBeInTheDocument();
+
+      await user.selectOptions(globalSelect, "agy-dual");
+      await waitFor(() => {
+        expect(
+          within(globalCard).getByRole("button", { name: "Inverter instância global" }),
+        ).toBeInTheDocument();
+      });
+
+      // 2. Strict "Projetos com Override (3)" section: excludes landing-page
+      const projectsSection = screen.getByRole("region", {
+        name: /Projetos com Override/i,
+      });
+      expect(within(projectsSection).getByText("(3)")).toBeInTheDocument();
       expect(within(projectsSection).getByText("oh-my-t3code")).toBeInTheDocument();
       expect(within(projectsSection).getByText("cabrito")).toBeInTheDocument();
       expect(within(projectsSection).getByText("dashboard-meta")).toBeInTheDocument();
+      expect(
+        within(projectsSection).queryByText("landing-page"),
+      ).not.toBeInTheDocument();
 
-      // Filter projects quickly and clear filter
+      // Toggle override of oh-my-t3code off -> shows "Seguindo Global Default (override pausado)"
+      const ohMyToggle = within(projectsSection).getByRole("button", {
+        name: "Alternar preset de oh-my-t3code",
+      });
+      expect(ohMyToggle).toHaveAttribute("aria-pressed", "true");
+      await user.click(ohMyToggle);
+      await waitFor(() => {
+        expect(
+          within(projectsSection).getByText(
+            "Seguindo Global Default (override pausado)",
+          ),
+        ).toBeInTheDocument();
+      });
+      expect(ohMyToggle).toHaveAttribute("aria-pressed", "false");
+
+      // Re-enable oh-my-t3code override
+      await user.click(ohMyToggle);
+      await waitFor(() => {
+        expect(ohMyToggle).toHaveAttribute("aria-pressed", "true");
+      });
+
+      // 3. "+ Configurar Projeto" assigns an override to landing-page
+      await user.click(
+        within(projectsSection).getByRole("button", { name: /Configurar Projeto/i }),
+      );
+      const unconfiguredSelect = within(projectsSection).getByLabelText(
+        "Selecionar projeto para configurar",
+      );
+      expect(unconfiguredSelect).toHaveValue("proj-landing-page");
+      await user.selectOptions(
+        within(projectsSection).getByLabelText("Selecionar preset para override"),
+        "codex-squad",
+      );
+      await user.click(
+        within(projectsSection).getByRole("button", { name: "Aplicar Override" }),
+      );
+
+      await waitFor(() => {
+        expect(within(projectsSection).getByText("landing-page")).toBeInTheDocument();
+      });
+      expect(within(projectsSection).getByText("(4)")).toBeInTheDocument();
+
+      // Filter overrides quickly and clear filter
       const filterInput = screen.getByLabelText("Filtrar projetos");
       await user.type(filterInput, "cabrito");
-      expect(within(projectsSection).getByText("1 de 3")).toBeInTheDocument();
       expect(within(projectsSection).getByText("cabrito")).toBeInTheDocument();
       expect(
         within(projectsSection).queryByText("oh-my-t3code"),
@@ -54,7 +149,6 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       await user.click(
         screen.getByRole("button", { name: "Limpar filtro de projetos" }),
       );
-      expect(within(projectsSection).getByText("3 projetos")).toBeInTheDocument();
       expect(within(projectsSection).getByText("oh-my-t3code")).toBeInTheDocument();
 
       // Change preset dropdown for cabrito and click Sync
@@ -71,7 +165,6 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         );
       });
       expect(screen.getByText("Sincronizado!")).toBeInTheDocument();
-      expect(screen.getByText("3/3 sincronizados · 3 presets")).toBeInTheDocument();
 
       // Click 1-click Swap Instance button on oh-my-t3code
       const swapBtn = screen.getByRole("button", {
@@ -94,13 +187,13 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
   });
 
   describe("Preset Studio View", () => {
-    it("navigates between Global Presets and Projects, edits roles/skills, and previews Unified Diff before syncing", async () => {
+    it("highlights Default Global, filters Projetos com Override, supports + Configurar Projeto, Remove Override, role templates, and Unified Diff preview", async () => {
       const user = userEvent.setup();
       setLocationSearch("?view=studio");
 
       render(<App />);
 
-      // Sidebar renders logo, Global Presets and T3 Code Projects
+      // Sidebar renders logo, Global Presets with Default badge, and ONLY override projects
       const sidebar = await screen.findByRole("complementary", {
         name: "Navegação de Presets e Projetos",
       });
@@ -111,16 +204,74 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       expect(
         within(sidebar).getByText("Agy Dual (Veca + Principal)"),
       ).toBeInTheDocument();
+      expect(within(sidebar).getByText("Default · Ativo")).toBeInTheDocument();
       expect(within(sidebar).getByText("Codex Squad (Sol + Terra)")).toBeInTheDocument();
       expect(within(sidebar).getByText("cabrito")).toBeInTheDocument();
       expect(within(sidebar).getByText("oh-my-t3code")).toBeInTheDocument();
 
-      // Switch to project 'cabrito'
-      await user.click(within(sidebar).getByRole("button", { name: /cabrito/i }));
+      // landing-page (hasCustomOverride: false) is NOT in the sidebar override list
+      const sidebarProjectsSection = within(sidebar).getByRole("region", {
+        name: /Projetos com Override/i,
+      });
+      expect(
+        within(sidebarProjectsSection).queryByText("landing-page"),
+      ).not.toBeInTheDocument();
+
+      // Use "+ Configurar Projeto" in sidebar to configure landing-page, then remove its override
+      await user.click(
+        within(sidebarProjectsSection).getByRole("button", {
+          name: /Configurar Projeto/i,
+        }),
+      );
+      expect(
+        within(sidebarProjectsSection).getByLabelText("Selecionar projeto sem override"),
+      ).toHaveValue("proj-landing-page");
+      await user.click(
+        within(sidebarProjectsSection).getByRole("button", { name: "Criar Override" }),
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("heading", { level: 1, name: "landing-page" }),
+        ).toBeInTheDocument();
+      });
+      expect(
+        within(sidebarProjectsSection).getByText("landing-page"),
+      ).toBeInTheDocument();
+
+      // Remove override to return landing-page to Global Default
+      await user.click(
+        screen.getByRole("button", {
+          name: /Voltar ao Global \(Remover Override\)/i,
+        }),
+      );
+      await waitFor(() => {
+        expect(
+          within(sidebarProjectsSection).queryByText("landing-page"),
+        ).not.toBeInTheDocument();
+      });
+
+      // Switch to project 'cabrito' and toggle Active/Disabled in Studio Header
+      await user.click(
+        within(sidebarProjectsSection).getByRole("button", { name: /cabrito/i }),
+      );
       await waitFor(() => {
         expect(
           screen.getByRole("heading", { level: 1, name: "cabrito" }),
         ).toBeInTheDocument();
+      });
+
+      const cabritoHeaderToggle = screen.getByRole("button", {
+        name: "Alternar preset de cabrito",
+      });
+      expect(cabritoHeaderToggle).toHaveAttribute("aria-pressed", "true");
+      await user.click(cabritoHeaderToggle);
+      await waitFor(() => {
+        expect(cabritoHeaderToggle).toHaveAttribute("aria-pressed", "false");
+      });
+      await user.click(cabritoHeaderToggle);
+      await waitFor(() => {
+        expect(cabritoHeaderToggle).toHaveAttribute("aria-pressed", "true");
       });
 
       // Navigate to Matriz de Papéis tab and add 'rust-core' role
@@ -174,7 +325,6 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         ).toBeInTheDocument();
       });
 
-      // Select SKILL.md to inspect its unified diff and compiled Markdown
       await user.click(
         screen.getByRole("button", {
           name: /\.agents\/skills\/cabrito-squad\/SKILL\.md/i,
@@ -184,7 +334,6 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         /\+\+\+ b\/\.agents\/skills\/cabrito-squad\/SKILL\.md/,
       );
 
-      // Toggle to Compiled Markdown view
       await user.click(
         screen.getByRole("button", { name: /Markdown Compilado/i }),
       );
@@ -192,7 +341,6 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         screen.getByText(/# cabrito Squad — Playbook do Orquestrador/i),
       ).toBeInTheDocument();
 
-      // Save & Sync project
       await user.click(
         screen.getByRole("button", { name: /Salvar & Sincronizar Projeto/i }),
       );
@@ -201,19 +349,58 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       });
     });
 
-    it("supports 1-click model/thinking_level pills, Codex reasoningEffort pills, architecture summary, and selected-skills filter", async () => {
+    it("supports canonical oh-my-opencode-slim role templates, Set as Global Default, 1-click model/thinking_level pills, and selected-skills filter", async () => {
       const user = userEvent.setup();
       setLocationSearch("?view=studio");
 
       render(<App />);
 
-      // Wait for Studio header architecture summary strip
+      // Wait for Studio header architecture summary strip (5 canonical roles)
       expect(await screen.findByText(/Topologia: Intra-Thread/i)).toBeInTheDocument();
       expect(screen.getByText(/Fallback: 3 níveis/i)).toBeInTheDocument();
-      expect(screen.getByText(/Papéis: 3/i)).toBeInTheDocument();
+      expect(screen.getByText(/Papéis: 5/i)).toBeInTheDocument();
 
-      // Switch to Matriz de Papéis tab
+      // Create an empty global preset to verify oh-my-opencode-slim role templates appear
+      const sidebar = screen.getByRole("complementary", {
+        name: "Navegação de Presets e Projetos",
+      });
+      await user.click(
+        within(sidebar).getByRole("button", { name: /Novo Preset Global/i }),
+      );
+      await user.type(
+        within(sidebar).getByLabelText(/ID do Preset/i),
+        "slim-custom",
+      );
+      await user.selectOptions(
+        within(sidebar).getByLabelText(/Herdar de/i),
+        "",
+      );
+      await user.click(within(sidebar).getByRole("button", { name: "Criar" }));
+
+      // Switch to Matriz de Papéis and verify canonical templates
       await user.click(screen.getByRole("tab", { name: /Matriz de Papéis/i }));
+      await user.click(screen.getByRole("button", { name: /Adicionar Papel/i }));
+      expect(screen.getByRole("button", { name: "+ explorer" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "+ oracle" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "+ designer" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "+ fixer" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "+ qa-reviewer" })).toBeInTheDocument();
+
+      // Add designer role via 1-click template and test model/options pills
+      await user.click(screen.getByRole("button", { name: "+ designer" }));
+      expect(
+        screen.getByRole("heading", { level: 4, name: "Designer" }),
+      ).toBeInTheDocument();
+
+      // Set this new preset as Global Default
+      await user.click(
+        screen.getByRole("button", { name: /Definir como Global Default/i }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent(
+          /definido como Global Default/i,
+        );
+      });
 
       // 1-click thinking_level pill: click xhigh for active role
       const roleOptionsGroup = screen.getByRole("group", {
@@ -240,7 +427,7 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         screen.getByRole("button", { name: /Apenas Selecionadas/i }),
       );
       expect(
-        screen.getByRole("checkbox", { name: /tdd-and-testing/i }),
+        screen.getByRole("checkbox", { name: /tailwind-v4-design/i }),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("checkbox", { name: /rails-8-modern/i }),

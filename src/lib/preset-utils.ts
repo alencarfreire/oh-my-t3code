@@ -33,6 +33,70 @@ export const RECOMMENDED_MCPS = [
 ] as const;
 
 export const COMMON_ROLE_TEMPLATES: Record<string, Partial<RoleConfig>> = {
+  explorer: {
+    title: "Explorer",
+    description:
+      "Pesquisa rápida de código, mapeamento read-only do repositório e consulta de docs.",
+    whenToUse:
+      "Descoberta inicial de arquivos, símbolos, contratos IPC e documentação via context7/ai-memory.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-hydrogen",
+    options: { thinking_level: "low" },
+    skills: ["ai-memory-retrieval", "systematic-debugging"],
+    mcps: ["context7", "ai-memory"],
+  },
+  oracle: {
+    title: "Oracle",
+    description:
+      "Arquitetura, trade-offs de alto risco, simplificação de design e debug complexo.",
+    whenToUse:
+      "Decisões estruturais, migrações críticas, concorrência e análise de causa raiz difícil.",
+    providerInstanceId: "antigravity_2",
+    model: "gemini-4-argon",
+    options: { thinking_level: "high" },
+    skills: ["systematic-debugging", "code-review-and-security", "ai-memory-retrieval"],
+    mcps: ["ai-memory", "context7"],
+  },
+  designer: {
+    title: "Designer",
+    description:
+      "Implementação de UI/UX, layout, tipografia, responsividade e Tailwind CSS v4.",
+    whenToUse:
+      "Telas, estados vazios, interações, acessibilidade, design tokens e componentes visuais.",
+    providerInstanceId: "antigravity_2",
+    model: "gemini-4-hydrogen",
+    options: { thinking_level: "medium" },
+    skills: [
+      "tailwind-v4-design",
+      "frontend-design",
+      "better-ui",
+      "better-accessibility",
+      "better-layout",
+    ],
+    mcps: ["context7", "playwright", "ai-memory"],
+  },
+  fixer: {
+    title: "Fixer",
+    description:
+      "Implementação rápida e bem delimitada de backend, módulos de domínio e correções.",
+    whenToUse:
+      "Implementações de domínio, APIs, persistência, CLIs, módulos Rust/Rails e correções com testes.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-hydrogen",
+    options: { thinking_level: "high" },
+    skills: ["tdd-and-testing", "systems-rust-go-crystal", "systematic-debugging"],
+    mcps: ["ai-memory", "context7"],
+  },
+  "qa-reviewer": {
+    title: "QA / Security Reviewer",
+    description: "Auditoria independente de segurança, invariantes, paridade IPC e testes.",
+    whenToUse: "Revisão final independente antes de concluir entrega ou PR.",
+    providerInstanceId: "antigravity_2",
+    model: "gemini-4-argon",
+    options: { thinking_level: "high" },
+    skills: ["code-review-and-security", "security-audit", "web-design-guidelines"],
+    mcps: ["ai-memory", "playwright"],
+  },
   backend: {
     title: "Backend",
     description: "APIs, models, domínio, jobs, migrations e suíte de testes.",
@@ -82,26 +146,6 @@ export const COMMON_ROLE_TEMPLATES: Record<string, Partial<RoleConfig>> = {
     options: { thinking_level: "medium" },
     skills: ["systematic-debugging", "tdd-and-testing"],
     mcps: ["ai-memory"],
-  },
-  fixer: {
-    title: "Fixer / Debugger",
-    description: "Diagnóstico científico de regressões, falhas de CI e bugs sutis.",
-    whenToUse: "Corrigir testes quebrados, race conditions ou bugs em produção.",
-    providerInstanceId: "antigravity",
-    model: "gemini-4-argon",
-    options: { thinking_level: "high" },
-    skills: ["systematic-debugging", "tdd-and-testing"],
-    mcps: ["ai-memory"],
-  },
-  "qa-reviewer": {
-    title: "QA / Security Reviewer",
-    description: "Auditoria independente de segurança, invariantes, paridade IPC e testes.",
-    whenToUse: "Revisão final independente antes de concluir entrega ou PR.",
-    providerInstanceId: "antigravity_2",
-    model: "gemini-4-argon",
-    options: { thinking_level: "high" },
-    skills: ["code-review-and-security", "security-audit", "web-design-guidelines"],
-    mcps: ["ai-memory", "playwright"],
   },
   "delivery-manager": {
     title: "Delivery Manager",

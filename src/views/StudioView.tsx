@@ -5,8 +5,10 @@ import {
   Cpu,
   FileDiff,
   GitBranch,
+  Globe,
   Layers,
   Network,
+  RotateCcw,
   Save,
   ShieldAlert,
   Sliders,
@@ -25,6 +27,7 @@ import {
 } from "../components/studio/StudioSidebar";
 import { Badge, getInstanceBadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { StatusToggle } from "../components/ui/StatusToggle";
 import { invokeIpc, listenStudioNavigate } from "../lib/ipc-client";
 import {
   clonePreset,
@@ -32,12 +35,13 @@ import {
   formatPrimaryOptionSummary,
   resolveInstanceShortLabel,
 } from "../lib/preset-utils";
-import type {
-  CompilePreviewResult,
-  DashboardSnapshot,
-  PresetConfig,
-  ProjectSummary,
-  ResolvedProjectPreset,
+import {
+  IPC_COMMANDS,
+  type CompilePreviewResult,
+  type DashboardSnapshot,
+  type PresetConfig,
+  type ProjectSummary,
+  type ResolvedProjectPreset,
 } from "../types/ipc";
 
 type StudioTabId = "overview" | "roles" | "skills" | "contention" | "preview";
@@ -156,7 +160,11 @@ export function StudioView({
       }
 
       if (data.globalPresets.length > 0) {
-        selectGlobalPreset(data.globalPresets[0].id, data);
+        const activeGlobal =
+          data.globalPresets.find(
+            (p) => p.id === data.globalConfig.activeGlobalPresetId,
+          ) ?? data.globalPresets[0];
+        selectGlobalPreset(activeGlobal.id, data);
       } else if (data.projects.length > 0) {
         await selectProject(data.projects[0]);
       }
@@ -277,6 +285,63 @@ export function StudioView({
     }
   };
 
+  const handleToggleGlobalPresetStatus = async () => {
+    if (!draftPreset || !snapshot) return;
+    const isActiveGlobalDefault =
+      snapshot.globalConfig.activeGlobalPresetId === draftPreset.id;
+    if (isActiveGlobalDefault) {
+      const nextEnabled = !snapshot.globalConfig.enabled;
+      setSaving(true);
+      setErrorMsg(null);
+      try {
+        const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
+          activePresetId: draftPreset.id,
+          enabled: nextEnabled,
+        });
+        setSnapshot(updated);
+        setDraftPreset({ ...draftPreset, enabled: nextEnabled });
+        setStatusMessage(
+          nextEnabled
+            ? `Preset Global '${draftPreset.id}' ativado e sincronizado.`
+            : `Preset Global '${draftPreset.id}' desativado.`,
+        );
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    handleDraftChange({ ...draftPreset, enabled: !draftPreset.enabled });
+  };
+
+  const handleSetAsGlobalDefault = async () => {
+    if (!draftPreset) return;
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      const presetToActivate = { ...draftPreset, enabled: true };
+      const saved = await invokeIpc(IPC_COMMANDS.saveGlobalPreset, {
+        preset: presetToActivate,
+      });
+      const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
+        activePresetId: saved.id,
+        enabled: true,
+      });
+      setSnapshot(updated);
+      setDraftPreset(clonePreset(saved));
+      setDirty(false);
+      setStatusMessage(
+        `Preset '${saved.id}' definido como Global Default (Ativo) e sincronizado no T3 Code.`,
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSaveProjectOverride = async () => {
     if (!draftPreset || !projectMeta) return;
     setSaving(true);
@@ -294,6 +359,86 @@ export function StudioView({
       setDirty(false);
       setStatusMessage(
         `Override local salvo em ${saved.localPresetPath}.`,
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleProjectEnabled = async () => {
+    if (!draftPreset || !projectMeta || !snapshot) return;
+    const activeProject = snapshot.projects.find(
+      (p) => p.projectId === projectMeta.projectId,
+    );
+    const currentEnabled = activeProject?.presetEnabled ?? draftPreset.enabled;
+    const nextEnabled = !currentEnabled;
+
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      await invokeIpc(IPC_COMMANDS.setProjectPresetEnabled, {
+        projectId: projectMeta.projectId,
+        workspaceRoot: projectMeta.workspaceRoot,
+        enabled: nextEnabled,
+      });
+      const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+      setSnapshot(refreshed);
+      setDraftPreset({ ...draftPreset, enabled: nextEnabled });
+      setStatusMessage(
+        nextEnabled
+          ? `Override de ${projectMeta.projectSlug} ativado e sincronizado.`
+          : `Override de ${projectMeta.projectSlug} desativado — seguindo Global Default.`,
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemoveProjectOverride = async () => {
+    if (!projectMeta) return;
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      const refreshed = await invokeIpc(IPC_COMMANDS.removeProjectOverride, {
+        projectId: projectMeta.projectId,
+        workspaceRoot: projectMeta.workspaceRoot,
+      });
+      setSnapshot(refreshed);
+      selectGlobalPreset(refreshed.globalConfig.activeGlobalPresetId, refreshed);
+      setStatusMessage(
+        `Override de ${projectMeta.projectSlug} removido — projeto voltou ao Global Default.`,
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleConfigureProjectOverride = async (
+    project: ProjectSummary,
+    presetId: string,
+  ) => {
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      await invokeIpc(IPC_COMMANDS.applyPresetSync, {
+        projectId: project.projectId,
+        workspaceRoot: project.workspaceRoot,
+        presetIdOrCustom: presetId,
+        customPreset: null,
+      });
+      const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+      setSnapshot(refreshed);
+      const updatedProj =
+        refreshed.projects.find((p) => p.projectId === project.projectId) ?? project;
+      await selectProject(updatedProj);
+      setStatusMessage(
+        `Override criado para ${project.title} com preset ${presetId}.`,
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -423,9 +568,32 @@ export function StudioView({
       ? "Issue-Thread"
       : "Intra-Thread";
 
+  const isActiveGlobalDefault =
+    selection?.kind === "global" &&
+    Boolean(draftPreset) &&
+    snapshot?.globalConfig.activeGlobalPresetId === draftPreset?.id;
+
+  const activeProjectSummary =
+    selection?.kind === "project" && projectMeta && snapshot
+      ? snapshot.projects.find((p) => p.projectId === projectMeta.projectId) ?? null
+      : null;
+
+  const globalOrPresetEnabled = isActiveGlobalDefault
+    ? Boolean(snapshot?.globalConfig.enabled)
+    : Boolean(draftPreset?.enabled);
+
+  const projectOverrideEnabled =
+    activeProjectSummary?.presetEnabled ?? Boolean(draftPreset?.enabled);
+
   return (
     <div className="surface-backdrop flex h-full w-full overflow-hidden text-zinc-100">
       <StudioSidebar
+        globalConfig={
+          snapshot?.globalConfig ?? {
+            activeGlobalPresetId: "agy-dual",
+            enabled: true,
+          }
+        }
         globalPresets={snapshot?.globalPresets ?? []}
         projects={snapshot?.projects ?? []}
         selection={selection}
@@ -433,6 +601,9 @@ export function StudioView({
         onSelectProject={(proj) => void selectProject(proj)}
         onCreateGlobalPreset={handleCreateGlobalPreset}
         onImportProjectSquad={(proj) => void handleImportSquad(proj)}
+        onConfigureProjectOverride={(proj, presetId) =>
+          void handleConfigureProjectOverride(proj, presetId)
+        }
         importingProjectId={importingProjectId}
       />
 
@@ -453,10 +624,20 @@ export function StudioView({
                     Projeto · Override Local
                   </Badge>
                 ) : (
-                  <Badge tone="indigo">
-                    <Layers className="size-3" aria-hidden="true" />
-                    Preset Global
-                  </Badge>
+                  <>
+                    <Badge tone="indigo">
+                      <Layers className="size-3" aria-hidden="true" />
+                      Preset Global
+                    </Badge>
+                    {isActiveGlobalDefault ? (
+                      <Badge
+                        tone={snapshot?.globalConfig.enabled ? "emerald" : "neutral"}
+                        dot
+                      >
+                        Default Global
+                      </Badge>
+                    ) : null}
+                  </>
                 )}
 
                 {dirty ? (
@@ -474,18 +655,62 @@ export function StudioView({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {selection?.kind === "global" ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={!draftPreset || saving}
-                  onClick={() => void handleSaveGlobalPreset()}
-                >
-                  <Save className="size-3.5" aria-hidden="true" />
-                  Salvar Preset Global
-                </Button>
-              ) : (
+              {selection?.kind === "global" && draftPreset ? (
                 <>
+                  <StatusToggle
+                    size="sm"
+                    enabled={globalOrPresetEnabled}
+                    disabled={saving}
+                    onClick={() => void handleToggleGlobalPresetStatus()}
+                    aria-label={
+                      isActiveGlobalDefault
+                        ? "Alternar status do Preset Global"
+                        : `Alternar status de ${draftPreset.name}`
+                    }
+                  />
+
+                  {!isActiveGlobalDefault ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => void handleSetAsGlobalDefault()}
+                    >
+                      <Globe className="size-3.5" aria-hidden="true" />
+                      Definir como Global Default
+                    </Button>
+                  ) : null}
+
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={!draftPreset || saving}
+                    onClick={() => void handleSaveGlobalPreset()}
+                  >
+                    <Save className="size-3.5" aria-hidden="true" />
+                    Salvar Preset Global
+                  </Button>
+                </>
+              ) : selection?.kind === "project" && draftPreset && projectMeta ? (
+                <>
+                  <StatusToggle
+                    size="sm"
+                    enabled={projectOverrideEnabled}
+                    disabled={saving}
+                    onClick={() => void handleToggleProjectEnabled()}
+                    aria-label={`Alternar preset de ${projectMeta.projectSlug}`}
+                  />
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={saving}
+                    onClick={() => void handleRemoveProjectOverride()}
+                  >
+                    <RotateCcw className="size-3.5" aria-hidden="true" />
+                    Voltar ao Global (Remover Override)
+                  </Button>
+
                   <Button
                     variant="secondary"
                     size="sm"
@@ -505,7 +730,7 @@ export function StudioView({
                     Revisar Diff & Sincronizar
                   </Button>
                 </>
-              )}
+              ) : null}
             </div>
           </div>
 

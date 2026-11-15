@@ -68,17 +68,80 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       defaultIsolation: "shared",
     },
     roles: {
-      backend: {
-        id: "backend",
-        title: "Backend",
+      explorer: {
+        id: "explorer",
+        title: "Explorer",
         description:
-          "APIs, models, domínio, jobs, migrations e suíte de testes unitários/integração.",
+          "Pesquisa rápida de código, mapeamento read-only do repositório e consulta de docs.",
         whenToUse:
-          "Implementações de domínio, regras de negócio, SQL/persistência, CLIs e endpoints.",
+          "Descoberta inicial de arquivos, símbolos, contratos IPC e documentação via context7/ai-memory.",
+        providerInstanceId: "antigravity",
+        model: "gemini-4-hydrogen",
+        options: { thinking_level: "low" },
+        skills: ["ai-memory-retrieval", "systematic-debugging"],
+        mcps: ["context7", "ai-memory"],
+        allowedPaths: ["**/* (read-only)"],
+        forbiddenPaths: ["Edições em arquivos de código ou configuração"],
+        invariants: [
+          "Atuar estritamente em modo read-only retornando paths e símbolos verificados.",
+        ],
+        verificationCommands: [],
+      },
+      oracle: {
+        id: "oracle",
+        title: "Oracle",
+        description:
+          "Arquitetura, trade-offs de alto risco, simplificação de design e debug complexo.",
+        whenToUse:
+          "Decisões estruturais, migrações críticas, concorrência e análise de causa raiz difícil.",
+        providerInstanceId: "antigravity_2",
+        model: "gemini-4-argon",
+        options: { thinking_level: "high" },
+        skills: ["systematic-debugging", "code-review-and-security", "ai-memory-retrieval"],
+        mcps: ["ai-memory", "context7"],
+        allowedPaths: ["**/* (arquitetura e diagnóstico)"],
+        forbiddenPaths: ["Mudanças cosméticas fora do escopo arquitetural"],
+        invariants: [
+          "Preservar acesso read-only ao statev2.sqlite e escrita atômica com backup em settings.json.",
+        ],
+        verificationCommands: ["cargo check --manifest-path src-tauri/Cargo.toml"],
+      },
+      designer: {
+        id: "designer",
+        title: "Designer",
+        description:
+          "Implementação de UI/UX, layout, tipografia, responsividade e Tailwind CSS v4.",
+        whenToUse:
+          "Telas, estados vazios, interações, acessibilidade, design tokens e componentes visuais.",
+        providerInstanceId: "antigravity_2",
+        model: "gemini-4-hydrogen",
+        options: { thinking_level: "medium" },
+        skills: [
+          "tailwind-v4-design",
+          "better-ui",
+          "better-accessibility",
+          "better-layout",
+        ],
+        mcps: ["context7", "playwright", "ai-memory"],
+        allowedPaths: ["src/**", "app/views/**", "app/javascript/**"],
+        forbiddenPaths: ["src-tauri/**", "db/migrate/**"],
+        invariants: [
+          "Preservar paridade estrita com o contrato IPC/API.",
+          "Garantir foco visível, contraste WCAG e copy claro em pt-BR.",
+        ],
+        verificationCommands: ["bun run typecheck", "bun run test", "bun run build"],
+      },
+      fixer: {
+        id: "fixer",
+        title: "Fixer",
+        description:
+          "Implementação rápida e bem delimitada de backend, módulos de domínio e correções.",
+        whenToUse:
+          "Implementações de domínio, APIs, persistência, CLIs, módulos Rust/Rails e correções com testes.",
         providerInstanceId: "antigravity",
         model: "gemini-4-hydrogen",
         options: { thinking_level: "high" },
-        skills: ["tdd-and-testing", "systematic-debugging", "ai-memory-retrieval"],
+        skills: ["tdd-and-testing", "systems-rust-go-crystal", "systematic-debugging"],
         mcps: ["ai-memory", "context7"],
         allowedPaths: ["src-tauri/**", "app/**", "db/**"],
         forbiddenPaths: ["src/components/**", "app/views/**"],
@@ -90,26 +153,6 @@ function buildSeedGlobalPresets(): PresetConfig[] {
           "cargo check --manifest-path src-tauri/Cargo.toml",
           "cargo test --manifest-path src-tauri/Cargo.toml",
         ],
-      },
-      frontend: {
-        id: "frontend",
-        title: "Frontend UI",
-        description:
-          "Componentes React 19, Tailwind CSS v4, acessibilidade e ergonomia visual.",
-        whenToUse:
-          "Telas, estados vazios, interações, estilos Tailwind v4 e tipagem de UI.",
-        providerInstanceId: "antigravity_2",
-        model: "gemini-4-hydrogen",
-        options: { thinking_level: "medium" },
-        skills: ["tailwind-v4-design", "better-accessibility", "better-ui"],
-        mcps: ["context7", "playwright", "ai-memory"],
-        allowedPaths: ["src/**", "app/views/**", "app/javascript/**"],
-        forbiddenPaths: ["src-tauri/**", "db/migrate/**"],
-        invariants: [
-          "Preservar paridade estrita com o contrato IPC/API.",
-          "Garantir foco visível, contraste WCAG e copy claro em pt-BR.",
-        ],
-        verificationCommands: ["bun run typecheck", "bun run test", "bun run build"],
       },
       "qa-reviewer": {
         id: "qa-reviewer",
@@ -145,10 +188,10 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     id: "codex-squad",
     name: "Codex Squad (Sol + Terra)",
     description:
-      "Preset focado em OpenAI Codex com gpt-6.1-sol para arquitetura/backend e gpt-6.1-terra para UI e revisão rápida.",
+      "Preset estruturado estilo oh-my-opencode-slim para OpenAI Codex: Luna (explorer), Sol (oracle/fixer), Terra (designer) e Astra (qa-reviewer).",
     extends: null,
     enabled: true,
-    topology: "intra-thread-squad",
+    topology: "issue-thread-orchestrator",
     orchestrator: {
       providerInstanceId: "codex",
       model: "gpt-6.1-sol",
@@ -176,10 +219,55 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       defaultIsolation: "shared",
     },
     roles: {
-      backend: {
-        id: "backend",
-        title: "Backend",
-        description: "Models, schema, auth/sessão, queries, rotas e testes de domínio.",
+      explorer: {
+        id: "explorer",
+        title: "Explorer",
+        description: "Pesquisa rápida e mapeamento read-only com gpt-6-luna.",
+        whenToUse: "Busca de símbolos e leitura de docs.",
+        providerInstanceId: "codex",
+        model: "gpt-6-luna",
+        options: { reasoningEffort: "low", serviceTier: "default" },
+        skills: ["ai-memory-retrieval", "systematic-debugging"],
+        mcps: ["context7", "ai-memory"],
+        allowedPaths: ["**/* (read-only)"],
+        forbiddenPaths: ["Edições em produção"],
+        invariants: ["Atuar em modo somente leitura."],
+        verificationCommands: [],
+      },
+      oracle: {
+        id: "oracle",
+        title: "Oracle",
+        description: "Arquitetura e debug complexo com gpt-6.1-sol (xhigh).",
+        whenToUse: "Decisões de schema, concorrência e debugging profundo.",
+        providerInstanceId: "codex",
+        model: "gpt-6.1-sol",
+        options: { reasoningEffort: "xhigh", serviceTier: "default" },
+        skills: ["systematic-debugging", "code-review-and-security"],
+        mcps: ["ai-memory", "context7"],
+        allowedPaths: ["**/*"],
+        forbiddenPaths: [],
+        invariants: ["Preservar integridade de schema e contratos."],
+        verificationCommands: ["git status --short"],
+      },
+      designer: {
+        id: "designer",
+        title: "Designer",
+        description: "UI/UX, React/Tailwind v4 e acessibilidade com gpt-6.1-terra.",
+        whenToUse: "Fluxos visuais, formulários, estados de erro e responsividade.",
+        providerInstanceId: "codex",
+        model: "gpt-6.1-terra",
+        options: { reasoningEffort: "medium", serviceTier: "default" },
+        skills: ["tailwind-v4-design", "better-accessibility"],
+        mcps: ["playwright", "context7"],
+        allowedPaths: ["app/views/**", "app/javascript/**", "src/**"],
+        forbiddenPaths: ["db/migrate/**"],
+        invariants: ["Manter contraste AA e navegação por teclado."],
+        verificationCommands: ["bun run typecheck"],
+      },
+      fixer: {
+        id: "fixer",
+        title: "Fixer",
+        description: "Implementação de backend, models, rotas e testes com gpt-6.1-sol.",
         whenToUse: "Mudanças em schema, serviços, APIs, jobs e lógica de negócios.",
         providerInstanceId: "codex",
         model: "gpt-6.1-sol",
@@ -193,28 +281,13 @@ function buildSeedGlobalPresets(): PresetConfig[] {
         ],
         verificationCommands: ["bundle exec rspec"],
       },
-      frontend: {
-        id: "frontend",
-        title: "Frontend UI",
-        description: "Views, Stimulus/React, Tailwind v4 e acessibilidade.",
-        whenToUse: "Fluxos visuais, formulários, estados de erro e responsividade.",
-        providerInstanceId: "codex",
-        model: "gpt-6.1-terra",
-        options: { reasoningEffort: "medium", serviceTier: "default" },
-        skills: ["tailwind-v4-design", "better-accessibility"],
-        mcps: ["playwright", "context7"],
-        allowedPaths: ["app/views/**", "app/javascript/**", "src/**"],
-        forbiddenPaths: ["db/migrate/**"],
-        invariants: ["Manter contraste AA e navegação por teclado."],
-        verificationCommands: ["bun run typecheck"],
-      },
       "qa-reviewer": {
         id: "qa-reviewer",
         title: "QA Reviewer",
-        description: "Revisão de contrato, regressões e segurança.",
+        description: "Revisão de contrato, regressões e segurança com gpt-6-astra.",
         whenToUse: "Após implementação para checar invariantes e testes.",
         providerInstanceId: "codex",
-        model: "gpt-6.1-sol",
+        model: "gpt-6-astra",
         options: { reasoningEffort: "high", serviceTier: "default" },
         skills: ["code-review-and-security", "webapp-testing"],
         mcps: ["ai-memory", "playwright"],
@@ -230,7 +303,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     id: "hybrid-agy-codex",
     name: "Hybrid (Agy + Codex)",
     description:
-      "Combina Agy Principal (gemini-4-hydrogen) como Orquestrador/Frontend com Codex (gpt-6.1-sol) no Backend e QA independente.",
+      "Combina Agy Principal (gemini-4-hydrogen) como Orquestrador/Designer com Codex (gpt-6.1-sol) no Fixer e QA independente.",
     extends: "agy-dual",
     enabled: true,
     topology: "issue-thread-orchestrator",
@@ -262,11 +335,11 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     },
     roles: {
       ...agyDual.roles,
-      backend: {
-        ...agyDual.roles.backend,
+      fixer: {
+        ...agyDual.roles.fixer,
         providerInstanceId: "codex",
         model: "gpt-6.1-sol",
-        options: { reasoningEffort: "high" },
+        options: { reasoningEffort: "high", serviceTier: "default" },
       },
     },
   };
@@ -498,6 +571,23 @@ function buildSeedProjects(): ProjectSummary[] {
       detectedSquadSlug: "dashboard-meta-squad",
       detectedSquadPath:
         "/Users/alencarfreire/Workspace/dashboard-meta/.agents/skills/dashboard-meta-squad",
+      activeSubagentCount: 0,
+    },
+    {
+      projectId: "proj-landing-page",
+      title: "landing-page",
+      workspaceRoot: "/Users/alencarfreire/Workspace/landing-page",
+      defaultModel: "gemini-4-hydrogen",
+      activeInstanceId: "antigravity_2",
+      activeModel: "gemini-4-hydrogen",
+      updatedAt: new Date(now - 3 * 60 * 60_000).toISOString(),
+      hasLocalPreset: false,
+      localPresetId: null,
+      localPresetExtends: null,
+      presetEnabled: true,
+      hasCustomOverride: false,
+      detectedSquadSlug: null,
+      detectedSquadPath: null,
       activeSubagentCount: 0,
     },
   ];
@@ -888,7 +978,7 @@ export class MockIpcStore {
       proj.localPresetId = saved.id;
       proj.localPresetExtends = saved.extends;
       proj.presetEnabled = saved.enabled;
-      proj.hasCustomOverride = saved.id !== this.globalConfig.activeGlobalPresetId;
+      proj.hasCustomOverride = true;
       proj.updatedAt = new Date().toISOString();
     }
     return this.getProjectPreset(projectId, workspaceRoot);

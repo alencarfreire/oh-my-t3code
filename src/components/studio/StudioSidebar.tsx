@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Download,
   FolderGit2,
@@ -15,13 +15,18 @@ import {
   resolvePresetFamilyTag,
   sanitizeSafeId,
 } from "../../lib/preset-utils";
-import type { PresetConfig, ProjectSummary } from "../../types/ipc";
+import type {
+  GlobalAppConfig,
+  PresetConfig,
+  ProjectSummary,
+} from "../../types/ipc";
 
 export type StudioSelection =
   | { kind: "global"; presetId: string }
   | { kind: "project"; projectId: string };
 
 interface StudioSidebarProps {
+  globalConfig: GlobalAppConfig;
   globalPresets: PresetConfig[];
   projects: ProjectSummary[];
   selection: StudioSelection | null;
@@ -29,10 +34,12 @@ interface StudioSidebarProps {
   onSelectProject: (project: ProjectSummary) => void;
   onCreateGlobalPreset: (id: string, extendsId: string | null) => void;
   onImportProjectSquad: (project: ProjectSummary) => void;
+  onConfigureProjectOverride: (project: ProjectSummary, presetId: string) => void;
   importingProjectId: string | null;
 }
 
 export function StudioSidebar({
+  globalConfig,
   globalPresets,
   projects,
   selection,
@@ -40,12 +47,53 @@ export function StudioSidebar({
   onSelectProject,
   onCreateGlobalPreset,
   onImportProjectSquad,
+  onConfigureProjectOverride,
   importingProjectId,
 }: StudioSidebarProps) {
   const [creatingGlobal, setCreatingGlobal] = useState(false);
   const [newPresetId, setNewPresetId] = useState("");
   const [newPresetBase, setNewPresetBase] = useState<string>("agy-dual");
   const [createError, setCreateError] = useState<string | null>(null);
+
+  const [configuringProject, setConfiguringProject] = useState(false);
+  const [selectedUnconfiguredId, setSelectedUnconfiguredId] = useState("");
+  const [selectedPresetForOverride, setSelectedPresetForOverride] = useState(
+    globalConfig.activeGlobalPresetId,
+  );
+
+  const overrideProjects = useMemo(
+    () => projects.filter((p) => p.hasCustomOverride),
+    [projects],
+  );
+
+  const unconfiguredProjects = useMemo(
+    () => projects.filter((p) => !p.hasCustomOverride),
+    [projects],
+  );
+
+  useEffect(() => {
+    if (
+      unconfiguredProjects.length > 0 &&
+      !unconfiguredProjects.some((p) => p.projectId === selectedUnconfiguredId)
+    ) {
+      setSelectedUnconfiguredId(unconfiguredProjects[0].projectId);
+    }
+    if (
+      globalPresets.length > 0 &&
+      !globalPresets.some((p) => p.id === selectedPresetForOverride)
+    ) {
+      setSelectedPresetForOverride(globalConfig.activeGlobalPresetId);
+    }
+  }, [
+    globalConfig.activeGlobalPresetId,
+    globalPresets,
+    selectedPresetForOverride,
+    selectedUnconfiguredId,
+    unconfiguredProjects,
+  ]);
+
+  const selectedUnconfiguredProject =
+    unconfiguredProjects.find((p) => p.projectId === selectedUnconfiguredId) ?? null;
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,6 +110,16 @@ export function StudioSidebar({
     onCreateGlobalPreset(cleaned, newPresetBase || null);
     setNewPresetId("");
     setCreatingGlobal(false);
+  };
+
+  const handleConfigureSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUnconfiguredProject) return;
+    onConfigureProjectOverride(
+      selectedUnconfiguredProject,
+      selectedPresetForOverride || globalConfig.activeGlobalPresetId,
+    );
+    setConfiguringProject(false);
   };
 
   return (
@@ -181,6 +239,7 @@ export function StudioSidebar({
             {globalPresets.map((preset) => {
               const active =
                 selection?.kind === "global" && selection.presetId === preset.id;
+              const isDefaultGlobal = preset.id === globalConfig.activeGlobalPresetId;
               const family = resolvePresetFamilyTag(preset);
               const roleCount = Object.keys(preset.roles).length;
 
@@ -217,6 +276,16 @@ export function StudioSidebar({
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        {isDefaultGlobal ? (
+                          <Badge
+                            tone={globalConfig.enabled ? "emerald" : "neutral"}
+                            dot
+                          >
+                            {globalConfig.enabled ? "Default · Ativo" : "Default · Pausado"}
+                          </Badge>
+                        ) : !preset.enabled ? (
+                          <Badge tone="neutral">Desativado</Badge>
+                        ) : null}
                         <Badge tone={family.tone}>{family.label}</Badge>
                         <span className="text-zinc-400 tabular-nums">
                           {roleCount} {roleCount === 1 ? "role" : "roles"}
@@ -235,107 +304,225 @@ export function StudioSidebar({
           </ul>
         </section>
 
-        {/* T3 Code Projects Group */}
+        {/* T3 Code Override Projects Group */}
         <section aria-labelledby="sidebar-projects" className="space-y-2">
-          <div className="flex items-center justify-between px-1">
+          <div className="flex items-center justify-between gap-1.5 px-1">
             <h2
               id="sidebar-projects"
               className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400"
             >
-              Projetos T3 Code
+              Projetos com Override{" "}
+              <span className="tabular-nums text-zinc-500">
+                ({overrideProjects.length})
+              </span>
             </h2>
-            <span className="text-[11px] text-zinc-500 tabular-nums">
-              {projects.length}
-            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => setConfiguringProject((v) => !v)}
+              aria-expanded={configuringProject}
+            >
+              <Plus className="size-3.5" aria-hidden="true" />
+              Configurar Projeto
+            </Button>
           </div>
 
-          <ul className="space-y-2">
-            {projects.map((project) => {
-              const active =
-                selection?.kind === "project" && selection.projectId === project.projectId;
-              const isImporting = importingProjectId === project.projectId;
-              const inheritsLabel = project.localPresetExtends
-                ? `extends: ${project.localPresetExtends}`
-                : project.localPresetId
-                  ? `preset: ${project.localPresetId}`
-                  : "sem preset local";
-
-              return (
-                <li
-                  key={project.projectId}
-                  className={[
-                    "relative overflow-hidden rounded-xl border transition-[background-color,border-color,box-shadow] duration-150 ease-out",
-                    active
-                      ? "border-indigo-400/45 bg-indigo-500/[0.12] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]"
-                      : "border-white/[0.07] bg-zinc-900/50 hover:border-white/[0.14] hover:bg-zinc-900/75",
-                  ].join(" ")}
-                >
-                  {active ? (
-                    <span
-                      aria-hidden="true"
-                      className="absolute start-0 top-2 bottom-2 w-0.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(129,140,248,0.9)]"
-                    />
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => onSelectProject(project)}
-                    aria-current={active ? "page" : undefined}
-                    className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          {configuringProject ? (
+            <form
+              onSubmit={handleConfigureSubmit}
+              className="surface-card rounded-xl border-indigo-500/30 bg-zinc-900/90 p-3 space-y-2.5"
+            >
+              {unconfiguredProjects.length === 0 ? (
+                <div className="space-y-2 text-[11px] text-zinc-400">
+                  <p>Todos os projetos do T3 Code já possuem override.</p>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setConfiguringProject(false)}
                   >
-                    <FolderGit2
-                      className={`mt-0.5 size-3.5 shrink-0 ${
-                        active ? "text-indigo-300" : "text-zinc-400"
-                      }`}
-                      aria-hidden="true"
-                    />
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate text-xs font-medium text-zinc-100">
+                    Fechar
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label
+                      htmlFor="sidebar-configure-project-select"
+                      className="block text-[11px] font-medium text-zinc-300"
+                    >
+                      Projeto (seguindo Global Default)
+                    </label>
+                    <Select
+                      id="sidebar-configure-project-select"
+                      aria-label="Selecionar projeto sem override"
+                      sizeVariant="xs"
+                      value={selectedUnconfiguredId}
+                      onChange={(e) => setSelectedUnconfiguredId(e.target.value)}
+                      wrapperClassName="mt-1"
+                    >
+                      {unconfiguredProjects.map((project) => (
+                        <option key={project.projectId} value={project.projectId}>
                           {project.title}
-                        </span>
-                        {project.hasLocalPreset ? (
-                          <Badge tone="emerald" dot>
-                            Override
-                          </Badge>
-                        ) : (
-                          <Badge tone="neutral">Global</Badge>
-                        )}
-                      </div>
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
 
-                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
-                        <GitBranch className="size-2.5 shrink-0 text-zinc-500" aria-hidden="true" />
-                        <span className="truncate font-mono">{inheritsLabel}</span>
-                      </div>
-                    </div>
-                  </button>
+                  <div>
+                    <label
+                      htmlFor="sidebar-configure-preset-select"
+                      className="block text-[11px] font-medium text-zinc-300"
+                    >
+                      Preset Inicial
+                    </label>
+                    <Select
+                      id="sidebar-configure-preset-select"
+                      aria-label="Preset inicial do override"
+                      sizeVariant="xs"
+                      value={selectedPresetForOverride}
+                      onChange={(e) => setSelectedPresetForOverride(e.target.value)}
+                      wrapperClassName="mt-1"
+                    >
+                      {globalPresets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.id} — {preset.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
 
-                  {project.detectedSquadSlug ? (
-                    <div className="border-t border-white/[0.06] bg-zinc-950/35 px-2.5 py-1.5">
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setConfiguringProject(false)}
+                    >
+                      Cancelar
+                    </Button>
+                    {selectedUnconfiguredProject?.detectedSquadSlug ? (
                       <Button
-                        variant={project.hasLocalPreset ? "ghost" : "secondary"}
+                        variant="secondary"
                         size="xs"
-                        className="w-full justify-start text-[11px]"
-                        disabled={isImporting}
-                        onClick={() => onImportProjectSquad(project)}
+                        disabled={
+                          importingProjectId === selectedUnconfiguredProject.projectId
+                        }
+                        onClick={() => {
+                          onImportProjectSquad(selectedUnconfiguredProject);
+                          setConfiguringProject(false);
+                        }}
                       >
-                        <Download
-                          className={`size-3 ${
-                            project.hasLocalPreset ? "text-zinc-400" : "text-amber-300"
-                          }`}
-                          aria-hidden="true"
-                        />
-                        <span className="truncate">
-                          {isImporting
-                            ? "Importando…"
-                            : "Importar Squad Existente"}
-                        </span>
+                        <Download className="size-3" aria-hidden="true" />
+                        Importar Squad
                       </Button>
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
+                    ) : null}
+                    <Button type="submit" variant="primary" size="xs">
+                      Criar Override
+                    </Button>
+                  </div>
+                </>
+              )}
+            </form>
+          ) : null}
+
+          {overrideProjects.length === 0 ? (
+            <div className="surface-card rounded-xl border-dashed p-3 text-center text-[11px] text-zinc-400">
+              Nenhum projeto com override. Todos seguem o Global Default.
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {overrideProjects.map((project) => {
+                const active =
+                  selection?.kind === "project" &&
+                  selection.projectId === project.projectId;
+                const isImporting = importingProjectId === project.projectId;
+                const inheritsLabel = project.localPresetExtends
+                  ? `extends: ${project.localPresetExtends}`
+                  : project.localPresetId
+                    ? `preset: ${project.localPresetId}`
+                    : "override local";
+
+                return (
+                  <li
+                    key={project.projectId}
+                    className={[
+                      "relative overflow-hidden rounded-xl border transition-[background-color,border-color,box-shadow] duration-150 ease-out",
+                      active
+                        ? "border-indigo-400/45 bg-indigo-500/[0.12] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]"
+                        : "border-white/[0.07] bg-zinc-900/50 hover:border-white/[0.14] hover:bg-zinc-900/75",
+                    ].join(" ")}
+                  >
+                    {active ? (
+                      <span
+                        aria-hidden="true"
+                        className="absolute start-0 top-2 bottom-2 w-0.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(129,140,248,0.9)]"
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => onSelectProject(project)}
+                      aria-current={active ? "page" : undefined}
+                      className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    >
+                      <FolderGit2
+                        className={`mt-0.5 size-3.5 shrink-0 ${
+                          active ? "text-indigo-300" : "text-zinc-400"
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-medium text-zinc-100">
+                            {project.title}
+                          </span>
+                          {project.presetEnabled ? (
+                            <Badge tone="emerald" dot>
+                              Ativo
+                            </Badge>
+                          ) : (
+                            <Badge tone="neutral" dot>
+                              Desativado
+                            </Badge>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                          <GitBranch
+                            className="size-2.5 shrink-0 text-zinc-500"
+                            aria-hidden="true"
+                          />
+                          <span className="truncate font-mono">{inheritsLabel}</span>
+                        </div>
+                      </div>
+                    </button>
+
+                    {project.detectedSquadSlug ? (
+                      <div className="border-t border-white/[0.06] bg-zinc-950/35 px-2.5 py-1.5">
+                        <Button
+                          variant={project.hasLocalPreset ? "ghost" : "secondary"}
+                          size="xs"
+                          className="w-full justify-start text-[11px]"
+                          disabled={isImporting}
+                          onClick={() => onImportProjectSquad(project)}
+                        >
+                          <Download
+                            className={`size-3 ${
+                              project.hasLocalPreset ? "text-zinc-400" : "text-amber-300"
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <span className="truncate">
+                            {isImporting
+                              ? "Importando…"
+                              : "Importar Squad Existente"}
+                          </span>
+                        </Button>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
       </div>
     </aside>
