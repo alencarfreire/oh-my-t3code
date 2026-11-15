@@ -49,7 +49,49 @@ Check your environment before running or packaging the native macOS app:
 - **Rust & Cargo (Edition 2021)** and **Xcode Command Line Tools** (`xcode-select --install`): required to compile and run the Tauri v2 backend (`src-tauri/Cargo.toml`)
 - **T3 Code (`~/.t3`)**: installed and initialized with configured projects and providers. Required for live data in production, optional if you want to test the UI in Browser Preview mode with `MockIpcStore`
 
-## Installation and quick start
+## Install prebuilt macOS app (no Apple Developer fee)
+
+Builds are packaged as a Universal macOS `.dmg` (Apple Silicon + Intel) with ad-hoc code signing (`"signingIdentity": "-"` in `src-tauri/tauri.conf.json`). Because the app is not notarized with a paid Apple Developer ID certificate, macOS adds a browser quarantine attribute (`com.apple.quarantine`) on manual downloads.
+
+### Option A: One-command installer (`install.sh`)
+
+Downloads the latest Universal `.dmg` from GitHub Releases (automatically using `gh` when authenticated for private repos, or `curl` for public releases), installs `Oh My T3Code.app` into `/Applications`, and clears `com.apple.quarantine`:
+
+```bash
+./install.sh
+```
+
+Or install a specific release tag:
+
+```bash
+./install.sh v0.1.0
+```
+
+*(When the repository is public, you can also run it directly via `curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash`.)*
+
+### Option B: Homebrew Cask (`Casks/oh-my-t3code.rb`)
+
+When the repository (or release asset URL) is publicly accessible:
+
+```bash
+brew tap alencarfreire/oh-my-t3code https://github.com/alencarfreire/oh-my-t3code.git
+brew install --cask alencarfreire/oh-my-t3code/oh-my-t3code
+```
+
+The cask includes a `postflight_steps` rule that automatically runs `xattr -dr com.apple.quarantine` on `/Applications/Oh My T3Code.app`.
+
+### Option C: Manual `.dmg` download
+
+1. Download `Oh.My.T3Code_<version>_universal.dmg` from [GitHub Releases](https://github.com/alencarfreire/oh-my-t3code/releases) and drag `Oh My T3Code.app` to `Applications`.
+2. Clear the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Oh My T3Code.app"
+```
+
+*(Or attempt to open the app once, dismiss the prompt, and click **Open Anyway** in **System Settings → Privacy & Security**.)*
+
+## Installation and quick start (build from source)
 
 Clone the repository and install frontend dependencies with Bun:
 
