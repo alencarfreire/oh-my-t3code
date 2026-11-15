@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 cask "oh-my-t3code" do
-  version "0.1.0"
-  sha256 "e0ebafa9e72268d8931aa8ccf7148f16cd897f61f91d268cc98eda514d868ccc"
+  version "0.1.1"
+  sha256 "d436f240d966c05758f1a3876dcac0f3269a4328b72928c171a4579873c4a0c5"
 
   url "https://github.com/alencarfreire/oh-my-t3code/releases/download/v#{version}/Oh.My.T3Code_#{version}_universal.dmg"
   name "Oh My T3Code"
