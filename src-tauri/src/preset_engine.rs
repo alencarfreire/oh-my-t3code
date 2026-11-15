@@ -4,9 +4,29 @@ use crate::models::{
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// Process-wide lock serializing Read-Modify-Write operations on `config.jsonc`,
+/// `presets/*.jsonc`, `.t3code/preset.jsonc`, and compiled `.agents/skills/*-squad/` artifacts.
+///
+/// Lock hierarchy (strict acquisition order to prevent deadlocks):
+/// 1. `preset_engine::lock_config_state()` (outer)
+/// 2. `settings_sync::lock_settings_file()` (inner / leaf)
+///
+/// Callers holding `lock_config_state()` MUST invoke `*_unlocked` internal functions
+/// rather than re-entering locked public entry points, and code holding `lock_settings_file()`
+/// MUST NEVER acquire `lock_config_state()`.
+pub(crate) fn lock_config_state() -> MutexGuard<'static, ()> {
+    static CONFIG_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    CONFIG_STATE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 const MAX_INHERITANCE_DEPTH: usize = 16;
 pub const OMOS_CANONICAL_ROLES: [&str; 5] = [
@@ -372,6 +392,14 @@ fn preset_file_path(presets_dir: &Path, id: &str) -> AppResult<PathBuf> {
 
 /// Resolves a global preset by ID, recursively applying any `extends` parent chain.
 pub fn resolve_global_preset(presets_dir: &Path, id: &str) -> AppResult<PresetConfig> {
+    let _guard = lock_config_state();
+    resolve_global_preset_unlocked(presets_dir, id)
+}
+
+pub(crate) fn resolve_global_preset_unlocked(
+    presets_dir: &Path,
+    id: &str,
+) -> AppResult<PresetConfig> {
     let mut visited = HashSet::new();
     resolve_global_preset_inner(presets_dir, id, &mut visited, 0)
 }
@@ -420,9 +448,18 @@ pub fn resolve_jsonc_against_globals(
     raw_jsonc: &str,
     fallback_id: &str,
 ) -> AppResult<PresetConfig> {
+    let _guard = lock_config_state();
+    resolve_jsonc_against_globals_unlocked(presets_dir, raw_jsonc, fallback_id)
+}
+
+pub(crate) fn resolve_jsonc_against_globals_unlocked(
+    presets_dir: &Path,
+    raw_jsonc: &str,
+    fallback_id: &str,
+) -> AppResult<PresetConfig> {
     let patch = parse_jsonc_patch(raw_jsonc)?;
     let base = if let Some(parent_id) = &patch.extends {
-        resolve_global_preset(presets_dir, parent_id)?
+        resolve_global_preset_unlocked(presets_dir, parent_id)?
     } else {
         empty_base_preset(fallback_id)
     };
@@ -431,6 +468,14 @@ pub fn resolve_jsonc_against_globals(
 
 /// Resolves a concrete `PresetConfig` if it specifies `extends`.
 pub fn resolve_preset_inheritance(
+    presets_dir: &Path,
+    preset: PresetConfig,
+) -> AppResult<PresetConfig> {
+    let _guard = lock_config_state();
+    resolve_preset_inheritance_unlocked(presets_dir, preset)
+}
+
+pub(crate) fn resolve_preset_inheritance_unlocked(
     presets_dir: &Path,
     preset: PresetConfig,
 ) -> AppResult<PresetConfig> {
@@ -443,7 +488,7 @@ pub fn resolve_preset_inheritance(
                 preset.id
             )));
         }
-        let parent = resolve_global_preset(presets_dir, parent_id)?;
+        let parent = resolve_global_preset_unlocked(presets_dir, parent_id)?;
         let serialized = serde_json::to_string(&preset)?;
         let patch: PresetPatch = serde_json::from_str(&serialized)?;
         Ok(merge_patch(parent, patch, &preset.id))
@@ -452,7 +497,13 @@ pub fn resolve_preset_inheritance(
     }
 }
 
+static ATOMIC_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Atomic file write helper inside a target directory.
+///
+/// Uses `std::process::id()` + a monotonically increasing `AtomicU64` suffix and
+/// `OpenOptions::create_new(true)` so concurrent callers in the same process never
+/// collide on a shared temporary file, and removes the temp file on any error.
 pub fn atomic_write_file(target_path: &Path, content: &[u8]) -> AppResult<()> {
     let parent = target_path.parent().ok_or_else(|| {
         AppError::InvalidInput(format!("Path {} has no parent directory", target_path.display()))
@@ -463,15 +514,54 @@ pub fn atomic_write_file(target_path: &Path, content: &[u8]) -> AppResult<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("file");
-    let tmp_path = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    let pid = std::process::id();
 
-    {
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(content)?;
-        file.sync_all()?;
+    const MAX_OPEN_ATTEMPTS: usize = 64;
+    let mut opened: Option<(PathBuf, fs::File)> = None;
+    for _ in 0..MAX_OPEN_ATTEMPTS {
+        let seq = ATOMIC_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".{file_name}.tmp.{pid}.{seq}"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                opened = Some((candidate, file));
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
     }
 
-    fs::rename(&tmp_path, target_path)?;
+    let (tmp_path, mut file) = opened.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "Failed to allocate unique temporary file for {}",
+                target_path.display()
+            ),
+        )
+    })?;
+
+    let write_result = (|| -> std::io::Result<()> {
+        file.write_all(content)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    drop(file);
+
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+
+    if let Err(err) = fs::rename(&tmp_path, target_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+
     Ok(())
 }
 
@@ -1260,6 +1350,11 @@ fn has_all_omos_roles(raw: &str) -> bool {
 /// UTF-8 mojibake, or missing the canonical OMOS roles (`explorer`, `oracle`, `designer`, `fixer`, `qa-reviewer`).
 /// Also initializes `~/.config/oh-my-t3code/config.jsonc` with `activeGlobalPresetId: "default"` and `enabled: true` if absent.
 pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
+    let _guard = lock_config_state();
+    ensure_seed_presets_unlocked(presets_dir)
+}
+
+pub(crate) fn ensure_seed_presets_unlocked(presets_dir: &Path) -> AppResult<()> {
     fs::create_dir_all(presets_dir)?;
     for preset in default_seed_presets() {
         let jsonc_path = presets_dir.join(format!("{}.jsonc", preset.id));
@@ -1308,7 +1403,7 @@ pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
         if let Some(config_root) = presets_dir.parent() {
             let config_path = config_root.join("config.jsonc");
             if !config_path.exists() {
-                save_global_config(&config_path, &GlobalAppConfig::default())?;
+                save_global_config_unlocked(&config_path, &GlobalAppConfig::default())?;
             }
         }
     }
@@ -1318,6 +1413,11 @@ pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
 
 /// Loads `~/.config/oh-my-t3code/config.jsonc` safely, returning defaults (`default`, `enabled: true`) if absent or invalid.
 pub fn load_global_config(config_path: &Path) -> GlobalAppConfig {
+    let _guard = lock_config_state();
+    load_global_config_unlocked(config_path)
+}
+
+pub(crate) fn load_global_config_unlocked(config_path: &Path) -> GlobalAppConfig {
     let Ok(raw) = fs::read_to_string(config_path) else {
         return GlobalAppConfig::default();
     };
@@ -1336,6 +1436,14 @@ pub fn load_global_config(config_path: &Path) -> GlobalAppConfig {
 
 /// Saves `~/.config/oh-my-t3code/config.jsonc` atomically.
 pub fn save_global_config(config_path: &Path, config: &GlobalAppConfig) -> AppResult<()> {
+    let _guard = lock_config_state();
+    save_global_config_unlocked(config_path, config)
+}
+
+pub(crate) fn save_global_config_unlocked(
+    config_path: &Path,
+    config: &GlobalAppConfig,
+) -> AppResult<()> {
     validate_safe_id(&config.active_global_preset_id, "active_global_preset_id")?;
     let content = format!(
         "// Oh My T3Code global configuration\n{}\n",
@@ -1346,7 +1454,12 @@ pub fn save_global_config(config_path: &Path, config: &GlobalAppConfig) -> AppRe
 
 /// Lists and resolves all global presets in `presets_dir`, placing `default` first.
 pub fn list_global_presets(presets_dir: &Path) -> AppResult<Vec<PresetConfig>> {
-    ensure_seed_presets(presets_dir)?;
+    let _guard = lock_config_state();
+    list_global_presets_unlocked(presets_dir)
+}
+
+pub(crate) fn list_global_presets_unlocked(presets_dir: &Path) -> AppResult<Vec<PresetConfig>> {
+    ensure_seed_presets_unlocked(presets_dir)?;
     let mut ids = BTreeMap::<String, ()>::new();
     for entry in fs::read_dir(presets_dir)? {
         let entry = entry?;
@@ -1367,7 +1480,7 @@ pub fn list_global_presets(presets_dir: &Path) -> AppResult<Vec<PresetConfig>> {
 
     let mut presets = Vec::with_capacity(ids.len());
     for id in ids.keys() {
-        if let Ok(resolved) = resolve_global_preset(presets_dir, id) {
+        if let Ok(resolved) = resolve_global_preset_unlocked(presets_dir, id) {
             presets.push(resolved);
         }
     }
@@ -1385,7 +1498,15 @@ pub fn list_global_presets(presets_dir: &Path) -> AppResult<Vec<PresetConfig>> {
 }
 
 /// Saves a global preset as `<presets_dir>/<id>.jsonc` atomically.
-pub fn save_global_preset(presets_dir: &Path, mut preset: PresetConfig) -> AppResult<PresetConfig> {
+pub fn save_global_preset(presets_dir: &Path, preset: PresetConfig) -> AppResult<PresetConfig> {
+    let _guard = lock_config_state();
+    save_global_preset_unlocked(presets_dir, preset)
+}
+
+pub(crate) fn save_global_preset_unlocked(
+    presets_dir: &Path,
+    mut preset: PresetConfig,
+) -> AppResult<PresetConfig> {
     validate_safe_id(&preset.id, "preset id")?;
     if let Some(parent) = &preset.extends {
         validate_safe_id(parent, "extends preset id")?;
@@ -1407,7 +1528,7 @@ pub fn save_global_preset(presets_dir: &Path, mut preset: PresetConfig) -> AppRe
     let path = presets_dir.join(format!("{}.jsonc", preset.id));
     let body = format!("{}\n", serde_json::to_string_pretty(&preset)?);
     atomic_write_file(&path, body.as_bytes())?;
-    resolve_global_preset(presets_dir, &preset.id)
+    resolve_global_preset_unlocked(presets_dir, &preset.id)
 }
 
 pub fn local_preset_path(workspace_root: &Path) -> PathBuf {
@@ -1416,6 +1537,16 @@ pub fn local_preset_path(workspace_root: &Path) -> PathBuf {
 
 /// Saves a project-level preset override to `<workspace_root>/.t3code/preset.jsonc`.
 pub fn save_project_preset(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    preset: PresetConfig,
+) -> AppResult<ResolvedProjectPreset> {
+    let _guard = lock_config_state();
+    save_project_preset_unlocked(paths, project_id, workspace_root, preset)
+}
+
+pub(crate) fn save_project_preset_unlocked(
     paths: &AppPaths,
     project_id: &str,
     workspace_root: &str,
@@ -1435,7 +1566,7 @@ pub fn save_project_preset(
         }
     }
 
-    let resolved = resolve_preset_inheritance(&paths.presets_dir, preset.clone())?;
+    let resolved = resolve_preset_inheritance_unlocked(&paths.presets_dir, preset.clone())?;
     let path = local_preset_path(root);
     let content = format!(
         "// Oh My T3Code project preset override\n{}\n",
@@ -1465,7 +1596,17 @@ pub fn get_project_preset(
     workspace_root: &str,
     active_instance_hint: Option<&str>,
 ) -> AppResult<ResolvedProjectPreset> {
-    ensure_seed_presets(&paths.presets_dir)?;
+    let _guard = lock_config_state();
+    get_project_preset_unlocked(paths, project_id, workspace_root, active_instance_hint)
+}
+
+pub(crate) fn get_project_preset_unlocked(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    active_instance_hint: Option<&str>,
+) -> AppResult<ResolvedProjectPreset> {
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
     let root = Path::new(workspace_root);
     let local_path = local_preset_path(root);
     let project_slug = derive_project_slug(workspace_root);
@@ -1473,7 +1614,8 @@ pub fn get_project_preset(
 
     if local_path.exists() {
         let raw = fs::read_to_string(&local_path)?;
-        let resolved = resolve_jsonc_against_globals(&paths.presets_dir, &raw, &project_slug)?;
+        let resolved =
+            resolve_jsonc_against_globals_unlocked(&paths.presets_dir, &raw, &project_slug)?;
         let raw_parsed = parse_jsonc_preset(&raw).ok();
         return Ok(ResolvedProjectPreset {
             project_id: project_id.to_string(),
@@ -1487,14 +1629,14 @@ pub fn get_project_preset(
         });
     }
 
-    let global_cfg = load_global_config(&paths.global_config_path());
+    let global_cfg = load_global_config_unlocked(&paths.global_config_path());
     let fallback_id = match active_instance_hint {
         Some("codex") => "codex-squad",
         _ => global_cfg.active_global_preset_id.as_str(),
     };
-    let resolved = resolve_global_preset(&paths.presets_dir, fallback_id)
-        .or_else(|_| resolve_global_preset(&paths.presets_dir, "default"))
-        .or_else(|_| resolve_global_preset(&paths.presets_dir, "agy-dual"))?;
+    let resolved = resolve_global_preset_unlocked(&paths.presets_dir, fallback_id)
+        .or_else(|_| resolve_global_preset_unlocked(&paths.presets_dir, "default"))
+        .or_else(|_| resolve_global_preset_unlocked(&paths.presets_dir, "agy-dual"))?;
 
     Ok(ResolvedProjectPreset {
         project_id: project_id.to_string(),
@@ -1872,6 +2014,65 @@ mod tests {
             save_global_config(&cfg_path, &updated).unwrap();
             let reloaded = load_global_config(&cfg_path);
             assert_eq!(reloaded, updated);
+        }
+    }
+
+    #[test]
+    fn atomic_write_file_is_safe_under_concurrent_threads() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("concurrent.json");
+        let thread_count = 16usize;
+        let iterations = 25usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(thread_count));
+
+        let mut handles = Vec::with_capacity(thread_count);
+        for tid in 0..thread_count {
+            let dir_path = dir.path().to_path_buf();
+            let target_path = target.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for iter in 0..iterations {
+                    let payload = serde_json::json!({
+                        "thread": tid,
+                        "iter": iter,
+                        "padding": "oh-my-t3code-atomic-write-check"
+                    });
+                    let bytes = serde_json::to_vec_pretty(&payload).unwrap();
+                    atomic_write_file(&target_path, &bytes).unwrap_or_else(|e| {
+                        panic!("thread {tid} iter {iter} atomic_write_file failed: {e}");
+                    });
+
+                    // Also exercise distinct targets inside the same parent directory
+                    let per_thread_target = dir_path.join(format!("worker-{tid}.json"));
+                    atomic_write_file(&per_thread_target, &bytes).unwrap_or_else(|e| {
+                        panic!("thread {tid} iter {iter} per-thread write failed: {e}");
+                    });
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("worker thread must not panic");
+        }
+
+        // Target file must be intact, valid JSON from one of the writers
+        let final_raw = fs::read_to_string(&target).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&final_raw).expect("final target must be valid JSON");
+        assert!(parsed.get("thread").and_then(|v| v.as_u64()).is_some());
+        assert_eq!(
+            parsed.get("padding").and_then(|v| v.as_str()),
+            Some("oh-my-t3code-atomic-write-check")
+        );
+
+        // No residual .tmp.* files should remain in directory
+        for entry in fs::read_dir(dir.path()).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            assert!(
+                !name.contains(".tmp."),
+                "residual temp file left behind: {name}"
+            );
         }
     }
 }

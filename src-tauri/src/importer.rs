@@ -1,7 +1,7 @@
 use crate::models::{AppError, AppPaths, AppResult, PresetConfig, ResolvedProjectPreset, RoleConfig};
 use crate::preset_engine::{
-    derive_project_slug, detect_squad_dir, ensure_seed_presets, resolve_global_preset,
-    save_project_preset, validate_safe_id,
+    derive_project_slug, detect_squad_dir, ensure_seed_presets_unlocked, lock_config_state,
+    resolve_global_preset_unlocked, save_project_preset_unlocked, validate_safe_id,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -215,7 +215,8 @@ pub fn import_existing_squad(
     project_id: &str,
     workspace_root: &str,
 ) -> AppResult<ResolvedProjectPreset> {
-    ensure_seed_presets(&paths.presets_dir)?;
+    let _guard = lock_config_state();
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
     let ws_root = Path::new(workspace_root);
     if !ws_root.exists() {
         return Err(AppError::NotFound(format!(
@@ -237,7 +238,7 @@ pub fn import_existing_squad(
         && (lower_skill.contains("gpt-6") || !lower_skill.contains("antigravity_2"));
 
     let base_preset_id = if is_codex { "codex-squad" } else { "agy-dual" };
-    let base = resolve_global_preset(&paths.presets_dir, base_preset_id)?;
+    let base = resolve_global_preset_unlocked(&paths.presets_dir, base_preset_id)?;
 
     let mut roles = BTreeMap::new();
     let roles_dir = squad_dir.join("roles");
@@ -313,7 +314,7 @@ pub fn import_existing_squad(
         roles: if roles.is_empty() { base.roles } else { roles },
     };
 
-    save_project_preset(paths, project_id, workspace_root, imported)
+    save_project_preset_unlocked(paths, project_id, workspace_root, imported)
 }
 
 #[cfg(test)]

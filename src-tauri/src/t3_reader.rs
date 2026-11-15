@@ -3,8 +3,9 @@ use crate::models::{
     ProviderInstanceInfo, SkillMetadata, SubagentActivity, T3ModelOption, T3ModelSelection,
 };
 use crate::preset_engine::{
-    detect_squad_dir, list_global_presets, load_global_config, local_preset_path,
-    resolve_jsonc_against_globals, strip_jsonc_comments,
+    detect_squad_dir, list_global_presets_unlocked, load_global_config_unlocked,
+    local_preset_path, lock_config_state, resolve_jsonc_against_globals_unlocked,
+    strip_jsonc_comments,
 };
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -86,7 +87,11 @@ fn parse_model_selection(val: &Value) -> Option<T3ModelSelection> {
 
 /// Reads `~/.t3/userdata/settings.json` strictly read-only.
 pub fn read_t3_settings(settings_path: &Path) -> ParsedSettings {
-    let Ok(raw) = fs::read_to_string(settings_path) else {
+    let raw = {
+        let _guard = crate::settings_sync::lock_settings_file();
+        fs::read_to_string(settings_path)
+    };
+    let Ok(raw) = raw else {
         return ParsedSettings {
             available: false,
             provider_instances: build_provider_instances(&BTreeMap::new()),
@@ -370,7 +375,7 @@ fn compute_has_custom_override(
         if let (Some(raw), Some(global_preset)) =
             (local_meta.raw_jsonc.as_deref(), ctx.global_active_preset)
         {
-            match resolve_jsonc_against_globals(ctx.presets_dir, raw, active_global_id) {
+            match resolve_jsonc_against_globals_unlocked(ctx.presets_dir, raw, active_global_id) {
                 Ok(resolved_local) => {
                     if resolved_local.roles != global_preset.roles
                         || resolved_local.orchestrator != global_preset.orchestrator
@@ -463,6 +468,14 @@ pub fn read_sqlite_state(
 /// Reads projects, threads, and subagent rows from `statev2.sqlite` (read-only)
 /// with global preset context to compute `preset_enabled` and `has_custom_override`.
 pub fn read_sqlite_state_with_context(
+    sqlite_path: &Path,
+    ctx: &GlobalOverrideContext<'_>,
+) -> AppResult<(Vec<ProjectSummary>, Vec<SubagentActivity>)> {
+    let _guard = lock_config_state();
+    read_sqlite_state_with_context_unlocked(sqlite_path, ctx)
+}
+
+pub(crate) fn read_sqlite_state_with_context_unlocked(
     sqlite_path: &Path,
     ctx: &GlobalOverrideContext<'_>,
 ) -> AppResult<(Vec<ProjectSummary>, Vec<SubagentActivity>)> {
@@ -846,9 +859,14 @@ pub fn scan_global_skills(skill_roots: &[(String, std::path::PathBuf)]) -> Vec<S
 
 /// Builds the full dashboard snapshot read-only.
 pub fn build_dashboard_snapshot(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
+    let _guard = lock_config_state();
+    build_dashboard_snapshot_unlocked(paths)
+}
+
+pub(crate) fn build_dashboard_snapshot_unlocked(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let settings = read_t3_settings(&paths.settings_path());
-    let global_presets = list_global_presets(&paths.presets_dir)?;
-    let global_config = load_global_config(&paths.global_config_path());
+    let global_presets = list_global_presets_unlocked(&paths.presets_dir)?;
+    let global_config = load_global_config_unlocked(&paths.global_config_path());
     let global_active_preset = global_presets
         .iter()
         .find(|p| p.id == global_config.active_global_preset_id);
@@ -867,7 +885,7 @@ pub fn build_dashboard_snapshot(paths: &AppPaths) -> AppResult<DashboardSnapshot
             global_default_selection: effective_global_selection.as_ref(),
             presets_dir: &paths.presets_dir,
         };
-        let (projs, subs) = read_sqlite_state_with_context(&sqlite_path, &ctx)?;
+        let (projs, subs) = read_sqlite_state_with_context_unlocked(&sqlite_path, &ctx)?;
         (true, projs, subs)
     } else {
         (false, Vec::new(), Vec::new())

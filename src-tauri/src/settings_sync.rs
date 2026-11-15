@@ -4,6 +4,21 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// Leaf process-wide lock serializing Read-Modify-Write operations (and backup creation)
+/// on `settings.json` and `settings.json.bak`.
+///
+/// Lock hierarchy: callers may hold `preset_engine::lock_config_state()` before acquiring
+/// `lock_settings_file()`, NEVER the reverse. Code holding `lock_settings_file()` must
+/// never acquire any other lock or call back into `settings_sync` / `preset_engine` locked APIs.
+pub(crate) fn lock_settings_file() -> MutexGuard<'static, ()> {
+    static SETTINGS_FILE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    SETTINGS_FILE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Produces a simple deterministic unified diff between two text blobs.
 pub fn compute_unified_diff(old_label: &str, new_label: &str, old_text: &str, new_text: &str) -> String {
@@ -134,15 +149,18 @@ pub fn preview_settings_override(
     preset: &PresetConfig,
 ) -> AppResult<SettingsOverridePreview> {
     let new_override = build_project_override_value(preset);
-    let existing_override = if settings_path.exists() {
-        let raw = fs::read_to_string(settings_path)?;
-        let root: Value = serde_json::from_str(&raw)?;
-        root.get("projectSettingsOverrides")
-            .and_then(|v| v.as_object())
-            .and_then(|map| map.get(project_id))
-            .cloned()
-    } else {
-        None
+    let existing_override = {
+        let _guard = lock_settings_file();
+        if settings_path.exists() {
+            let raw = fs::read_to_string(settings_path)?;
+            let root: Value = serde_json::from_str(&raw)?;
+            root.get("projectSettingsOverrides")
+                .and_then(|v| v.as_object())
+                .and_then(|map| map.get(project_id))
+                .cloned()
+        } else {
+            None
+        }
     };
 
     let old_str = existing_override
@@ -184,6 +202,8 @@ pub fn sync_project_settings(
             "project_id cannot be empty when syncing settings.json".into(),
         ));
     }
+
+    let _guard = lock_settings_file();
 
     let mut backup_path: Option<PathBuf> = None;
     let mut root: Value = if settings_path.exists() {
@@ -241,6 +261,8 @@ pub fn sync_global_settings(
     settings_path: &Path,
     preset: &PresetConfig,
 ) -> AppResult<Option<PathBuf>> {
+    let _guard = lock_settings_file();
+
     let mut backup_path: Option<PathBuf> = None;
     let mut root: Value = if settings_path.exists() {
         let existing_bytes = fs::read(settings_path)?;
@@ -295,6 +317,9 @@ pub fn remove_project_settings_override(
             "project_id cannot be empty when removing settings override".into(),
         ));
     }
+
+    let _guard = lock_settings_file();
+
     if !settings_path.exists() {
         return Ok(None);
     }
@@ -442,5 +467,99 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
         assert!(after_remove["projectSettingsOverrides"].get("proj-1").is_none());
         assert!(after_remove["projectSettingsOverrides"].get("proj-2").is_some());
+    }
+
+    #[test]
+    fn concurrent_rmw_settings_sync_preserves_all_project_overrides_and_valid_backup() {
+        let dir = tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+
+        let original = serde_json::json!({
+            "favorites": ["keep-proj"],
+            "customUnknownKey": { "preserved": true },
+            "projectSettingsOverrides": {}
+        });
+        fs::write(&settings_path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        let project_threads = 16usize;
+        let global_threads = 2usize;
+        let total_threads = project_threads + global_threads;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(total_threads));
+
+        let agy_preset = default_seed_presets()
+            .into_iter()
+            .find(|p| p.id == "agy-dual")
+            .unwrap();
+        let codex_preset = default_seed_presets()
+            .into_iter()
+            .find(|p| p.id == "codex-squad")
+            .unwrap();
+
+        let mut handles = Vec::with_capacity(total_threads);
+        for idx in 0..project_threads {
+            let sp = settings_path.clone();
+            let barrier = barrier.clone();
+            let mut preset = agy_preset.clone();
+            preset.orchestrator.model = "gemini-4-hydrogen".to_string();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                sync_project_settings(&sp, &format!("p{idx}"), &preset).unwrap_or_else(|e| {
+                    panic!("sync_project_settings p{idx} failed: {e}");
+                });
+            }));
+        }
+        for idx in 0..global_threads {
+            let sp = settings_path.clone();
+            let barrier = barrier.clone();
+            let preset = if idx % 2 == 0 {
+                agy_preset.clone()
+            } else {
+                codex_preset.clone()
+            };
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                sync_global_settings(&sp, &preset).unwrap_or_else(|e| {
+                    panic!("sync_global_settings {idx} failed: {e}");
+                });
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("worker thread must not panic");
+        }
+
+        let final_raw = fs::read_to_string(&settings_path).unwrap();
+        let final_val: Value =
+            serde_json::from_str(&final_raw).expect("settings.json must be valid JSON");
+        assert_eq!(final_val["favorites"], original["favorites"]);
+        assert_eq!(final_val["customUnknownKey"], original["customUnknownKey"]);
+        assert!(final_val.get("defaultModelSelection").is_some());
+        assert!(final_val.get("fallbackModelSelection").is_some());
+
+        let overrides = final_val["projectSettingsOverrides"]
+            .as_object()
+            .expect("projectSettingsOverrides must be an object");
+        for idx in 0..project_threads {
+            let key = format!("p{idx}");
+            assert!(
+                overrides.contains_key(&key),
+                "lost update detected: missing projectSettingsOverrides['{key}']"
+            );
+        }
+
+        let bak_path = settings_path.with_file_name("settings.json.bak");
+        assert!(bak_path.exists(), "settings.json.bak must exist");
+        let bak_raw = fs::read_to_string(&bak_path).unwrap();
+        let bak_val: Value =
+            serde_json::from_str(&bak_raw).expect("settings.json.bak must be valid JSON");
+        assert!(bak_val.is_object(), "settings.json.bak must be a JSON object");
+
+        for entry in fs::read_dir(dir.path()).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            assert!(
+                !name.contains(".tmp."),
+                "residual temp file left behind: {name}"
+            );
+        }
     }
 }

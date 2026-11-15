@@ -3,15 +3,17 @@ use crate::models::{
     GlobalAppConfig, PresetConfig, RoleConfig, SyncResult,
 };
 use crate::preset_engine::{
-    atomic_write_file, derive_project_slug, ensure_seed_presets, get_project_preset,
-    load_global_config, local_preset_path, resolve_global_preset, resolve_preset_inheritance,
-    save_global_config, save_global_preset, save_project_preset, validate_safe_id,
+    atomic_write_file, derive_project_slug, ensure_seed_presets_unlocked,
+    get_project_preset_unlocked, load_global_config_unlocked, local_preset_path, lock_config_state,
+    resolve_global_preset_unlocked, resolve_preset_inheritance_unlocked,
+    save_global_config_unlocked, save_global_preset_unlocked, save_project_preset_unlocked,
+    validate_safe_id,
 };
 use crate::settings_sync::{
     compute_unified_diff, preview_settings_override, remove_project_settings_override,
     sync_global_settings, sync_project_settings,
 };
-use crate::t3_reader::{build_dashboard_snapshot, read_t3_settings};
+use crate::t3_reader::{build_dashboard_snapshot_unlocked, read_t3_settings};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -326,6 +328,16 @@ pub fn compile_preset_preview(
     workspace_root: &str,
     preset: &PresetConfig,
 ) -> AppResult<CompilePreviewResult> {
+    let _guard = lock_config_state();
+    compile_preset_preview_unlocked(paths, project_id, workspace_root, preset)
+}
+
+fn compile_preset_preview_unlocked(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    preset: &PresetConfig,
+) -> AppResult<CompilePreviewResult> {
     let ws_root = Path::new(workspace_root);
     if !ws_root.exists() {
         return Err(AppError::NotFound(format!(
@@ -337,7 +349,7 @@ pub fn compile_preset_preview(
         validate_safe_id(role_id, "role id")?;
     }
 
-    let resolved = resolve_preset_inheritance(&paths.presets_dir, preset.clone())?;
+    let resolved = resolve_preset_inheritance_unlocked(&paths.presets_dir, preset.clone())?;
     let project_slug = derive_project_slug(workspace_root);
     let squad_dir = ws_root
         .join(".agents")
@@ -398,29 +410,49 @@ pub fn apply_preset_to_project(
     preset_id_or_custom: Option<String>,
     custom_preset: Option<PresetConfig>,
 ) -> AppResult<SyncResult> {
-    ensure_seed_presets(&paths.presets_dir)?;
+    let _guard = lock_config_state();
+    apply_preset_to_project_unlocked(
+        paths,
+        project_id,
+        workspace_root,
+        preset_id_or_custom,
+        custom_preset,
+    )
+}
+
+fn apply_preset_to_project_unlocked(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    preset_id_or_custom: Option<String>,
+    custom_preset: Option<PresetConfig>,
+) -> AppResult<SyncResult> {
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
 
     let target_preset: PresetConfig = if let Some(custom) = custom_preset {
         custom
     } else if let Some(preset_id) = preset_id_or_custom {
         if preset_id == "custom" {
-            let resolved_proj = get_project_preset(paths, project_id, workspace_root, None)?;
+            let resolved_proj =
+                get_project_preset_unlocked(paths, project_id, workspace_root, None)?;
             resolved_proj
                 .raw_local_preset
                 .unwrap_or(resolved_proj.resolved_preset)
         } else {
             validate_safe_id(&preset_id, "preset id")?;
-            resolve_global_preset(&paths.presets_dir, &preset_id)?
+            resolve_global_preset_unlocked(&paths.presets_dir, &preset_id)?
         }
     } else {
-        let resolved_proj = get_project_preset(paths, project_id, workspace_root, None)?;
+        let resolved_proj = get_project_preset_unlocked(paths, project_id, workspace_root, None)?;
         resolved_proj
             .raw_local_preset
             .unwrap_or(resolved_proj.resolved_preset)
     };
 
-    let resolved = resolve_preset_inheritance(&paths.presets_dir, target_preset.clone())?;
-    let preview = compile_preset_preview(paths, project_id, workspace_root, &target_preset)?;
+    let resolved =
+        resolve_preset_inheritance_unlocked(&paths.presets_dir, target_preset.clone())?;
+    let preview =
+        compile_preset_preview_unlocked(paths, project_id, workspace_root, &target_preset)?;
 
     let mut written_files = Vec::new();
     for file in &preview.files {
@@ -451,8 +483,9 @@ pub fn swap_project_primary_instance(
     project_id: &str,
     workspace_root: &str,
 ) -> AppResult<SyncResult> {
+    let _guard = lock_config_state();
     let settings = read_t3_settings(&paths.settings_path());
-    let current_resolved = get_project_preset(paths, project_id, workspace_root, None)?;
+    let current_resolved = get_project_preset_unlocked(paths, project_id, workspace_root, None)?;
 
     let current_instance = settings
         .project_overrides
@@ -519,7 +552,7 @@ pub fn swap_project_primary_instance(
         }
     }
 
-    apply_preset_to_project(paths, project_id, workspace_root, None, Some(updated))
+    apply_preset_to_project_unlocked(paths, project_id, workspace_root, None, Some(updated))
 }
 
 /// Saves the global Oh My T3Code config (`~/.config/oh-my-t3code/config.jsonc`) and,
@@ -529,30 +562,33 @@ pub fn set_global_preset_config(
     active_preset_id: String,
     enabled: bool,
 ) -> AppResult<DashboardSnapshot> {
-    ensure_seed_presets(&paths.presets_dir)?;
+    let _guard = lock_config_state();
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
     validate_safe_id(&active_preset_id, "active_preset_id")?;
-    let preset = resolve_global_preset(&paths.presets_dir, &active_preset_id)?;
+    let preset = resolve_global_preset_unlocked(&paths.presets_dir, &active_preset_id)?;
 
     let config = GlobalAppConfig {
         active_global_preset_id: preset.id.clone(),
         enabled,
     };
-    save_global_config(&paths.global_config_path(), &config)?;
+    save_global_config_unlocked(&paths.global_config_path(), &config)?;
 
     if enabled {
         sync_global_settings(&paths.settings_path(), &preset)?;
     }
 
-    build_dashboard_snapshot(paths)
+    build_dashboard_snapshot_unlocked(paths)
 }
 
 /// Quick toggle on the active global preset:
 /// - For Agy presets (`antigravity` / `antigravity_2`): toggles `antigravity` ↔ `antigravity_2`.
 /// - For Codex presets (`codex`, such as `default`): toggles orchestrator model `gpt-6.1-sol` ↔ `gpt-6.1-terra`.
 pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
-    ensure_seed_presets(&paths.presets_dir)?;
-    let global_cfg = load_global_config(&paths.global_config_path());
-    let mut preset = resolve_global_preset(&paths.presets_dir, &global_cfg.active_global_preset_id)?;
+    let _guard = lock_config_state();
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
+    let global_cfg = load_global_config_unlocked(&paths.global_config_path());
+    let mut preset =
+        resolve_global_preset_unlocked(&paths.presets_dir, &global_cfg.active_global_preset_id)?;
 
     if preset.orchestrator.provider_instance_id == "codex" {
         let next_model = if preset.orchestrator.model == "gpt-6.1-sol" {
@@ -620,14 +656,14 @@ pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
         }
     }
 
-    let saved = save_global_preset(&paths.presets_dir, preset)?;
-    save_global_config(&paths.global_config_path(), &global_cfg)?;
+    let saved = save_global_preset_unlocked(&paths.presets_dir, preset)?;
+    save_global_config_unlocked(&paths.global_config_path(), &global_cfg)?;
 
     if global_cfg.enabled {
         sync_global_settings(&paths.settings_path(), &saved)?;
     }
 
-    build_dashboard_snapshot(paths)
+    build_dashboard_snapshot_unlocked(paths)
 }
 
 /// Enables or disables a project's preset without deleting `.t3code/preset.jsonc`.
@@ -639,16 +675,23 @@ pub fn set_project_preset_enabled(
     workspace_root: &str,
     enabled: bool,
 ) -> AppResult<SyncResult> {
-    ensure_seed_presets(&paths.presets_dir)?;
-    let current = get_project_preset(paths, project_id, workspace_root, None)?;
+    let _guard = lock_config_state();
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
+    let current = get_project_preset_unlocked(paths, project_id, workspace_root, None)?;
     let mut target_preset = current.raw_local_preset.unwrap_or(current.resolved_preset);
     target_preset.enabled = enabled;
 
     if enabled {
-        return apply_preset_to_project(paths, project_id, workspace_root, None, Some(target_preset));
+        return apply_preset_to_project_unlocked(
+            paths,
+            project_id,
+            workspace_root,
+            None,
+            Some(target_preset),
+        );
     }
 
-    let saved = save_project_preset(paths, project_id, workspace_root, target_preset)?;
+    let saved = save_project_preset_unlocked(paths, project_id, workspace_root, target_preset)?;
     let backup_path = remove_project_settings_override(&paths.settings_path(), project_id)?;
     let preset_path = local_preset_path(Path::new(workspace_root));
 
@@ -671,6 +714,7 @@ pub fn remove_project_override(
     project_id: &str,
     workspace_root: &str,
 ) -> AppResult<DashboardSnapshot> {
+    let _guard = lock_config_state();
     let ws_root = Path::new(workspace_root);
     if !ws_root.exists() {
         return Err(AppError::NotFound(format!(
@@ -694,13 +738,16 @@ pub fn remove_project_override(
     }
 
     remove_project_settings_override(&paths.settings_path(), project_id)?;
-    build_dashboard_snapshot(paths)
+    build_dashboard_snapshot_unlocked(paths)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::preset_engine::default_seed_presets;
+    use crate::preset_engine::{
+        default_seed_presets, ensure_seed_presets, get_project_preset, load_global_config,
+        resolve_global_preset,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -944,5 +991,159 @@ mod tests {
         assert!(!local_preset_path(&ws).exists());
         let settings_removed = read_t3_settings(&paths.settings_path());
         assert!(!settings_removed.project_overrides.contains_key("proj-1"));
+    }
+
+    #[test]
+    fn concurrent_swap_global_instance_serializes_rmw_without_lost_updates() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        // Start on agy-dual -> orchestrator is antigravity_2
+        let init = set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+        assert_eq!(
+            init.default_model_selection.as_ref().unwrap().instance_id,
+            "antigravity_2"
+        );
+
+        let swap_threads = 8usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(swap_threads));
+        let mut handles = Vec::with_capacity(swap_threads);
+        for tid in 0..swap_threads {
+            let paths_clone = paths.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                swap_global_instance(&paths_clone)
+                    .unwrap_or_else(|e| panic!("thread {tid} swap_global_instance failed: {e}"))
+            }));
+        }
+
+        let mut results = Vec::with_capacity(swap_threads);
+        for h in handles {
+            results.push(h.join().expect("swap thread must not panic"));
+        }
+
+        // Because 8 swaps ran sequentially under lock, half must return antigravity and half antigravity_2
+        let agy1_count = results
+            .iter()
+            .filter(|s| {
+                s.default_model_selection.as_ref().map(|m| m.instance_id.as_str())
+                    == Some("antigravity")
+            })
+            .count();
+        let agy2_count = results
+            .iter()
+            .filter(|s| {
+                s.default_model_selection.as_ref().map(|m| m.instance_id.as_str())
+                    == Some("antigravity_2")
+            })
+            .count();
+        assert_eq!(
+            agy1_count, 4,
+            "expected 4 antigravity outcomes, got {agy1_count} (lost update under concurrency)"
+        );
+        assert_eq!(
+            agy2_count, 4,
+            "expected 4 antigravity_2 outcomes, got {agy2_count} (lost update under concurrency)"
+        );
+
+        // Even number of swaps (8) from antigravity_2 must end back on antigravity_2
+        let final_settings = read_t3_settings(&paths.settings_path());
+        assert_eq!(
+            final_settings.default_model_selection.unwrap().instance_id,
+            "antigravity_2"
+        );
+        let final_preset = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        assert_eq!(final_preset.orchestrator.provider_instance_id, "antigravity_2");
+    }
+
+    #[test]
+    fn concurrent_set_global_preset_and_apply_project_presets_never_corrupt_state() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let project_count = 6usize;
+        let mut workspaces = Vec::with_capacity(project_count);
+        for i in 0..project_count {
+            let ws = dir.path().join(format!("proj-{i}"));
+            fs::create_dir_all(&ws).unwrap();
+            workspaces.push(ws);
+        }
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        let global_threads = 4usize;
+        let total = project_count + global_threads;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(total));
+        let mut handles = Vec::with_capacity(total);
+
+        for (i, ws) in workspaces.iter().enumerate() {
+            let paths_clone = paths.clone();
+            let ws_str = ws.to_str().unwrap().to_string();
+            let barrier = barrier.clone();
+            let preset_id = if i % 2 == 0 { "agy-dual" } else { "codex-squad" };
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                apply_preset_to_project(
+                    &paths_clone,
+                    &format!("proj-{i}"),
+                    &ws_str,
+                    Some(preset_id.to_string()),
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("apply_preset_to_project proj-{i} failed: {e}"));
+            }));
+        }
+
+        for i in 0..global_threads {
+            let paths_clone = paths.clone();
+            let barrier = barrier.clone();
+            let preset_id = if i % 2 == 0 { "default" } else { "agy-dual" };
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                set_global_preset_config(&paths_clone, preset_id.to_string(), true)
+                    .unwrap_or_else(|e| panic!("set_global_preset_config {i} failed: {e}"));
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("worker thread must not panic");
+        }
+
+        let settings = read_t3_settings(&paths.settings_path());
+        assert!(settings.available, "settings.json must remain valid JSON");
+        for (i, ws) in workspaces.iter().enumerate() {
+            assert!(
+                settings.project_overrides.contains_key(&format!("proj-{i}")),
+                "missing projectSettingsOverrides['proj-{i}']"
+            );
+            assert!(local_preset_path(ws).exists());
+        }
+        let cfg = load_global_config(&paths.global_config_path());
+        assert!(cfg.enabled);
     }
 }
