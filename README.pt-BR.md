@@ -53,25 +53,22 @@ Verifique o ambiente antes de rodar ou empacotar o aplicativo nativo:
 
 Os releases são gerados como `.dmg` Universal (Apple Silicon + Intel) com assinatura *ad-hoc* (`"signingIdentity": "-"` em `src-tauri/tauri.conf.json`). Como o app não possui notarização paga da Apple, o macOS aplica a flag de quarentena (`com.apple.quarantine`) em downloads manuais.
 
-### Opção A: Instalador em um comando (`install.sh`)
+### Opção A: Instalador em um comando (`curl`)
 
-Baixa o `.dmg` Universal mais recente do GitHub Releases (usando `gh` automaticamente se autenticado para repositório privado, ou `curl` se público), instala `Oh My T3Code.app` em `/Applications` e remove `com.apple.quarantine`:
-
-```bash
-./install.sh
-```
-
-Ou para instalar uma tag específica:
+Baixa o `.dmg` Universal mais recente do GitHub Releases, instala `Oh My T3Code.app` em `/Applications` e remove `com.apple.quarantine` automaticamente:
 
 ```bash
-./install.sh v0.1.0
+curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash
 ```
 
-*(Quando o repositório estiver público, também funciona direto com `curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash`.)*
+Para instalar uma tag específica (ou rodar a partir de um clone local):
 
-### Opção B: Homebrew Cask (`Casks/oh-my-t3code.rb`)
+```bash
+curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash -s -- v0.1.1
+# ou no clone local: ./install.sh v0.1.1
+```
 
-Quando o repositório (ou os assets de release) estiver acessível publicamente:
+### Opção B: Homebrew Cask
 
 ```bash
 brew tap alencarfreire/oh-my-t3code https://github.com/alencarfreire/oh-my-t3code.git
@@ -79,7 +76,7 @@ brew trust alencarfreire/oh-my-t3code
 brew install --cask alencarfreire/oh-my-t3code/oh-my-t3code
 ```
 
-O Cask já inclui `postflight_steps` para limpar `com.apple.quarantine` automaticamente em `/Applications/Oh My T3Code.app`.
+O Cask (`Casks/oh-my-t3code.rb`) já inclui `postflight_steps` para limpar `com.apple.quarantine` automaticamente em `/Applications/Oh My T3Code.app`.
 
 ### Opção C: Download manual do `.dmg`
 

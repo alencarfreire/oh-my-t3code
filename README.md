@@ -53,25 +53,22 @@ Check your environment before running or packaging the native macOS app:
 
 Builds are packaged as a Universal macOS `.dmg` (Apple Silicon + Intel) with ad-hoc code signing (`"signingIdentity": "-"` in `src-tauri/tauri.conf.json`). Because the app is not notarized with a paid Apple Developer ID certificate, macOS adds a browser quarantine attribute (`com.apple.quarantine`) on manual downloads.
 
-### Option A: One-command installer (`install.sh`)
+### Option A: One-command installer (`curl`)
 
-Downloads the latest Universal `.dmg` from GitHub Releases (automatically using `gh` when authenticated for private repos, or `curl` for public releases), installs `Oh My T3Code.app` into `/Applications`, and clears `com.apple.quarantine`:
-
-```bash
-./install.sh
-```
-
-Or install a specific release tag:
+Downloads the latest Universal `.dmg` from GitHub Releases, installs `Oh My T3Code.app` into `/Applications`, and clears `com.apple.quarantine` automatically:
 
 ```bash
-./install.sh v0.1.0
+curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash
 ```
 
-*(When the repository is public, you can also run it directly via `curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash`.)*
+To install a specific release tag (or run locally from a clone):
 
-### Option B: Homebrew Cask (`Casks/oh-my-t3code.rb`)
+```bash
+curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash -s -- v0.1.1
+# or from a local clone: ./install.sh v0.1.1
+```
 
-When the repository (or release asset URL) is publicly accessible:
+### Option B: Homebrew Cask
 
 ```bash
 brew tap alencarfreire/oh-my-t3code https://github.com/alencarfreire/oh-my-t3code.git
@@ -79,7 +76,7 @@ brew trust alencarfreire/oh-my-t3code
 brew install --cask alencarfreire/oh-my-t3code/oh-my-t3code
 ```
 
-The cask includes a `postflight_steps` rule that automatically runs `xattr -dr com.apple.quarantine` on `/Applications/Oh My T3Code.app`.
+The cask (`Casks/oh-my-t3code.rb`) includes a `postflight_steps` rule that automatically runs `xattr -dr com.apple.quarantine` on `/Applications/Oh My T3Code.app`.
 
 ### Option C: Manual `.dmg` download
 
