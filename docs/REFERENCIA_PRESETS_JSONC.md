@@ -91,6 +91,7 @@ Define a estrutura completa de um preset de orquestração, sua cadeia de fallba
 | `fallbackChain` | `FallbackStep[]` | `[]` | Lista ordenada de contingência usada quando cota ou disponibilidade falham |
 | `contention` | `ContentionPolicy` | Padrões de `shared` | Política de paralelismo, banco de testes, variáveis de ambiente e arquivos críticos |
 | `roles` | `Record<string, RoleConfig>` | `{}` | Mapa ordenado (`BTreeMap`) dos papéis especializados compilados em `roles/*.md` |
+| `disabledRoles` | `string[]` | `[]` *(omitido quando vazio)* | Lista ordenada e deduplicada (tombstone) de IDs de papéis herdados via `extends` que devem ser suprimidos (`validate_safe_id`) |
 
 ### `OrchestratorSelection` e `FallbackStep`
 
@@ -177,8 +178,8 @@ Ao combinar o preset pai (`base`) com o arquivo filho (`patch`), o algoritmo apl
 6. **Vetores (arrays)**: `fallbackChain`, `contention.gitIgnoredBuilds`, `contention.conflictFiles` e todos os arrays de `RoleConfig` (`skills`, `mcps`, `allowedPaths`, `forbiddenPaths`, `invariants`, `verificationCommands`) **substituem integralmente** o array do pai quando especificados no filho; não há concatenação.
 7. **Mapa `roles`**: se `role_id` já existir no pai, os campos definidos em `RolePatch` são mesclados sobre o papel do pai (preservando os demais campos do papel pai); se `role_id` não existir no pai, um novo papel é criado com `id` e `title` padronizados para `role_id`.
 
-> [!WARNING]
-> Conforme documentado em [`STATE_MACHINES.md`](STATE_MACHINES.md) (`SM2-BUG-4`), o `merge_patch` atual ainda não implementa remoção (*tombstone*) de papéis herdados: qualquer papel definido no preset pai permanece no preset resolvido ao usar `extends`, mesmo após excluí-lo no editor. Para remover papéis de forma definitiva hoje, crie um preset independente sem `extends`.
+> [!NOTE]
+> **Remoção e reativação de papéis herdados (`disabledRoles`)**: para suprimir um papel herdado via `extends` (inclusive em cadeias de herança multi-nível), liste seu `id` em `"disabledRoles": ["<role-id>"]` (validado por `validate_safe_id`, deduplicado e ordenado automaticamente). No **Preset Studio** (`RolesMatrixTab`), excluir um papel de um preset com `extends` adiciona automaticamente esse ID em `disabledRoles`. Para **reativar** um papel removido, basta redeclarar a chave `<role-id>` em `roles` (sem incluí-la em `disabledRoles` no mesmo arquivo) ou adicioná-la novamente no Preset Studio — o `merge_patch` e a UI removem o tombstone de `disabledRoles`.
 
 ### Exemplo prático comentado de `.t3code/preset.jsonc`
 

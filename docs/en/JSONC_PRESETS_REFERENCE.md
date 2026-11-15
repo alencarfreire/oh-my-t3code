@@ -95,6 +95,7 @@ Defines the complete orchestration preset, including its fallback chain, content
 | `fallbackChain` | `FallbackStep[]` | `[]` | Ordered contingency list used when quota or availability fails |
 | `contention` | `ContentionPolicy` | `shared` defaults | Concurrency, test database, environment variable, and conflict-file policy |
 | `roles` | `Record<string, RoleConfig>` | `{}` | Ordered map (`BTreeMap`) of specialized worker roles compiled into `roles/*.md` |
+| `disabledRoles` | `string[]` | `[]` *(omitted when empty)* | Sorted, deduplicated list (tombstone) of role IDs inherited via `extends` that must be suppressed (`validate_safe_id`) |
 
 ### `OrchestratorSelection` and `FallbackStep`
 
@@ -183,8 +184,8 @@ When combining a parent preset (`base`) with a child file (`patch`), the algorit
 6. **Arrays**: `fallbackChain`, `contention.gitIgnoredBuilds`, `contention.conflictFiles`, and all `RoleConfig` arrays (`skills`, `mcps`, `allowedPaths`, `forbiddenPaths`, `invariants`, `verificationCommands`) **replace the entire parent array** when specified in the child; arrays are never concatenated.
 7. **`roles` map**: if `role_id` already exists in the parent, fields defined in `RolePatch` merge onto the parent role (preserving the remaining parent fields); if `role_id` does not exist in the parent, a new role is created with `id` and `title` defaulted to `role_id`.
 
-> [!WARNING]
-> As documented in [`STATE_MACHINES.md`](../STATE_MACHINES.md) (`SM2-BUG-4`), `merge_patch` does not yet support tombstone removal for inherited roles: any role defined in the parent preset reappears in the resolved preset when using `extends`, even after deleting it in the editor. To permanently remove roles today, create a standalone preset without `extends`.
+> [!NOTE]
+> **Removing and reactivating inherited roles (`disabledRoles`)**: to suppress a role inherited through `extends` (including across multi-level inheritance chains), list its `id` in `"disabledRoles": ["<role-id>"]` (validated by `validate_safe_id`, automatically deduplicated and sorted). In **Preset Studio** (`RolesMatrixTab`), deleting a role from a preset with `extends` automatically appends that ID to `disabledRoles`. To **reactivate** a removed role, either redeclare `<role-id>` under `roles` (without listing it in `disabledRoles` on the same preset) or add it again in Preset Studio — both `merge_patch` and the UI clear the tombstone from `disabledRoles`.
 
 ### Annotated `.t3code/preset.jsonc` example
 
