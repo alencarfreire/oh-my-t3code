@@ -52,7 +52,7 @@ export function KeyValueEditor({
           {sortedEntries.map(([k, v]) => (
             <div
               key={k}
-              className="flex items-center gap-2 rounded-lg border border-white/8 bg-zinc-900/70 px-2.5 py-1.5"
+              className="flex items-center gap-2 rounded-lg border border-white/8 bg-zinc-900/75 px-2.5 py-1.5"
             >
               <span className="w-36 shrink-0 truncate font-mono text-[11px] text-indigo-300">
                 {k}
@@ -62,7 +62,7 @@ export function KeyValueEditor({
                 value={v}
                 aria-label={`Valor de ${k}`}
                 onChange={(e) => handleUpdateValue(k, e.target.value)}
-                className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                className="min-w-0 flex-1 rounded-md border border-white/10 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               />
               <button
                 type="button"
@@ -78,7 +78,7 @@ export function KeyValueEditor({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        <div className="flex-1 min-w-[130px]">
+        <div className="min-w-[130px] flex-1">
           <label htmlFor={keyInputId} className="sr-only">
             {keyPlaceholder}
           </label>
@@ -88,10 +88,10 @@ export function KeyValueEditor({
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}
             placeholder={keyPlaceholder}
-            className="w-full rounded-lg border border-white/12 bg-zinc-900 px-2.5 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            className="h-8 w-full rounded-lg border border-white/12 bg-zinc-950/90 px-2.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
           />
         </div>
-        <div className="flex-1 min-w-[130px]">
+        <div className="min-w-[130px] flex-1">
           <label htmlFor={valInputId} className="sr-only">
             {valuePlaceholder}
           </label>
@@ -107,7 +107,7 @@ export function KeyValueEditor({
               }
             }}
             placeholder={valuePlaceholder}
-            className="w-full rounded-lg border border-white/12 bg-zinc-900 px-2.5 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            className="h-8 w-full rounded-lg border border-white/12 bg-zinc-950/90 px-2.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
           />
         </div>
         <Button variant="secondary" size="sm" onClick={handleAdd}>

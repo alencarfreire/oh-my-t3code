@@ -8,10 +8,11 @@
   --color-surface-1: #111114;
   --color-surface-2: #18181c;
   --color-surface-3: #222228;
-  --color-border-subtle: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.16);
+  --color-border-subtle: rgba(255, 255, 255, 0.07);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
   --color-accent: #6366f1;
   --color-accent-hover: #818cf8;
+  --color-caramel: #f59e0b;
   --color-live: #10b981;
 }
 
@@ -34,11 +35,13 @@
   }
 
   button,
-  [role="button"] {
+  [role="button"],
+  select {
     cursor: pointer;
   }
 
-  button:disabled {
+  button:disabled,
+  select:disabled {
     cursor: not-allowed;
   }
 
@@ -59,6 +62,53 @@
 
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.24);
+  }
+}
+
+@layer utilities {
+  .surface-backdrop {
+    background-color: var(--color-surface-0);
+    background-image:
+      radial-gradient(ellipse 80% 45% at 50% -10%, rgba(245, 158, 11, 0.055), transparent 65%),
+      radial-gradient(ellipse 65% 40% at 85% 0%, rgba(99, 102, 241, 0.06), transparent 60%);
+  }
+
+  .surface-panel {
+    background-color: rgba(17, 17, 20, 0.88);
+    border: 1px solid transparent;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.07),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+      0 8px 24px -12px rgba(0, 0, 0, 0.65);
+  }
+
+  .surface-card {
+    background-color: rgba(24, 24, 28, 0.78);
+    border: 1px solid transparent;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.07),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .surface-card-interactive {
+    background-color: rgba(24, 24, 28, 0.78);
+    border: 1px solid transparent;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.07),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+    transition:
+      background-color 150ms cubic-bezier(0.2, 0, 0, 1),
+      box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  @media (hover: hover) {
+    .surface-card-interactive:hover {
+      background-color: rgba(30, 30, 36, 0.9);
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.13),
+        inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+        0 6px 18px -8px rgba(0, 0, 0, 0.65);
+    }
   }
 }
 

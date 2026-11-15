@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeftRight,
@@ -6,6 +6,7 @@ import {
   Cpu,
   FolderGit2,
   Layers,
+  Lock,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { Badge, getInstanceBadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { Select } from "../components/ui/Select";
 import { invokeIpc } from "../lib/ipc-client";
 import { resolveInstanceShortLabel } from "../lib/preset-utils";
 import type { DashboardSnapshot, ProjectSummary } from "../types/ipc";
@@ -40,6 +42,18 @@ function defaultPresetForProject(
   return snapshot.globalPresets[0]?.id ?? "agy-dual";
 }
 
+const SWAP_PILL_CLASSES: Record<string, string> = {
+  indigo:
+    "border-indigo-400/35 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25 hover:border-indigo-400/55",
+  sky: "border-sky-400/35 bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 hover:border-sky-400/55",
+  emerald:
+    "border-emerald-400/35 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-400/55",
+  amber:
+    "border-amber-400/35 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25 hover:border-amber-400/55",
+  neutral:
+    "border-white/15 bg-zinc-800/80 text-zinc-200 hover:bg-zinc-700/80 hover:border-white/25",
+};
+
 export function PopoverView() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -50,6 +64,7 @@ export function PopoverView() {
   const [selectedPresets, setSelectedPresets] = useState<Record<string, string>>({});
   const [busyProjectAction, setBusyProjectAction] = useState<Record<string, "sync" | "swap">>({});
   const [syncedProjectIds, setSyncedProjectIds] = useState<Record<string, boolean>>({});
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSnapshot = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
@@ -82,16 +97,49 @@ export function PopoverView() {
     void loadSnapshot(false);
   }, [loadSnapshot]);
 
-  // Escape closes/toggles the popover window on macOS Menu Bar
+  const handleOpenStudio = useCallback(async (projectId?: string | null) => {
+    try {
+      await invokeIpc("open_studio_window", {
+        projectId: projectId ?? null,
+        presetId: null,
+      });
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  // Keyboard shortcuts: Escape closes popover, Cmd+K or '/' focuses search, Cmd+, opens Studio
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         void invokeIpc("toggle_popover_window");
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        event.preventDefault();
+        void handleOpenStudio(null);
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const isEditable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        Boolean(target?.isContentEditable);
+      if (event.key === "/" && !isEditable) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [handleOpenStudio]);
 
   const syncedProjectsCount = useMemo(() => {
     if (!snapshot) return 0;
@@ -118,17 +166,6 @@ export function PopoverView() {
       );
     });
   }, [snapshot, normalizedQuery]);
-
-  const handleOpenStudio = async (projectId?: string | null) => {
-    try {
-      await invokeIpc("open_studio_window", {
-        projectId: projectId ?? null,
-        presetId: null,
-      });
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   const handleSyncProject = async (project: ProjectSummary) => {
     if (!snapshot) return;
@@ -196,23 +233,24 @@ export function PopoverView() {
   };
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-zinc-950/95 text-zinc-100">
-      {/* Compact macOS Menu Bar Header */}
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-zinc-950 px-3.5 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-amber-400/25 bg-zinc-900/90 p-0.5">
+    <div className="surface-backdrop flex h-full w-full flex-col overflow-hidden text-zinc-100">
+      {/* Compact Raycast/OrbStack-style Menu Bar Header */}
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.08] bg-zinc-950/90 px-3.5 py-2.5 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {/* Concentric outer radius 10px (8px inner + 2px padding) */}
+          <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-amber-400/30 bg-gradient-to-b from-amber-500/15 to-zinc-900 p-0.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)]">
             <img
               src="/logo.png"
               alt="Oh My T3Code"
-              className="size-full object-contain"
+              className="size-full rounded-lg object-contain"
             />
           </div>
           <div className="min-w-0">
-            <h1 className="truncate text-xs font-semibold tracking-tight text-zinc-100">
+            <h1 className="truncate text-[13px] font-semibold leading-tight tracking-tight text-zinc-100">
               Oh My T3Code
             </h1>
             <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-zinc-400">
-              <Layers className="size-3 shrink-0 text-indigo-300" aria-hidden="true" />
+              <Layers className="size-3 shrink-0 text-amber-300/90" aria-hidden="true" />
               {snapshot ? (
                 <span className="truncate tabular-nums">
                   {syncedProjectsCount}/{snapshot.projects.length} sincronizados ·{" "}
@@ -243,24 +281,33 @@ export function PopoverView() {
             variant="primary"
             size="xs"
             onClick={() => void handleOpenStudio(null)}
+            title="Abrir Preset Studio (⌘,)"
           >
             <SlidersHorizontal className="size-3.5" aria-hidden="true" />
-            Preset Studio
+            <span>Studio</span>
+            <kbd className="hidden rounded border border-white/25 bg-white/10 px-1 font-mono text-[10px] leading-3.5 text-indigo-100 sm:inline-block">
+              ⌘,
+            </kbd>
           </Button>
         </div>
       </header>
 
-      {/* Live polite status region rendered stably for screen readers & visual feedback */}
+      {/* Live polite status region rendered stably */}
       <div
         role="status"
         aria-live="polite"
         className={
           statusMessage
-            ? "shrink-0 border-b border-emerald-500/20 bg-emerald-500/10 px-3.5 py-1.5 text-[11px] text-emerald-200"
+            ? "flex shrink-0 items-center gap-1.5 border-b border-emerald-500/20 bg-emerald-500/10 px-3.5 py-1.5 text-[11px] text-emerald-200"
             : "sr-only"
         }
       >
-        {statusMessage}
+        {statusMessage ? (
+          <>
+            <Check className="size-3.5 shrink-0 text-emerald-400" aria-hidden="true" />
+            <span className="min-w-0 truncate">{statusMessage}</span>
+          </>
+        ) : null}
       </div>
 
       {errorMsg ? (
@@ -273,22 +320,22 @@ export function PopoverView() {
         </div>
       ) : null}
 
-      {/* Main Scrollable Content (strictly no horizontal overflow) */}
-      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3.5 py-3 space-y-3">
+      {/* Main Scrollable Content */}
+      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3.5 py-3 space-y-2.5">
         {loading && !snapshot ? (
-          <div className="space-y-3 py-6 text-center text-xs text-zinc-400">
-            Carregando estado do T3 Code...
+          <div className="space-y-3 py-8 text-center text-xs text-zinc-400">
+            Carregando estado do T3 Code…
           </div>
         ) : snapshot ? (
           <section aria-labelledby="popover-projects-heading" className="space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2 px-0.5">
               <h2
                 id="popover-projects-heading"
                 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400"
               >
                 Projetos & 1-Click Sync
               </h2>
-              <span className="text-[11px] text-zinc-500 tabular-nums">
+              <span className="text-[11px] text-zinc-400 tabular-nums">
                 {normalizedQuery
                   ? `${filteredProjects.length} de ${snapshot.projects.length}`
                   : `${snapshot.projects.length} projetos`}
@@ -301,36 +348,44 @@ export function PopoverView() {
                   Filtrar projetos
                 </label>
                 <Search
-                  className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500"
+                  className="pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500"
                   aria-hidden="true"
                 />
                 <input
+                  ref={searchInputRef}
                   id="popover-project-filter"
                   type="search"
                   value={projectQuery}
                   onChange={(e) => setProjectQuery(e.target.value)}
-                  placeholder="Filtrar projetos, preset ou instância..."
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900/80 py-1.5 pl-8 pr-7 text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  placeholder="Filtrar projetos, preset ou instância…"
+                  className="h-8 w-full rounded-lg border border-white/10 bg-zinc-900/90 ps-8 pe-12 text-xs text-zinc-100 placeholder:text-zinc-500 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] transition-[border-color,background-color] duration-150 hover:border-white/18 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 />
                 {projectQuery ? (
                   <button
                     type="button"
                     onClick={() => setProjectQuery("")}
                     aria-label="Limpar filtro de projetos"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="absolute end-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   >
                     <X className="size-3.5" aria-hidden="true" />
                   </button>
-                ) : null}
+                ) : (
+                  <kbd
+                    aria-hidden="true"
+                    className="pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 rounded border border-white/10 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] leading-none text-zinc-500"
+                  >
+                    ⌘K
+                  </kbd>
+                )}
               </div>
             ) : null}
 
             {snapshot.projects.length === 0 ? (
-              <div className="rounded-xl border border-white/8 bg-zinc-900/50 px-3 py-3 text-center text-xs text-zinc-400">
+              <div className="surface-card rounded-xl px-3 py-4 text-center text-xs text-zinc-400">
                 Nenhum projeto encontrado em statev2.sqlite.
               </div>
             ) : filteredProjects.length === 0 ? (
-              <div className="rounded-xl border border-white/8 bg-zinc-900/50 px-3 py-4 text-center space-y-2">
+              <div className="surface-card rounded-xl px-3 py-4 text-center space-y-2">
                 <p className="text-xs text-zinc-400">
                   Nenhum projeto corresponde a &ldquo;{projectQuery.trim()}&rdquo;.
                 </p>
@@ -343,123 +398,153 @@ export function PopoverView() {
                 </Button>
               </div>
             ) : (
-              <ul className="space-y-2.5">
+              <ul className="space-y-2">
                 {filteredProjects.map((project) => {
-                    const selectedPresetId =
-                      selectedPresets[project.projectId] ??
-                      defaultPresetForProject(project, snapshot);
-                    const busy = busyProjectAction[project.projectId];
-                    const isSynced = Boolean(syncedProjectIds[project.projectId]);
-                    const activeInstanceLabel = resolveInstanceShortLabel(
-                      project.activeInstanceId,
-                      snapshot.providerInstances,
-                    );
+                  const selectedPresetId =
+                    selectedPresets[project.projectId] ??
+                    defaultPresetForProject(project, snapshot);
+                  const busy = busyProjectAction[project.projectId];
+                  const isSynced = Boolean(syncedProjectIds[project.projectId]);
+                  const activeInstanceLabel = resolveInstanceShortLabel(
+                    project.activeInstanceId,
+                    snapshot.providerInstances,
+                  );
+                  const instanceTone = getInstanceBadgeTone(project.activeInstanceId);
 
-                    return (
-                      <li
-                        key={project.projectId}
-                        className="rounded-xl border border-white/10 bg-zinc-900/80 p-2.5 space-y-2"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <FolderGit2
-                                className="size-3.5 shrink-0 text-indigo-300"
-                                aria-hidden="true"
-                              />
-                              <span className="truncate text-xs font-semibold text-zinc-100">
-                                {project.title}
-                              </span>
-                            </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-1">
-                              {project.detectedSquadSlug ? (
-                                <Badge tone="indigo">
-                                  .{project.detectedSquadSlug}
-                                </Badge>
-                              ) : null}
-                              {project.hasLocalPreset ? (
-                                <Badge tone="emerald">.t3code/preset</Badge>
-                              ) : null}
-                              <Badge tone={getInstanceBadgeTone(project.activeInstanceId)}>
-                                <Cpu className="size-2.5" aria-hidden="true" />
-                                {activeInstanceLabel}
+                  return (
+                    <li
+                      key={project.projectId}
+                      className="surface-card-interactive rounded-xl p-2.5 space-y-2"
+                    >
+                      {/* Row 1: Project identity + Semantic Status + Integrated Instance Swap Pill */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <FolderGit2
+                              className="size-3.5 shrink-0 text-indigo-300"
+                              aria-hidden="true"
+                            />
+                            <span className="truncate text-xs font-semibold text-zinc-100">
+                              {project.title}
+                            </span>
+                            {project.hasLocalPreset ? (
+                              <Badge tone="emerald" dot>
+                                Sincronizado
                               </Badge>
-                              {project.activeModel ? (
-                                <span className="truncate font-mono text-[10px] text-zinc-400">
-                                  {project.activeModel}
-                                </span>
-                              ) : null}
-                            </div>
+                            ) : project.detectedSquadSlug ? (
+                              <Badge tone="amber" dot>
+                                Squad s/ preset
+                              </Badge>
+                            ) : (
+                              <Badge tone="neutral" dot>
+                                Não configurado
+                              </Badge>
+                            )}
                           </div>
 
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => void handleOpenStudio(project.projectId)}
-                            aria-label={`Editar ${project.title} no Studio`}
-                            title="Editar no Preset Studio"
-                          >
-                            <SlidersHorizontal className="size-3.5" aria-hidden="true" />
-                          </Button>
+                          <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                            {project.activeModel ? (
+                              <span className="truncate font-mono text-zinc-300/90">
+                                {project.activeModel}
+                              </span>
+                            ) : null}
+                            {project.detectedSquadSlug ? (
+                              <span className="truncate font-mono text-zinc-500">
+                                · .{project.detectedSquadSlug}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
 
-                        {/* 1-Click Preset Dropdown + Sync + Swap Instance */}
-                        <div className="flex items-center gap-1.5">
-                          <label
-                            htmlFor={`preset-select-${project.projectId}`}
-                            className="sr-only"
-                          >
-                            Preset para {project.title}
-                          </label>
-                          <select
-                            id={`preset-select-${project.projectId}`}
-                            value={selectedPresetId}
-                            onChange={(e) =>
-                              setSelectedPresets((prev) => ({
-                                ...prev,
-                                [project.projectId]: e.target.value,
-                              }))
-                            }
-                            className="min-w-0 flex-1 rounded-lg border border-white/12 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                          >
-                            {snapshot.globalPresets.map((preset) => (
-                              <option key={preset.id} value={preset.id}>
-                                {preset.id} — {preset.name}
-                              </option>
-                            ))}
-                          </select>
+                        {/* Integrated Active Instance Pill + Instant Swap (⇄) */}
+                        <button
+                          type="button"
+                          disabled={Boolean(busy)}
+                          onClick={() => void handleSwapInstance(project)}
+                          aria-label={`Alternar instância Agy em ${project.title}`}
+                          title="Alternar Agy Veca ⇄ Agy Principal (1 clique)"
+                          className={[
+                            "inline-flex h-6 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
+                            "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
+                            "enabled:active:scale-[0.96] disabled:opacity-50",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                            SWAP_PILL_CLASSES[instanceTone] ?? SWAP_PILL_CLASSES.neutral,
+                          ].join(" ")}
+                        >
+                          <Cpu className="size-3 shrink-0" aria-hidden="true" />
+                          <span>{activeInstanceLabel}</span>
+                          <ArrowLeftRight
+                            className={`size-3 shrink-0 opacity-85 ${
+                              busy === "swap" ? "motion-safe:animate-pulse" : ""
+                            }`}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
 
-                          <Button
-                            variant={isSynced ? "secondary" : "primary"}
-                            size="xs"
-                            disabled={Boolean(busy)}
-                            onClick={() => void handleSyncProject(project)}
-                            aria-label={`Sync ${project.title}`}
-                          >
-                            {isSynced ? (
-                              <>
-                                <Check className="size-3.5 text-emerald-400" aria-hidden="true" />
-                                Sincronizado!
-                              </>
-                            ) : busy === "sync" ? (
-                              "Sincronizando..."
-                            ) : (
-                              "Sync"
-                            )}
-                          </Button>
+                      {/* Row 2: Unified Action Bar (Preset Select + Sync + Open in Studio) */}
+                      <div className="flex items-center gap-1.5">
+                        <label
+                          htmlFor={`preset-select-${project.projectId}`}
+                          className="sr-only"
+                        >
+                          Preset para {project.title}
+                        </label>
+                        <Select
+                          id={`preset-select-${project.projectId}`}
+                          sizeVariant="xs"
+                          value={selectedPresetId}
+                          onChange={(e) =>
+                            setSelectedPresets((prev) => ({
+                              ...prev,
+                              [project.projectId]: e.target.value,
+                            }))
+                          }
+                          wrapperClassName="min-w-0 flex-1"
+                        >
+                          {snapshot.globalPresets.map((preset) => (
+                            <option key={preset.id} value={preset.id}>
+                              {preset.id} — {preset.name}
+                            </option>
+                          ))}
+                        </Select>
 
-                          <Button
-                            variant="secondary"
-                            size="xs"
-                            disabled={Boolean(busy)}
-                            onClick={() => void handleSwapInstance(project)}
-                            aria-label={`Alternar instância Agy em ${project.title}`}
-                            title="Alternar Agy Veca ⇄ Agy Principal (1 clique)"
-                          >
-                            <ArrowLeftRight className="size-3.5" aria-hidden="true" />
-                          </Button>
-                        </div>
-                      </li>
+                        <Button
+                          variant={isSynced ? "secondary" : "primary"}
+                          size="xs"
+                          disabled={Boolean(busy)}
+                          onClick={() => void handleSyncProject(project)}
+                          aria-label={`Sync ${project.title}`}
+                        >
+                          {isSynced ? (
+                            <>
+                              <Check className="size-3.5 text-emerald-400" aria-hidden="true" />
+                              Sincronizado!
+                            </>
+                          ) : busy === "sync" ? (
+                            <>
+                              <RefreshCw
+                                className="size-3 motion-safe:animate-spin"
+                                aria-hidden="true"
+                              />
+                              Sync…
+                            </>
+                          ) : (
+                            "Sync"
+                          )}
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => void handleOpenStudio(project.projectId)}
+                          aria-label={`Editar ${project.title} no Studio`}
+                          title="Editar no Preset Studio"
+                        >
+                          <SlidersHorizontal className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      </div>
+                    </li>
                   );
                 })}
               </ul>
@@ -467,6 +552,26 @@ export function PopoverView() {
           </section>
         ) : null}
       </main>
+
+      {/* Compact Native macOS Footer */}
+      <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-white/[0.08] bg-zinc-950/95 px-3.5 py-2 text-[10px] text-zinc-400">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-300">
+            <Lock className="size-2.5 text-emerald-400" aria-hidden="true" />
+            <span>SQLite Read-Only</span>
+          </span>
+          <span className="truncate font-mono text-zinc-500" title="~/.t3/userdata">
+            ~/.t3
+          </span>
+        </div>
+
+        <span className="shrink-0 text-zinc-500">
+          <kbd className="rounded border border-white/10 bg-zinc-900 px-1 py-0.5 font-mono text-[9px] text-zinc-300">
+            Esc
+          </kbd>{" "}
+          para fechar
+        </span>
+      </footer>
     </div>
   );
 }

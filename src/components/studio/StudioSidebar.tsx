@@ -2,12 +2,19 @@ import { useState } from "react";
 import {
   Download,
   FolderGit2,
+  GitBranch,
   Layers,
   Plus,
+  Sparkles,
 } from "lucide-react";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
-import { isValidSafeId, sanitizeSafeId } from "../../lib/preset-utils";
+import { Select } from "../ui/Select";
+import {
+  isValidSafeId,
+  resolvePresetFamilyTag,
+  sanitizeSafeId,
+} from "../../lib/preset-utils";
 import type { PresetConfig, ProjectSummary } from "../../types/ipc";
 
 export type StudioSelection =
@@ -60,25 +67,29 @@ export function StudioSidebar({
   return (
     <aside
       aria-label="Navegação de Presets e Projetos"
-      className="flex h-full w-72 shrink-0 flex-col border-r border-white/10 bg-zinc-950/90"
+      className="flex h-full w-76 shrink-0 flex-col border-e border-white/[0.08] bg-[#0c0c0f]"
     >
-      <div className="flex items-center gap-2.5 border-b border-white/10 px-4 py-3">
-        <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-amber-400/25 bg-zinc-900/90 p-0.5">
+      {/* Brand Header */}
+      <div className="flex items-center gap-2.5 border-b border-white/[0.08] px-4 py-3.5">
+        <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-amber-400/30 bg-gradient-to-b from-amber-500/15 to-zinc-900 p-0.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)]">
           <img
             src="/logo.png"
             alt="Oh My T3Code"
-            className="size-full object-contain"
+            className="size-full rounded-lg object-contain"
           />
         </div>
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold text-zinc-100">
+          <div className="truncate text-sm font-semibold tracking-tight text-zinc-100">
             Oh My T3Code
           </div>
-          <div className="text-[11px] text-zinc-400">Preset Studio</div>
+          <div className="flex items-center gap-1 text-[11px] text-zinc-400">
+            <Sparkles className="size-3 text-amber-400/90" aria-hidden="true" />
+            <span>Preset Studio</span>
+          </div>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 space-y-5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 space-y-6">
         {/* Global Presets Group */}
         <section aria-labelledby="sidebar-global-presets" className="space-y-2">
           <div className="flex items-center justify-between px-1">
@@ -105,7 +116,7 @@ export function StudioSidebar({
           {creatingGlobal ? (
             <form
               onSubmit={handleCreateSubmit}
-              className="rounded-xl border border-indigo-500/30 bg-zinc-900/90 p-2.5 space-y-2"
+              className="surface-card rounded-xl border-indigo-500/30 bg-zinc-900/90 p-3 space-y-2.5"
             >
               <div>
                 <label
@@ -121,7 +132,7 @@ export function StudioSidebar({
                   onChange={(e) => setNewPresetId(e.target.value)}
                   placeholder="ex: rails-agy-squad"
                   autoFocus
-                  className="mt-1 w-full rounded-lg border border-white/15 bg-zinc-950 px-2.5 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  className="mt-1 h-8 w-full rounded-lg border border-white/15 bg-zinc-950 px-2.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 />
               </div>
               <div>
@@ -131,11 +142,12 @@ export function StudioSidebar({
                 >
                   Herdar de (`extends`)
                 </label>
-                <select
+                <Select
                   id="new-global-preset-base"
+                  sizeVariant="xs"
                   value={newPresetBase}
                   onChange={(e) => setNewPresetBase(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/15 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  wrapperClassName="mt-1"
                 >
                   <option value="">Nenhum (Base)</option>
                   {globalPresets.map((p) => (
@@ -143,7 +155,7 @@ export function StudioSidebar({
                       {p.id}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
               {createError ? (
                 <p role="alert" className="text-[11px] text-rose-300">
@@ -165,10 +177,13 @@ export function StudioSidebar({
             </form>
           ) : null}
 
-          <ul className="space-y-1">
+          <ul className="space-y-1.5">
             {globalPresets.map((preset) => {
               const active =
                 selection?.kind === "global" && selection.presetId === preset.id;
+              const family = resolvePresetFamilyTag(preset);
+              const roleCount = Object.keys(preset.roles).length;
+
               return (
                 <li key={preset.id}>
                   <button
@@ -176,25 +191,38 @@ export function StudioSidebar({
                     onClick={() => onSelectGlobal(preset.id)}
                     aria-current={active ? "page" : undefined}
                     className={[
-                      "flex w-full items-start gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors duration-150",
+                      "relative flex w-full items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-out",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
                       active
-                        ? "border-indigo-400/40 bg-indigo-500/15 text-zinc-100"
-                        : "border-transparent bg-transparent text-zinc-300 hover:bg-white/5 hover:text-zinc-100",
+                        ? "border-indigo-400/45 bg-indigo-500/[0.14] text-zinc-100 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]"
+                        : "border-transparent bg-transparent text-zinc-300 hover:border-white/[0.06] hover:bg-white/[0.04] hover:text-zinc-100",
                     ].join(" ")}
                   >
+                    {active ? (
+                      <span
+                        aria-hidden="true"
+                        className="absolute start-0 top-2 bottom-2 w-0.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(129,140,248,0.9)]"
+                      />
+                    ) : null}
                     <Layers
                       className={`mt-0.5 size-3.5 shrink-0 ${
                         active ? "text-indigo-300" : "text-zinc-400"
                       }`}
                       aria-hidden="true"
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-medium">{preset.name}</div>
-                      <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-zinc-400">
-                        <span className="font-mono">{preset.id}</span>
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-xs font-medium">
+                          {preset.name}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        <Badge tone={family.tone}>{family.label}</Badge>
+                        <span className="text-zinc-400 tabular-nums">
+                          {roleCount} {roleCount === 1 ? "role" : "roles"}
+                        </span>
                         {preset.extends ? (
-                          <span className="truncate text-indigo-300/80">
+                          <span className="truncate font-mono text-indigo-300/80">
                             ↳ {preset.extends}
                           </span>
                         ) : null}
@@ -221,27 +249,38 @@ export function StudioSidebar({
             </span>
           </div>
 
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {projects.map((project) => {
               const active =
                 selection?.kind === "project" && selection.projectId === project.projectId;
               const isImporting = importingProjectId === project.projectId;
+              const inheritsLabel = project.localPresetExtends
+                ? `extends: ${project.localPresetExtends}`
+                : project.localPresetId
+                  ? `preset: ${project.localPresetId}`
+                  : "sem preset local";
 
               return (
                 <li
                   key={project.projectId}
                   className={[
-                    "rounded-xl border transition-colors duration-150",
+                    "relative overflow-hidden rounded-xl border transition-[background-color,border-color,box-shadow] duration-150 ease-out",
                     active
-                      ? "border-indigo-400/40 bg-indigo-500/12"
-                      : "border-white/6 bg-zinc-900/40 hover:border-white/12",
+                      ? "border-indigo-400/45 bg-indigo-500/[0.12] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]"
+                      : "border-white/[0.07] bg-zinc-900/50 hover:border-white/[0.14] hover:bg-zinc-900/75",
                   ].join(" ")}
                 >
+                  {active ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute start-0 top-2 bottom-2 w-0.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(129,140,248,0.9)]"
+                    />
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => onSelectProject(project)}
                     aria-current={active ? "page" : undefined}
-                    className="flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   >
                     <FolderGit2
                       className={`mt-0.5 size-3.5 shrink-0 ${
@@ -249,36 +288,47 @@ export function StudioSidebar({
                       }`}
                       aria-hidden="true"
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-medium text-zinc-100">
-                        {project.title}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-xs font-medium text-zinc-100">
+                          {project.title}
+                        </span>
                         {project.hasLocalPreset ? (
-                          <Badge tone="emerald">Override</Badge>
+                          <Badge tone="emerald" dot>
+                            Override
+                          </Badge>
                         ) : (
                           <Badge tone="neutral">Global</Badge>
                         )}
-                        {project.detectedSquadSlug ? (
-                          <Badge tone="indigo">squad</Badge>
-                        ) : null}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                        <GitBranch className="size-2.5 shrink-0 text-zinc-500" aria-hidden="true" />
+                        <span className="truncate font-mono">{inheritsLabel}</span>
                       </div>
                     </div>
                   </button>
 
                   {project.detectedSquadSlug ? (
-                    <div className="border-t border-white/6 px-2.5 py-1.5">
+                    <div className="border-t border-white/[0.06] bg-zinc-950/35 px-2.5 py-1.5">
                       <Button
-                        variant="ghost"
+                        variant={project.hasLocalPreset ? "ghost" : "secondary"}
                         size="xs"
                         className="w-full justify-start text-[11px]"
                         disabled={isImporting}
                         onClick={() => onImportProjectSquad(project)}
                       >
-                        <Download className="size-3" aria-hidden="true" />
-                        {isImporting
-                          ? "Importando..."
-                          : "Importar Squad Existente"}
+                        <Download
+                          className={`size-3 ${
+                            project.hasLocalPreset ? "text-zinc-400" : "text-amber-300"
+                          }`}
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">
+                          {isImporting
+                            ? "Importando…"
+                            : "Importar Squad Existente"}
+                        </span>
                       </Button>
                     </div>
                   ) : null}

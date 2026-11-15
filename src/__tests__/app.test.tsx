@@ -200,5 +200,67 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         expect(screen.getByRole("status")).toHaveTextContent(/Sincronizado!/i);
       });
     });
+
+    it("supports 1-click model/thinking_level pills, Codex reasoningEffort pills, architecture summary, and selected-skills filter", async () => {
+      const user = userEvent.setup();
+      setLocationSearch("?view=studio");
+
+      render(<App />);
+
+      // Wait for Studio header architecture summary strip
+      expect(await screen.findByText(/Topologia: Intra-Thread/i)).toBeInTheDocument();
+      expect(screen.getByText(/Fallback: 3 níveis/i)).toBeInTheDocument();
+      expect(screen.getByText(/Papéis: 3/i)).toBeInTheDocument();
+
+      // Switch to Matriz de Papéis tab
+      await user.click(screen.getByRole("tab", { name: /Matriz de Papéis/i }));
+
+      // 1-click thinking_level pill: click xhigh for active role
+      const roleOptionsGroup = screen.getByRole("group", {
+        name: /thinking_level para/i,
+      });
+      const xhighBtn = within(roleOptionsGroup).getByRole("button", {
+        name: "xhigh",
+      });
+      await user.click(xhighBtn);
+      expect(xhighBtn).toHaveAttribute("aria-pressed", "true");
+
+      // Switch role instance to Codex via 1-click chip and verify reasoningEffort & serviceTier pills appear
+      await user.click(screen.getByRole("button", { name: "Codex" }));
+      expect(
+        screen.getByRole("group", { name: /reasoningEffort para Codex/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("group", { name: /serviceTier para Codex/i }),
+      ).toBeInTheDocument();
+
+      // Switch to Skills & MCPs tab and test "Apenas Selecionadas" filter
+      await user.click(screen.getByRole("tab", { name: /Skills & MCPs/i }));
+      await user.click(
+        screen.getByRole("button", { name: /Apenas Selecionadas/i }),
+      );
+      expect(
+        screen.getByRole("checkbox", { name: /tdd-and-testing/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("checkbox", { name: /rails-8-modern/i }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Popover UX details", () => {
+    it("displays semantic status pills, SQLite Read-Only footer, and focuses filter on Cmd+K", async () => {
+      const user = userEvent.setup();
+      setLocationSearch("?view=popover");
+
+      render(<App />);
+
+      expect(await screen.findByText("SQLite Read-Only")).toBeInTheDocument();
+      expect(screen.getAllByText("Sincronizado").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText("Squad s/ preset")).toBeInTheDocument();
+
+      await user.keyboard("{Meta>}k{/Meta}");
+      expect(screen.getByLabelText("Filtrar projetos")).toHaveFocus();
+    });
   });
 });

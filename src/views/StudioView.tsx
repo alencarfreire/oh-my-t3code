@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  Cpu,
   FileDiff,
+  GitBranch,
   Layers,
+  Network,
   Save,
   ShieldAlert,
   Sliders,
@@ -20,10 +23,15 @@ import {
   StudioSidebar,
   type StudioSelection,
 } from "../components/studio/StudioSidebar";
-import { Badge } from "../components/ui/Badge";
+import { Badge, getInstanceBadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { invokeIpc, listenStudioNavigate } from "../lib/ipc-client";
-import { clonePreset, createEmptyPreset } from "../lib/preset-utils";
+import {
+  clonePreset,
+  createEmptyPreset,
+  formatPrimaryOptionSummary,
+  resolveInstanceShortLabel,
+} from "../lib/preset-utils";
 import type {
   CompilePreviewResult,
   DashboardSnapshot,
@@ -367,16 +375,56 @@ export function StudioView({
     tabRefs.current[nextTab.id]?.focus();
   };
 
+  const roleCount = draftPreset ? Object.keys(draftPreset.roles).length : 0;
+  const fallbackCount = draftPreset ? draftPreset.fallbackChain.length : 0;
+  const activeRole =
+    draftPreset &&
+    ((selectedRoleId && draftPreset.roles[selectedRoleId]) ||
+      Object.values(draftPreset.roles)[0] ||
+      null);
+  const roleToolsCount = activeRole
+    ? activeRole.skills.length + activeRole.mcps.length
+    : 0;
+
+  const getTabBadgeCount = (tabId: StudioTabId): number | null => {
+    if (!draftPreset) return null;
+    if (tabId === "overview") return fallbackCount;
+    if (tabId === "roles") return roleCount;
+    if (tabId === "skills") return roleToolsCount;
+    if (tabId === "preview" && previewResult?.hasChanges) {
+      return (
+        previewResult.files.filter((f) => f.changed).length +
+        (previewResult.settingsPreview.changed ? 1 : 0)
+      );
+    }
+    return null;
+  };
+
   if (loading && !snapshot) {
     return (
-      <div className="flex h-full items-center justify-center bg-zinc-950 text-xs text-zinc-400">
-        Carregando Preset Studio...
+      <div className="surface-backdrop flex h-full items-center justify-center text-xs text-zinc-400">
+        Carregando Preset Studio…
       </div>
     );
   }
 
+  const orchLabel =
+    draftPreset && snapshot
+      ? resolveInstanceShortLabel(
+          draftPreset.orchestrator.providerInstanceId,
+          snapshot.providerInstances,
+        )
+      : null;
+  const orchOption = draftPreset
+    ? formatPrimaryOptionSummary(draftPreset.orchestrator.options)
+    : null;
+  const topologyLabel =
+    draftPreset?.topology === "issue-thread-orchestrator"
+      ? "Issue-Thread"
+      : "Intra-Thread";
+
   return (
-    <div className="flex h-full w-full overflow-hidden bg-zinc-950 text-zinc-100">
+    <div className="surface-backdrop flex h-full w-full overflow-hidden text-zinc-100">
       <StudioSidebar
         globalPresets={snapshot?.globalPresets ?? []}
         projects={snapshot?.projects ?? []}
@@ -389,69 +437,115 @@ export function StudioView({
       />
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Top Editor Header */}
-        <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-zinc-950/90 px-6 py-3.5">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-base font-semibold tracking-tight text-zinc-100">
+        {/* Top Editor Header + Visual Architecture Summary */}
+        <header className="shrink-0 border-b border-white/[0.08] bg-zinc-950/85 px-6 py-4 backdrop-blur-md space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="truncate text-base font-semibold tracking-tight text-zinc-100">
+                  {selection?.kind === "project" && projectMeta
+                    ? projectMeta.projectSlug
+                    : (draftPreset?.name ?? "Preset Studio")}
+                </h1>
+
+                {selection?.kind === "project" ? (
+                  <Badge tone="emerald" dot>
+                    Projeto · Override Local
+                  </Badge>
+                ) : (
+                  <Badge tone="indigo">
+                    <Layers className="size-3" aria-hidden="true" />
+                    Preset Global
+                  </Badge>
+                )}
+
+                {dirty ? (
+                  <Badge tone="amber" dot>
+                    Alterações não salvas
+                  </Badge>
+                ) : null}
+              </div>
+
+              <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-400">
                 {selection?.kind === "project" && projectMeta
-                  ? projectMeta.projectSlug
-                  : (draftPreset?.name ?? "Preset Studio")}
-              </h1>
-
-              {selection?.kind === "project" ? (
-                <Badge tone="emerald">Projeto · Override Local</Badge>
-              ) : (
-                <Badge tone="indigo">
-                  <Layers className="size-3" aria-hidden="true" />
-                  Preset Global
-                </Badge>
-              )}
-
-              {dirty ? <Badge tone="amber">Alterações não salvas</Badge> : null}
+                  ? projectMeta.localPresetPath
+                  : `~/.config/oh-my-t3code/presets/${draftPreset?.id ?? "preset"}.jsonc`}
+              </p>
             </div>
 
-            <p className="mt-0.5 truncate font-mono text-[11px] text-zinc-400">
-              {selection?.kind === "project" && projectMeta
-                ? projectMeta.localPresetPath
-                : `~/.config/oh-my-t3code/presets/${draftPreset?.id ?? "preset"}.jsonc`}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {selection?.kind === "global" ? (
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!draftPreset || saving}
-                onClick={() => void handleSaveGlobalPreset()}
-              >
-                <Save className="size-3.5" aria-hidden="true" />
-                Salvar Preset Global
-              </Button>
-            ) : (
-              <>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!draftPreset || saving}
-                  onClick={() => void handleSaveProjectOverride()}
-                >
-                  <Save className="size-3.5" aria-hidden="true" />
-                  Salvar Override
-                </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {selection?.kind === "global" ? (
                 <Button
                   variant="primary"
                   size="sm"
                   disabled={!draftPreset || saving}
-                  onClick={() => setActiveTab("preview")}
+                  onClick={() => void handleSaveGlobalPreset()}
                 >
-                  <UploadCloud className="size-3.5" aria-hidden="true" />
-                  Revisar Diff & Sincronizar
+                  <Save className="size-3.5" aria-hidden="true" />
+                  Salvar Preset Global
                 </Button>
-              </>
-            )}
+              ) : (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!draftPreset || saving}
+                    onClick={() => void handleSaveProjectOverride()}
+                  >
+                    <Save className="size-3.5" aria-hidden="true" />
+                    Salvar Override
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={!draftPreset || saving}
+                    onClick={() => setActiveTab("preview")}
+                  >
+                    <UploadCloud className="size-3.5" aria-hidden="true" />
+                    Revisar Diff & Sincronizar
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
+
+          {/* Visual Architecture Summary Strip */}
+          {draftPreset && snapshot ? (
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              <Badge
+                tone={getInstanceBadgeTone(
+                  draftPreset.orchestrator.providerInstanceId,
+                )}
+              >
+                <Cpu className="size-3" aria-hidden="true" />
+                <span>
+                  Orquestrador: {orchLabel} ·{" "}
+                  <span className="font-mono">
+                    {draftPreset.orchestrator.model}
+                  </span>
+                  {orchOption ? ` (${orchOption})` : ""}
+                </span>
+              </Badge>
+
+              <Badge tone="neutral">
+                <Network className="size-3 text-zinc-400" aria-hidden="true" />
+                <span>Topologia: {topologyLabel}</span>
+              </Badge>
+
+              <Badge tone="neutral" className="tabular-nums">
+                <GitBranch className="size-3 text-amber-300" aria-hidden="true" />
+                <span>
+                  Fallback: {fallbackCount}{" "}
+                  {fallbackCount === 1 ? "nível" : "níveis"}
+                </span>
+              </Badge>
+
+              <Badge tone="neutral" className="tabular-nums">
+                <Users className="size-3 text-indigo-300" aria-hidden="true" />
+                <span>Papéis: {roleCount}</span>
+              </Badge>
+            </div>
+          ) : null}
         </header>
 
         {/* Polite status region */}
@@ -485,15 +579,17 @@ export function StudioView({
           </div>
         ) : null}
 
-        {/* Accessible Tablist */}
+        {/* Accessible Tablist with discrete numeric badges */}
         <nav
           aria-label="Seções do Editor"
-          className="shrink-0 border-b border-white/10 bg-zinc-950/60 px-6"
+          className="shrink-0 border-b border-white/[0.08] bg-zinc-950/60 px-6"
         >
           <div role="tablist" className="flex items-center gap-1 overflow-x-auto">
             {STUDIO_TABS.map((tab, idx) => {
               const Icon = tab.icon;
               const selected = activeTab === tab.id;
+              const count = getTabBadgeCount(tab.id);
+
               return (
                 <button
                   key={tab.id}
@@ -509,7 +605,7 @@ export function StudioView({
                   onKeyDown={(e) => handleTabKeyDown(e, idx)}
                   className={[
                     "relative inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs font-medium whitespace-nowrap",
-                    "transition-[color,border-color] duration-150",
+                    "transition-[color,border-color] duration-150 ease-out",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400",
                     selected
                       ? "border-indigo-400 text-zinc-100"
@@ -517,7 +613,19 @@ export function StudioView({
                   ].join(" ")}
                 >
                   <Icon className="size-3.5" aria-hidden="true" />
-                  {tab.label}
+                  <span>{tab.label}</span>
+                  {count !== null ? (
+                    <span
+                      className={[
+                        "rounded-full px-1.5 py-0.5 text-[10px] leading-none tabular-nums",
+                        selected
+                          ? "bg-indigo-500/25 text-indigo-200"
+                          : "bg-white/[0.07] text-zinc-400",
+                      ].join(" ")}
+                    >
+                      {count}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
@@ -587,7 +695,7 @@ export function StudioView({
               ) : null}
             </>
           ) : (
-            <div className="rounded-2xl border border-dashed border-white/12 p-8 text-center text-xs text-zinc-400">
+            <div className="surface-card rounded-2xl border-dashed p-8 text-center text-xs text-zinc-400">
               Selecione um preset global ou projeto na barra lateral para iniciar a edição.
             </div>
           )}

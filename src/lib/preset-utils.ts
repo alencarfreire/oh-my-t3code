@@ -9,22 +9,26 @@ export const RECOMMENDED_MCPS = [
   {
     id: "ai-memory",
     label: "ai-memory",
-    description: "Wiki durável do projeto, handoffs, decisões e memória entre sessões.",
+    roleHint: "Memória & Handoffs",
+    description: "Memória durável do projeto, decisões de arquitetura e handoffs entre sessões.",
   },
   {
     id: "context7",
     label: "context7",
+    roleHint: "Docs Atualizadas",
     description: "Documentação atualizada de bibliotecas e frameworks (Tauri, React, Tailwind).",
   },
   {
     id: "playwright",
     label: "playwright",
-    description: "Automação de navegador, snapshots e testes E2E visuais.",
+    roleHint: "E2E & Visual",
+    description: "Automação de navegador, snapshots de acessibilidade e testes E2E visuais.",
   },
   {
     id: "linear",
     label: "linear",
-    description: "Leitura e atualização de issues, projetos e status no Linear.",
+    roleHint: "Issues & Status",
+    description: "Leitura e atualização de issues, projetos, ciclos e status no Linear.",
   },
 ] as const;
 
@@ -111,6 +115,141 @@ export const COMMON_ROLE_TEMPLATES: Record<string, Partial<RoleConfig>> = {
   },
 };
 
+const CURATED_MODELS_BY_PROVIDER: Record<string, string[]> = {
+  antigravity: [
+    "gemini-4-hydrogen",
+    "gemini-4-argon",
+    "gemini-3.8-flash",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+  ],
+  codex: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-luna"],
+  claudeAgent: ["claude-opus-4-1", "claude-sonnet-4-5"],
+  opencode: ["opencode-default"],
+  grok: ["grok-3"],
+};
+
+export interface ProviderOptionSpec {
+  key: string;
+  label: string;
+  values: readonly string[];
+}
+
+export function resolveProviderFamily(
+  instanceId: string,
+  instances: ProviderInstanceInfo[],
+): string {
+  const found = instances.find((i) => i.id === instanceId);
+  if (found?.provider) return found.provider;
+  if (instanceId.startsWith("antigravity")) return "antigravity";
+  if (instanceId === "codex") return "codex";
+  if (instanceId === "claudeAgent") return "claudeAgent";
+  if (instanceId === "opencode") return "opencode";
+  if (instanceId === "grok") return "grok";
+  return "antigravity";
+}
+
+export function getOptionSpecsForInstance(
+  instanceId: string,
+  instances: ProviderInstanceInfo[],
+): ProviderOptionSpec[] {
+  const family = resolveProviderFamily(instanceId, instances);
+  if (family === "antigravity") {
+    return [
+      {
+        key: "thinking_level",
+        label: "thinking_level",
+        values: ["low", "medium", "high", "xhigh"],
+      },
+    ];
+  }
+  if (family === "codex") {
+    return [
+      {
+        key: "reasoningEffort",
+        label: "reasoningEffort",
+        values: ["low", "medium", "high", "xhigh"],
+      },
+      {
+        key: "serviceTier",
+        label: "serviceTier",
+        values: ["default", "priority"],
+      },
+    ];
+  }
+  return [];
+}
+
+export function getModelsForInstance(
+  instanceId: string,
+  instances: ProviderInstanceInfo[],
+): string[] {
+  const found = instances.find((i) => i.id === instanceId);
+  const family = resolveProviderFamily(instanceId, instances);
+  const curated = CURATED_MODELS_BY_PROVIDER[family] ?? [];
+  const merged = new Set<string>([...(found?.models ?? []), ...curated]);
+  if (merged.size === 0) {
+    return ["gemini-4-hydrogen", "gemini-4-argon"];
+  }
+  return Array.from(merged);
+}
+
+export function normalizeOptionsForInstance(
+  instanceId: string,
+  currentOptions: Record<string, string>,
+  instances: ProviderInstanceInfo[],
+): Record<string, string> {
+  const family = resolveProviderFamily(instanceId, instances);
+  if (family === "antigravity") {
+    const level =
+      currentOptions.thinking_level ??
+      currentOptions.thinkingLevel ??
+      currentOptions.reasoningEffort ??
+      "high";
+    return { thinking_level: level };
+  }
+  if (family === "codex") {
+    const effort =
+      currentOptions.reasoningEffort ??
+      currentOptions.thinking_level ??
+      "high";
+    return {
+      reasoningEffort: effort,
+      serviceTier: currentOptions.serviceTier ?? "default",
+    };
+  }
+  return { ...currentOptions };
+}
+
+export function formatPrimaryOptionSummary(options: Record<string, string>): string | null {
+  const level = options.thinking_level ?? options.thinkingLevel ?? options.reasoningEffort;
+  if (level) return level;
+  const first = Object.entries(options)[0];
+  return first ? `${first[0]}=${first[1]}` : null;
+}
+
+export function resolvePresetFamilyTag(preset: PresetConfig): {
+  label: string;
+  tone: "indigo" | "emerald" | "amber" | "sky" | "neutral";
+} {
+  const id = preset.id.toLowerCase();
+  const base = (preset.extends ?? "").toLowerCase();
+  if (id.includes("hybrid") || base.includes("hybrid")) {
+    return { label: "Hybrid", tone: "amber" };
+  }
+  if (id.includes("codex") || base.includes("codex") || preset.orchestrator.providerInstanceId === "codex") {
+    return { label: "Codex", tone: "emerald" };
+  }
+  if (
+    id.includes("agy") ||
+    base.includes("agy") ||
+    preset.orchestrator.providerInstanceId.startsWith("antigravity")
+  ) {
+    return { label: "Dual Agy", tone: "indigo" };
+  }
+  return { label: "Custom", tone: "neutral" };
+}
+
 export function sanitizeSafeId(raw: string): string {
   return raw
     .trim()
@@ -140,26 +279,6 @@ export function resolveInstanceShortLabel(
   if (instanceId === "antigravity_2") return "Agy Principal";
   if (instanceId === "codex") return "Codex";
   return instanceId;
-}
-
-export function getModelsForInstance(
-  instanceId: string,
-  instances: ProviderInstanceInfo[],
-): string[] {
-  const found = instances.find((i) => i.id === instanceId);
-  if (found && found.models.length > 0) {
-    return found.models;
-  }
-  if (instanceId.startsWith("antigravity")) {
-    return ["gemini-4-hydrogen", "gemini-4-argon"];
-  }
-  if (instanceId === "codex") {
-    return ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-luna"];
-  }
-  if (instanceId === "claudeAgent") {
-    return ["claude-sonnet-4-5", "claude-opus-4-1"];
-  }
-  return ["gemini-4-hydrogen", "gemini-4-argon"];
 }
 
 export function createEmptyRole(id: string): RoleConfig {

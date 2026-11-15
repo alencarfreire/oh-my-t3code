@@ -1,5 +1,6 @@
 import { ShieldAlert } from "lucide-react";
 import { KeyValueEditor } from "../ui/KeyValueEditor";
+import { Select } from "../ui/Select";
 import { StringListEditor } from "../ui/StringListEditor";
 import type { ContentionPolicy, PresetConfig } from "../../types/ipc";
 
@@ -21,12 +22,11 @@ export function ContentionTab({ preset, onChange }: ContentionTabProps) {
 
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border border-white/10 bg-zinc-900/60 p-4 space-y-4">
+      <section className="surface-panel rounded-2xl p-5 space-y-5">
         <div className="flex items-start gap-2.5">
-          <ShieldAlert
-            className="mt-0.5 size-4 shrink-0 text-amber-300"
-            aria-hidden="true"
-          />
+          <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border border-amber-400/30 bg-amber-500/15 text-amber-300">
+            <ShieldAlert className="size-3.5" aria-hidden="true" />
+          </div>
           <div>
             <h3 className="text-sm font-semibold text-zinc-100">
               Política de Contenção & Isolamento (`contention`)
@@ -38,39 +38,39 @@ export function ContentionTab({ preset, onChange }: ContentionTabProps) {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-zinc-950/75 p-3">
+          <label className="surface-card flex cursor-pointer items-start gap-3 rounded-xl p-3.5 transition-colors hover:bg-zinc-900/90">
             <input
               type="checkbox"
               checked={preset.contention.singleTestDb}
               onChange={(e) =>
                 updateContention({ singleTestDb: e.target.checked })
               }
-              className="mt-0.5 size-4 rounded border-white/20 bg-zinc-900 text-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              className="mt-0.5 size-4 rounded border-white/20 bg-zinc-900 accent-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
             />
             <div>
               <div className="text-xs font-medium text-zinc-100">
                 Banco de Testes Único (`singleTestDb`)
               </div>
-              <p className="mt-0.5 text-[11px] text-zinc-400">
+              <p className="mt-0.5 text-[11px] leading-[1.4] text-zinc-400">
                 Serializa suítes de testes (ex: RSpec/SQLite) para impedir locks entre workers paralelos.
               </p>
             </div>
           </label>
 
-          <div className="rounded-xl border border-white/10 bg-zinc-950/75 p-3">
+          <div className="surface-card rounded-xl p-3.5">
             <label
               htmlFor="contention-isolation-select"
               className="block text-xs font-medium text-zinc-100"
             >
               Isolamento Padrão (`defaultIsolation`)
             </label>
-            <select
+            <Select
               id="contention-isolation-select"
               value={preset.contention.defaultIsolation}
               onChange={(e) =>
                 updateContention({ defaultIsolation: e.target.value })
               }
-              className="mt-2 w-full rounded-lg border border-white/12 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              wrapperClassName="mt-2"
             >
               <option value="shared">
                 shared — Ondas sequenciais no mesmo workspace
@@ -78,7 +78,7 @@ export function ContentionTab({ preset, onChange }: ContentionTabProps) {
               <option value="worktree">
                 worktree — Git worktrees isolados para frentes paralelas
               </option>
-            </select>
+            </Select>
           </div>
         </div>
 
@@ -96,6 +96,7 @@ export function ContentionTab({ preset, onChange }: ContentionTabProps) {
             items={preset.contention.gitIgnoredBuilds}
             placeholder="ex: target/, dist/, tmp/"
             monospace
+            displayMode="chips"
             onChange={(gitIgnoredBuilds) =>
               updateContention({ gitIgnoredBuilds })
             }
@@ -105,6 +106,8 @@ export function ContentionTab({ preset, onChange }: ContentionTabProps) {
             items={preset.contention.conflictFiles}
             placeholder="ex: package.json, Cargo.toml"
             monospace
+            displayMode="chips"
+            chipTone="rose"
             onChange={(conflictFiles) => updateContention({ conflictFiles })}
           />
         </div>
