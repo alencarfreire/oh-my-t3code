@@ -1,52 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Activity,
   AlertCircle,
   ArrowLeftRight,
   Check,
-  CheckCircle2,
   Cpu,
   FolderGit2,
+  Layers,
   RefreshCw,
+  Search,
   SlidersHorizontal,
-  XCircle,
-  Zap,
+  X,
 } from "lucide-react";
 import { Badge, getInstanceBadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { invokeIpc } from "../lib/ipc-client";
-import { formatRelativeTime, resolveInstanceShortLabel } from "../lib/preset-utils";
-import type { DashboardSnapshot, ProjectSummary, SubagentActivity } from "../types/ipc";
-
-function getSubagentStatusMeta(status: string) {
-  const normalized = status.toLowerCase();
-  if (normalized === "running" || normalized === "in_progress") {
-    return {
-      label: "Em execução",
-      tone: "emerald" as const,
-      isRunning: true,
-    };
-  }
-  if (normalized === "completed" || normalized === "done" || normalized === "succeeded") {
-    return {
-      label: "Concluído",
-      tone: "neutral" as const,
-      isRunning: false,
-    };
-  }
-  if (normalized === "failed" || normalized === "error" || normalized === "cancelled") {
-    return {
-      label: "Falhou",
-      tone: "rose" as const,
-      isRunning: false,
-    };
-  }
-  return {
-    label: status,
-    tone: "amber" as const,
-    isRunning: false,
-  };
-}
+import { resolveInstanceShortLabel } from "../lib/preset-utils";
+import type { DashboardSnapshot, ProjectSummary } from "../types/ipc";
 
 function defaultPresetForProject(
   project: ProjectSummary,
@@ -77,6 +46,7 @@ export function PopoverView() {
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
+  const [projectQuery, setProjectQuery] = useState("");
   const [selectedPresets, setSelectedPresets] = useState<Record<string, string>>({});
   const [busyProjectAction, setBusyProjectAction] = useState<Record<string, "sync" | "swap">>({});
   const [syncedProjectIds, setSyncedProjectIds] = useState<Record<string, boolean>>({});
@@ -123,23 +93,31 @@ export function PopoverView() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const runningSubagents = useMemo(() => {
-    if (!snapshot) return [];
-    return snapshot.subagents.filter((s) => {
-      const st = s.status.toLowerCase();
-      return st === "running" || st === "in_progress";
-    });
+  const syncedProjectsCount = useMemo(() => {
+    if (!snapshot) return 0;
+    return snapshot.projects.filter((project) => project.hasLocalPreset).length;
   }, [snapshot]);
 
-  const sortedSubagents = useMemo(() => {
+  const normalizedQuery = projectQuery.trim().toLowerCase();
+
+  const filteredProjects = useMemo(() => {
     if (!snapshot) return [];
-    return [...snapshot.subagents].sort((a, b) => {
-      const aRun = getSubagentStatusMeta(a.status).isRunning ? 0 : 1;
-      const bRun = getSubagentStatusMeta(b.status).isRunning ? 0 : 1;
-      if (aRun !== bRun) return aRun - bRun;
-      return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    if (!normalizedQuery) return snapshot.projects;
+    return snapshot.projects.filter((project) => {
+      const instanceLabel = resolveInstanceShortLabel(
+        project.activeInstanceId,
+        snapshot.providerInstances,
+      );
+      return (
+        project.title.toLowerCase().includes(normalizedQuery) ||
+        project.workspaceRoot.toLowerCase().includes(normalizedQuery) ||
+        (project.localPresetId?.toLowerCase().includes(normalizedQuery) ?? false) ||
+        (project.localPresetExtends?.toLowerCase().includes(normalizedQuery) ?? false) ||
+        (project.detectedSquadSlug?.toLowerCase().includes(normalizedQuery) ?? false) ||
+        instanceLabel.toLowerCase().includes(normalizedQuery)
+      );
     });
-  }, [snapshot]);
+  }, [snapshot, normalizedQuery]);
 
   const handleOpenStudio = async (projectId?: string | null) => {
     try {
@@ -217,70 +195,6 @@ export function PopoverView() {
     }
   };
 
-  const renderSubagentRow = (subagent: SubagentActivity) => {
-    const meta = getSubagentStatusMeta(subagent.status);
-    const instanceLabel = resolveInstanceShortLabel(
-      subagent.providerInstanceId,
-      snapshot?.providerInstances ?? [],
-    );
-    const model = subagent.resolvedModel ?? subagent.requestedModel ?? "modelo padrão";
-
-    return (
-      <li
-        key={subagent.subagentId}
-        className="rounded-xl border border-white/8 bg-zinc-900/75 px-3 py-2 transition-colors duration-150 hover:border-white/15"
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              {meta.isRunning ? (
-                <span className="relative flex size-2 shrink-0" aria-hidden="true">
-                  <span className="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-70" />
-                  <span className="relative inline-flex size-2 rounded-full bg-emerald-400" />
-                </span>
-              ) : meta.tone === "rose" ? (
-                <XCircle className="size-3.5 shrink-0 text-rose-400" aria-hidden="true" />
-              ) : (
-                <CheckCircle2 className="size-3.5 shrink-0 text-zinc-400" aria-hidden="true" />
-              )}
-              <span className="truncate text-xs font-medium text-zinc-100">
-                {subagent.title ?? subagent.role ?? subagent.subagentId}
-              </span>
-            </div>
-
-            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
-              {subagent.projectTitle ? (
-                <span className="truncate font-medium text-zinc-300">
-                  {subagent.projectTitle}
-                </span>
-              ) : null}
-              {subagent.role ? (
-                <span className="rounded bg-white/6 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
-                  {subagent.role}
-                </span>
-              ) : null}
-              <span className="text-zinc-500">·</span>
-              <span className="tabular-nums">{formatRelativeTime(subagent.updatedAt)}</span>
-            </div>
-          </div>
-
-          <Badge tone={meta.tone} className="shrink-0">
-            {meta.label}
-          </Badge>
-        </div>
-
-        <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px]">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <Badge tone={getInstanceBadgeTone(subagent.providerInstanceId)}>
-              {instanceLabel}
-            </Badge>
-            <span className="truncate font-mono text-[10px] text-zinc-400">{model}</span>
-          </div>
-        </div>
-      </li>
-    );
-  };
-
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-zinc-950/95 text-zinc-100">
       {/* Compact macOS Menu Bar Header */}
@@ -297,21 +211,15 @@ export function PopoverView() {
             <h1 className="truncate text-xs font-semibold tracking-tight text-zinc-100">
               Oh My T3Code
             </h1>
-            <div className="mt-0.5 flex items-center gap-1.5">
-              {runningSubagents.length > 0 ? (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-300">
-                  <span className="relative flex size-1.5" aria-hidden="true">
-                    <span className="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex size-1.5 rounded-full bg-emerald-400" />
-                  </span>
-                  <Zap className="size-3" aria-hidden="true" />
-                  <span className="tabular-nums">{runningSubagents.length} ativos</span>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-zinc-400">
+              <Layers className="size-3 shrink-0 text-indigo-300" aria-hidden="true" />
+              {snapshot ? (
+                <span className="truncate tabular-nums">
+                  {syncedProjectsCount}/{snapshot.projects.length} sincronizados ·{" "}
+                  {snapshot.globalPresets.length} presets
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400">
-                  <Activity className="size-3" aria-hidden="true" />
-                  Idle
-                </span>
+                <span className="truncate">Presets & 1-Click Sync</span>
               )}
             </div>
           </div>
@@ -366,57 +274,77 @@ export function PopoverView() {
       ) : null}
 
       {/* Main Scrollable Content (strictly no horizontal overflow) */}
-      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3.5 py-3 space-y-4">
+      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3.5 py-3 space-y-3">
         {loading && !snapshot ? (
           <div className="space-y-3 py-6 text-center text-xs text-zinc-400">
             Carregando estado do T3 Code...
           </div>
         ) : snapshot ? (
-          <>
-            {/* Section 1: Running / Recent Subagents */}
-            <section aria-labelledby="popover-subagents-heading" className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h2
-                  id="popover-subagents-heading"
-                  className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400"
-                >
-                  Subagentes (`delegate_task`)
-                </h2>
-                <span className="text-[11px] text-zinc-500 tabular-nums">
-                  {runningSubagents.length} em execução · {snapshot.subagents.length} total
-                </span>
+          <section aria-labelledby="popover-projects-heading" className="space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <h2
+                id="popover-projects-heading"
+                className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400"
+              >
+                Projetos & 1-Click Sync
+              </h2>
+              <span className="text-[11px] text-zinc-500 tabular-nums">
+                {normalizedQuery
+                  ? `${filteredProjects.length} de ${snapshot.projects.length}`
+                  : `${snapshot.projects.length} projetos`}
+              </span>
+            </div>
+
+            {snapshot.projects.length > 1 ? (
+              <div className="relative">
+                <label htmlFor="popover-project-filter" className="sr-only">
+                  Filtrar projetos
+                </label>
+                <Search
+                  className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500"
+                  aria-hidden="true"
+                />
+                <input
+                  id="popover-project-filter"
+                  type="search"
+                  value={projectQuery}
+                  onChange={(e) => setProjectQuery(e.target.value)}
+                  placeholder="Filtrar projetos, preset ou instância..."
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900/80 py-1.5 pl-8 pr-7 text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                />
+                {projectQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setProjectQuery("")}
+                    aria-label="Limpar filtro de projetos"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  >
+                    <X className="size-3.5" aria-hidden="true" />
+                  </button>
+                ) : null}
               </div>
+            ) : null}
 
-              {sortedSubagents.length === 0 ? (
-                <div className="rounded-xl border border-white/8 bg-zinc-900/50 px-3 py-3 text-center text-xs text-zinc-400">
-                  Nenhum subagente registrado no T3 Code ainda.
-                </div>
-              ) : (
-                <ul className="space-y-2">{sortedSubagents.slice(0, 4).map(renderSubagentRow)}</ul>
-              )}
-            </section>
-
-            {/* Section 2: T3 Code Projects & 1-Click Preset Switch */}
-            <section aria-labelledby="popover-projects-heading" className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h2
-                  id="popover-projects-heading"
-                  className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400"
-                >
-                  Projetos & 1-Click Sync
-                </h2>
-                <span className="text-[11px] text-zinc-500 tabular-nums">
-                  {snapshot.projects.length} projetos
-                </span>
+            {snapshot.projects.length === 0 ? (
+              <div className="rounded-xl border border-white/8 bg-zinc-900/50 px-3 py-3 text-center text-xs text-zinc-400">
+                Nenhum projeto encontrado em statev2.sqlite.
               </div>
-
-              {snapshot.projects.length === 0 ? (
-                <div className="rounded-xl border border-white/8 bg-zinc-900/50 px-3 py-3 text-center text-xs text-zinc-400">
-                  Nenhum projeto encontrado em statev2.sqlite.
-                </div>
-              ) : (
-                <ul className="space-y-2.5">
-                  {snapshot.projects.map((project) => {
+            ) : filteredProjects.length === 0 ? (
+              <div className="rounded-xl border border-white/8 bg-zinc-900/50 px-3 py-4 text-center space-y-2">
+                <p className="text-xs text-zinc-400">
+                  Nenhum projeto corresponde a &ldquo;{projectQuery.trim()}&rdquo;.
+                </p>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setProjectQuery("")}
+                >
+                  Limpar filtro
+                </Button>
+              </div>
+            ) : (
+              <ul className="space-y-2.5">
+                {filteredProjects.map((project) => {
                     const selectedPresetId =
                       selectedPresets[project.projectId] ??
                       defaultPresetForProject(project, snapshot);
@@ -532,12 +460,11 @@ export function PopoverView() {
                           </Button>
                         </div>
                       </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-          </>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
         ) : null}
       </main>
     </div>

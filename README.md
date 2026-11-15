@@ -16,9 +16,9 @@ It brings `oh-my-opencode-slim`-style declarative **Global Presets** (`~/.config
 ### Key Features (macOS MVP)
 
 1. **macOS Menu Bar Popover (`~380×500px`, `ActivationPolicy::Accessory`):**
-   - **Live Subagents Monitor:** Real-time visibility into active and recent `delegate_task` runs from `~/.t3/userdata/statev2.sqlite` (`orchestration_v2_projection_subagents`).
+   - **Synced Projects Overview & Quick Filter:** Compact summary of synchronized projects and available global presets with instant project filtering.
    - **1-Click Preset Switch & Sync:** Switch any T3 Code project between global presets (`agy-dual`, `codex-squad`, `hybrid-agy-codex`) and immediately compile `<repo>/.agents/skills/<project>-squad/` + update `~/.t3/userdata/settings.json`.
-   - **Quick Instance Swap (`⇄`):** Toggle primary Antigravity instance (`antigravity` Agy Veca ⇄ `antigravity_2` Agy Principal) with 1 click when quota gets tight.
+   - **Quick Instance Swap (`⇄`):** Toggle primary Antigravity instance (`antigravity` Agy Veca ⇄ `antigravity_2` Agy Principal) with 1 click when quota gets tight, plus 1-click access to **Preset Studio**.
 2. **Preset Studio Window (`1120×760px`):**
    - Visual editor for **Global Presets** and **Project Overrides** (`extends` inheritance, topology `intra-thread-squad` vs `issue-thread-orchestrator`, contention rules, and ordered **Fallback Chains**).
    - **Role × Model Matrix:** Configure roles (`backend`, `frontend`, `rust-core`, `crystal`, `meta-sync`, `fixer`, `qa-reviewer`, `delivery-manager`) with provider instances, models, and reasoning/thinking options.

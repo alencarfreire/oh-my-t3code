@@ -10,7 +10,7 @@ function setLocationSearch(search: string) {
 
 describe("Oh My T3Code — Popover & Preset Studio", () => {
   describe("Menu Bar Popover View", () => {
-    it("renders active subagents, T3 projects, supports 1-click preset sync, instance swap, and Escape close", async () => {
+    it("renders synced/presets summary, filters T3 projects, supports 1-click preset sync, instance swap, and Escape close without subagent monitor", async () => {
       const user = userEvent.setup();
       setLocationSearch("?view=popover");
 
@@ -19,16 +19,17 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
 
       render(<App />);
 
-      // Header live status badge, logo & subagent list
+      // Header logo & synced/presets summary (no redundant subagents badge or list)
       expect(await screen.findByText("Oh My T3Code")).toBeInTheDocument();
       expect(screen.getByAltText("Oh My T3Code")).toHaveAttribute("src", "/logo.png");
-      expect(screen.getByText("2 ativos")).toBeInTheDocument();
+      expect(screen.getByText("2/3 sincronizados · 3 presets")).toBeInTheDocument();
+      expect(screen.queryByText("2 ativos")).not.toBeInTheDocument();
       expect(
-        screen.getByText("Implementar Popover & Preset Studio (Onda 2)"),
-      ).toBeInTheDocument();
+        screen.queryByRole("region", { name: /Subagentes/i }),
+      ).not.toBeInTheDocument();
       expect(
-        screen.getByText("Otimizar queries de conciliação financeira"),
-      ).toBeInTheDocument();
+        screen.queryByText("Implementar Popover & Preset Studio (Onda 2)"),
+      ).not.toBeInTheDocument();
 
       // Projects section
       const projectsSection = screen.getByRole("region", {
@@ -37,6 +38,24 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       expect(within(projectsSection).getByText("oh-my-t3code")).toBeInTheDocument();
       expect(within(projectsSection).getByText("cabrito")).toBeInTheDocument();
       expect(within(projectsSection).getByText("dashboard-meta")).toBeInTheDocument();
+
+      // Filter projects quickly and clear filter
+      const filterInput = screen.getByLabelText("Filtrar projetos");
+      await user.type(filterInput, "cabrito");
+      expect(within(projectsSection).getByText("1 de 3")).toBeInTheDocument();
+      expect(within(projectsSection).getByText("cabrito")).toBeInTheDocument();
+      expect(
+        within(projectsSection).queryByText("oh-my-t3code"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(projectsSection).queryByText("dashboard-meta"),
+      ).not.toBeInTheDocument();
+
+      await user.click(
+        screen.getByRole("button", { name: "Limpar filtro de projetos" }),
+      );
+      expect(within(projectsSection).getByText("3 projetos")).toBeInTheDocument();
+      expect(within(projectsSection).getByText("oh-my-t3code")).toBeInTheDocument();
 
       // Change preset dropdown for cabrito and click Sync
       const cabritoSelect = screen.getByLabelText("Preset para cabrito");
@@ -52,6 +71,7 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
         );
       });
       expect(screen.getByText("Sincronizado!")).toBeInTheDocument();
+      expect(screen.getByText("3/3 sincronizados · 3 presets")).toBeInTheDocument();
 
       // Click 1-click Swap Instance button on oh-my-t3code
       const swapBtn = screen.getByRole("button", {

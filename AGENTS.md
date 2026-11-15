@@ -22,9 +22,9 @@ Ele permite monitorar subagentes em execução no T3 Code em tempo real, alterna
 
 ### 2. Frontend — React 19 + TypeScript + Vite + Tailwind CSS v4 (`src/`)
 1. **Menu Bar Popover View (~380x500px):**
-   - Monitor ao vivo de subagentes em execução (atividade de `delegate_task` vinda de `orchestration_v2_projection_subagents`).
-   - Lista de projetos do T3 Code com dropdown de troca rápida de Preset em 1 clique e botão de **Sync**.
-   - Toggle rápido de troca de provedor/instância (`antigravity` / `antigravity_2`).
+   - Resumo de projetos sincronizados / presets globais disponíveis e filtro rápido de projetos do T3 Code.
+   - Lista de projetos do T3 Code com dropdown de troca rápida de Preset em 1 clique, botão de **Sync** e acesso direto ao **Preset Studio**.
+   - Toggle rápido de troca de provedor/instância (`antigravity` Agy Veca ⇄ `antigravity_2` Agy Principal).
 2. **Preset Studio Window:**
    - Editor completo de **Global Presets** (`~/.config/oh-my-t3code/presets/*.jsonc`) e **Project Overrides** (`<repo>/.t3code/preset.jsonc`) com suporte a herança `extends`.
    - Matriz **Role × Model × Fallback Chain** (`gemini-4-hydrogen`, `gemini-4-argon`, `thinking_level`, instâncias e cadeia de fallback).
