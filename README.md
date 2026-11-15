@@ -75,6 +75,7 @@ When the repository (or release asset URL) is publicly accessible:
 
 ```bash
 brew tap alencarfreire/oh-my-t3code https://github.com/alencarfreire/oh-my-t3code.git
+brew trust alencarfreire/oh-my-t3code
 brew install --cask alencarfreire/oh-my-t3code/oh-my-t3code
 ```
 
