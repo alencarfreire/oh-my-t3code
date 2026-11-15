@@ -1,12 +1,18 @@
 use oh_my_t3code_lib::{
-    compiler::{apply_preset_to_project, compile_preset_preview, swap_project_primary_instance},
+    compiler::{
+        apply_preset_to_project, compile_preset_preview, remove_project_override,
+        set_global_preset_config, set_project_preset_enabled, swap_global_instance,
+        swap_project_primary_instance,
+    },
     get_dashboard_snapshot_from_paths,
     importer::import_existing_squad,
     models::{AppPaths, PresetConfig, RoleConfig},
     preset_engine::{
-        ensure_seed_presets, get_project_preset, list_global_presets, looks_like_mojibake,
-        parse_jsonc_preset, resolve_global_preset, save_project_preset,
+        ensure_seed_presets, get_project_preset, list_global_presets, local_preset_path,
+        looks_like_mojibake, parse_jsonc_preset, resolve_global_preset, save_project_preset,
+        OMOS_CANONICAL_ROLES,
     },
+    t3_reader::read_t3_settings,
 };
 use rusqlite::Connection;
 use serde_json::Value;
@@ -201,10 +207,23 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     let snapshot = get_dashboard_snapshot_from_paths(&paths).unwrap();
     assert!(snapshot.sqlite_available);
     assert!(snapshot.settings_available);
+    assert_eq!(snapshot.global_config.active_global_preset_id, "agy-dual");
+    assert!(snapshot.global_config.enabled);
     assert_eq!(snapshot.projects.len(), 2);
     assert_eq!(snapshot.subagents.len(), 2);
     assert_eq!(snapshot.skills.len(), 3);
     assert_eq!(snapshot.global_presets.len(), 3);
+    for gp in &snapshot.global_presets {
+        assert!(gp.enabled);
+        for role_id in OMOS_CANONICAL_ROLES {
+            assert!(
+                gp.roles.contains_key(role_id),
+                "preset {} missing OMOS role {}",
+                gp.id,
+                role_id
+            );
+        }
+    }
 
     let proj_agy = snapshot
         .projects
@@ -213,6 +232,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         .expect("proj-agy present");
     assert_eq!(proj_agy.title, "projeto-teste-agy");
     assert_eq!(proj_agy.active_subagent_count, 1);
+    assert!(!proj_agy.has_custom_override);
 
     let proj_codex = snapshot
         .projects
@@ -221,6 +241,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         .expect("proj-codex present");
     assert_eq!(proj_codex.title, "projeto-teste-codex");
     assert_eq!(proj_codex.active_subagent_count, 0);
+    assert!(!proj_codex.has_custom_override);
 
     // Passo 3: compile_preset_preview para projeto-teste-agy (agy-dual) e projeto-teste-codex (codex-squad)
     let codex_squad = resolve_global_preset(&paths.presets_dir, "codex-squad").unwrap();
@@ -233,18 +254,13 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         .files
         .iter()
         .any(|f| f.relative_path == ".agents/skills/projeto-teste-agy-squad/SKILL.md"));
-    assert!(agy_preview
-        .files
-        .iter()
-        .any(|f| f.relative_path == ".agents/skills/projeto-teste-agy-squad/roles/backend.md"));
-    assert!(agy_preview
-        .files
-        .iter()
-        .any(|f| f.relative_path == ".agents/skills/projeto-teste-agy-squad/roles/frontend.md"));
-    assert!(agy_preview
-        .files
-        .iter()
-        .any(|f| f.relative_path == ".agents/skills/projeto-teste-agy-squad/roles/qa-reviewer.md"));
+    for role_id in OMOS_CANONICAL_ROLES {
+        let expected = format!(".agents/skills/projeto-teste-agy-squad/roles/{role_id}.md");
+        assert!(
+            agy_preview.files.iter().any(|f| f.relative_path == expected),
+            "missing compiled preview for {expected}"
+        );
+    }
 
     let codex_preview =
         compile_preset_preview(&paths, "proj-codex", codex_ws.to_str().unwrap(), &codex_squad)
@@ -254,7 +270,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     assert!(codex_preview
         .files
         .iter()
-        .any(|f| f.relative_path == ".agents/skills/projeto-teste-codex-squad/roles/delivery-manager.md"));
+        .any(|f| f.relative_path == ".agents/skills/projeto-teste-codex-squad/roles/oracle.md"));
 
     // Passo 4: apply_preset_to_project em projeto-teste-agy e projeto-teste-codex
     let agy_sync = apply_preset_to_project(
@@ -271,9 +287,9 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
 
     let agy_squad_dir = agy_ws.join(".agents/skills/projeto-teste-agy-squad");
     assert!(agy_squad_dir.join("SKILL.md").exists());
-    assert!(agy_squad_dir.join("roles/backend.md").exists());
-    assert!(agy_squad_dir.join("roles/frontend.md").exists());
-    assert!(agy_squad_dir.join("roles/qa-reviewer.md").exists());
+    for role_id in OMOS_CANONICAL_ROLES {
+        assert!(agy_squad_dir.join(format!("roles/{role_id}.md")).exists());
+    }
 
     let bak_path = userdata_dir.join("settings.json.bak");
     assert!(bak_path.exists());
@@ -337,6 +353,7 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
         name: "Projeto Teste Agy — Configuração Avançada".to_string(),
         description: "Herança de agy-dual com papel dedicado de observabilidade e acentuação íntegra (Agy Principal ↔ Agy Veca).".to_string(),
         extends: Some("agy-dual".to_string()),
+        enabled: true,
         topology: "intra-thread-squad".to_string(),
         orchestrator: agy_dual.orchestrator.clone(),
         fallback_chain: agy_dual.fallback_chain.clone(),
@@ -352,8 +369,8 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     )
     .unwrap();
     assert!(saved_proj.has_local_override);
-    assert_eq!(saved_proj.resolved_preset.roles.len(), 4);
-    assert!(saved_proj.resolved_preset.roles.contains_key("backend"));
+    assert_eq!(saved_proj.resolved_preset.roles.len(), 6);
+    assert!(saved_proj.resolved_preset.roles.contains_key("fixer"));
     assert!(saved_proj.resolved_preset.roles.contains_key("observabilidade"));
 
     apply_preset_to_project(
@@ -425,4 +442,150 @@ fn end_to_end_preset_configuration_compilation_execution_and_import() {
     let reloaded = get_project_preset(&paths, "proj-agy", agy_ws.to_str().unwrap(), None).unwrap();
     assert!(reloaded.has_local_override);
     assert!(reloaded.resolved_preset.roles.contains_key("observabilidade"));
+}
+
+#[test]
+fn vtech_110_global_config_toggle_and_override_filtering_flow() {
+    let tmp = tempdir().unwrap();
+    let t3_home = tmp.path().join(".t3");
+    let userdata_dir = t3_home.join("userdata");
+    let presets_dir = tmp.path().join("config").join("presets");
+    let skills_root = tmp.path().join("skills");
+    let agy_ws = tmp.path().join("projeto-teste-agy");
+    let codex_ws = tmp.path().join("projeto-teste-codex");
+
+    fs::create_dir_all(&userdata_dir).unwrap();
+    fs::create_dir_all(&agy_ws).unwrap();
+    fs::create_dir_all(&codex_ws).unwrap();
+
+    seed_test_sqlite(&userdata_dir.join("statev2.sqlite"), &agy_ws, &codex_ws);
+    seed_test_skills(&skills_root);
+
+    let settings_path = userdata_dir.join("settings.json");
+    let initial_settings = serde_json::json!({
+        "favorites": ["proj-agy"],
+        "customUserPreference": { "keep": 42 },
+        "providerInstances": {
+            "antigravity": { "driver": "antigravity", "displayName": "Agy Veca", "enabled": true },
+            "antigravity_2": { "driver": "antigravity", "displayName": "Agy Principal", "enabled": true },
+            "codex": { "driver": "codex", "displayName": "Codex", "enabled": true }
+        }
+    });
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&initial_settings).unwrap(),
+    )
+    .unwrap();
+
+    let paths = AppPaths {
+        t3_home,
+        presets_dir,
+        skill_roots: vec![("skillshare".to_string(), skills_root)],
+    };
+
+    // 1. Default snapshot when config.jsonc doesn't exist: agy-dual + enabled: true + no overrides
+    let snap0 = get_dashboard_snapshot_from_paths(&paths).unwrap();
+    assert_eq!(snap0.global_config.active_global_preset_id, "agy-dual");
+    assert!(snap0.global_config.enabled);
+    assert!(snap0.projects.iter().all(|p| !p.has_custom_override));
+    assert!(snap0.projects.iter().all(|p| p.preset_enabled));
+
+    // 2. set_global_preset_config syncs defaultModelSelection & fallbackModelSelection
+    let snap1 = set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+    assert_eq!(
+        snap1.default_model_selection.as_ref().unwrap().instance_id,
+        "antigravity_2"
+    );
+    assert_eq!(
+        snap1.fallback_model_selection.as_ref().unwrap().instance_id,
+        "antigravity"
+    );
+    let settings_after_global: Value =
+        serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(
+        settings_after_global["customUserPreference"],
+        initial_settings["customUserPreference"]
+    );
+    assert!(userdata_dir.join("settings.json.bak").exists());
+
+    // swap_global_instance toggles antigravity_2 -> antigravity
+    let snap2 = swap_global_instance(&paths).unwrap();
+    assert_eq!(
+        snap2.default_model_selection.as_ref().unwrap().instance_id,
+        "antigravity"
+    );
+    assert_eq!(
+        snap2.fallback_model_selection.as_ref().unwrap().instance_id,
+        "antigravity_2"
+    );
+
+    // 3. Apply custom override (codex-squad) to proj-codex -> has_custom_override == true
+    apply_preset_to_project(
+        &paths,
+        "proj-codex",
+        codex_ws.to_str().unwrap(),
+        Some("codex-squad".to_string()),
+        None,
+    )
+    .unwrap();
+    let snap3 = get_dashboard_snapshot_from_paths(&paths).unwrap();
+    let p_agy = snap3
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-agy")
+        .unwrap();
+    let p_codex = snap3
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-codex")
+        .unwrap();
+    assert!(!p_agy.has_custom_override);
+    assert!(p_codex.has_custom_override);
+    assert!(p_codex.preset_enabled);
+
+    // 4. Disable proj-codex preset -> preserves .t3code/preset.jsonc (enabled: false) & removes settings override
+    set_project_preset_enabled(&paths, "proj-codex", codex_ws.to_str().unwrap(), false).unwrap();
+    assert!(local_preset_path(&codex_ws).exists());
+    let settings_disabled = read_t3_settings(&settings_path);
+    assert!(!settings_disabled.project_overrides.contains_key("proj-codex"));
+    let snap4 = get_dashboard_snapshot_from_paths(&paths).unwrap();
+    let p_codex_off = snap4
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-codex")
+        .unwrap();
+    assert!(!p_codex_off.preset_enabled);
+
+    // Re-enable proj-codex -> restores settings override
+    set_project_preset_enabled(&paths, "proj-codex", codex_ws.to_str().unwrap(), true).unwrap();
+    let settings_reenabled = read_t3_settings(&settings_path);
+    assert!(settings_reenabled.project_overrides.contains_key("proj-codex"));
+
+    // 5. remove_project_override reverts proj-codex back to has_custom_override == false
+    let snap5 = remove_project_override(&paths, "proj-codex", codex_ws.to_str().unwrap()).unwrap();
+    assert!(!local_preset_path(&codex_ws).exists());
+    let settings_removed = read_t3_settings(&settings_path);
+    assert!(!settings_removed.project_overrides.contains_key("proj-codex"));
+    let p_codex_removed = snap5
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-codex")
+        .unwrap();
+    assert!(!p_codex_removed.has_custom_override);
+
+    // Manual project-specific .agents/skills/*-squad/SKILL.md triggers has_custom_override == true
+    let manual_squad_dir = agy_ws.join(".agents").join("skills").join("projeto-teste-agy-squad");
+    fs::create_dir_all(&manual_squad_dir).unwrap();
+    fs::write(
+        manual_squad_dir.join("SKILL.md"),
+        "---\nname: projeto-teste-agy-squad\ndescription: Custom hand-authored squad\n---\n# Custom Squad\n",
+    )
+    .unwrap();
+    let snap6 = get_dashboard_snapshot_from_paths(&paths).unwrap();
+    let p_agy_manual = snap6
+        .projects
+        .iter()
+        .find(|p| p.project_id == "proj-agy")
+        .unwrap();
+    assert!(p_agy_manual.has_custom_override);
 }

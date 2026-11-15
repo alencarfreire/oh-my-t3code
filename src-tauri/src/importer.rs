@@ -301,6 +301,7 @@ pub fn import_existing_squad(
             "Preset importado automaticamente de .agents/skills/{squad_slug}/ (base {base_preset_id})."
         ),
         extends: Some(base_preset_id.to_string()),
+        enabled: true,
         topology: if is_codex {
             "issue-thread-orchestrator".to_string()
         } else {

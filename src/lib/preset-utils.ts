@@ -306,6 +306,7 @@ export function createEmptyPreset(id: string, extendsId: string | null = "agy-du
     name: id,
     description: "",
     extends: extendsId,
+    enabled: true,
     topology: "intra-thread-squad",
     orchestrator: {
       providerInstanceId: "antigravity_2",

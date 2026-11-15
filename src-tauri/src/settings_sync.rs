@@ -1,6 +1,7 @@
 use crate::models::{AppError, AppResult, PresetConfig, SettingsOverridePreview};
 use crate::preset_engine::atomic_write_file;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -75,21 +76,22 @@ pub fn compute_unified_diff(old_label: &str, new_label: &str, old_text: &str, ne
     diff
 }
 
-/// Builds the T3 Code `projectSettingsOverrides[projectId]` JSON value for a preset.
-pub fn build_project_override_value(preset: &PresetConfig) -> Value {
+/// Builds a T3 Code `ModelSelection` JSON object (`instanceId`, `model`, `options`).
+pub fn build_model_selection_value(
+    provider_instance_id: &str,
+    model: &str,
+    options: &BTreeMap<String, String>,
+) -> Value {
     let mut selection = Map::new();
     selection.insert(
         "instanceId".to_string(),
-        Value::String(preset.orchestrator.provider_instance_id.clone()),
+        Value::String(provider_instance_id.to_string()),
     );
-    selection.insert(
-        "model".to_string(),
-        Value::String(preset.orchestrator.model.clone()),
-    );
+    selection.insert("model".to_string(), Value::String(model.to_string()));
 
-    if !preset.orchestrator.options.is_empty() {
-        let mut normalized = std::collections::BTreeMap::new();
-        for (k, v) in &preset.orchestrator.options {
+    if !options.is_empty() {
+        let mut normalized = BTreeMap::new();
+        for (k, v) in options {
             if k == "thinkingLevel" {
                 normalized
                     .entry("thinking_level".to_string())
@@ -110,8 +112,18 @@ pub fn build_project_override_value(preset: &PresetConfig) -> Value {
         selection.insert("options".to_string(), Value::Array(opts));
     }
 
+    Value::Object(selection)
+}
+
+/// Builds the T3 Code `projectSettingsOverrides[projectId]` JSON value for a preset.
+pub fn build_project_override_value(preset: &PresetConfig) -> Value {
+    let selection = build_model_selection_value(
+        &preset.orchestrator.provider_instance_id,
+        &preset.orchestrator.model,
+        &preset.orchestrator.options,
+    );
     let mut wrapper = Map::new();
-    wrapper.insert("defaultModelSelection".to_string(), Value::Object(selection));
+    wrapper.insert("defaultModelSelection".to_string(), selection);
     Value::Object(wrapper)
 }
 
@@ -223,6 +235,102 @@ pub fn sync_project_settings(
     Ok((backup_path, new_override))
 }
 
+/// Backs up `settings.json` to `settings.json.bak` and atomically updates `defaultModelSelection`
+/// and `fallbackModelSelection` (from `preset.fallback_chain[0]`, if present), preserving all other keys.
+pub fn sync_global_settings(
+    settings_path: &Path,
+    preset: &PresetConfig,
+) -> AppResult<Option<PathBuf>> {
+    let mut backup_path: Option<PathBuf> = None;
+    let mut root: Value = if settings_path.exists() {
+        let existing_bytes = fs::read(settings_path)?;
+        let parsed: Value = serde_json::from_slice(&existing_bytes)?;
+        if !parsed.is_object() {
+            return Err(AppError::InvalidInput(
+                "settings.json root must be a JSON object".into(),
+            ));
+        }
+
+        let bak = settings_path.with_file_name("settings.json.bak");
+        atomic_write_file(&bak, &existing_bytes)?;
+        backup_path = Some(bak);
+        parsed
+    } else {
+        Value::Object(Map::new())
+    };
+
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| AppError::InvalidInput("settings.json root is not an object".into()))?;
+
+    let default_sel = build_model_selection_value(
+        &preset.orchestrator.provider_instance_id,
+        &preset.orchestrator.model,
+        &preset.orchestrator.options,
+    );
+    root_obj.insert("defaultModelSelection".to_string(), default_sel);
+
+    if let Some(level1) = preset.fallback_chain.first() {
+        let fallback_sel = build_model_selection_value(
+            &level1.provider_instance_id,
+            &level1.model,
+            &level1.options,
+        );
+        root_obj.insert("fallbackModelSelection".to_string(), fallback_sel);
+    }
+
+    let serialized = format!("{}\n", serde_json::to_string_pretty(&root)?);
+    atomic_write_file(settings_path, serialized.as_bytes())?;
+
+    Ok(backup_path)
+}
+
+/// Backs up `settings.json` to `settings.json.bak` and atomically removes `projectSettingsOverrides[project_id]`.
+pub fn remove_project_settings_override(
+    settings_path: &Path,
+    project_id: &str,
+) -> AppResult<Option<PathBuf>> {
+    if project_id.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "project_id cannot be empty when removing settings override".into(),
+        ));
+    }
+    if !settings_path.exists() {
+        return Ok(None);
+    }
+
+    let existing_bytes = fs::read(settings_path)?;
+    let mut root: Value = serde_json::from_slice(&existing_bytes)?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Err(AppError::InvalidInput(
+            "settings.json root must be a JSON object".into(),
+        ));
+    };
+
+    let has_entry = root_obj
+        .get("projectSettingsOverrides")
+        .and_then(|v| v.as_object())
+        .is_some_and(|map| map.contains_key(project_id));
+    if !has_entry {
+        return Ok(None);
+    }
+
+    let bak = settings_path.with_file_name("settings.json.bak");
+    atomic_write_file(&bak, &existing_bytes)?;
+
+    if let Some(overrides_obj) = root_obj
+        .get_mut("projectSettingsOverrides")
+        .and_then(|v| v.as_object_mut())
+    {
+        overrides_obj.remove(project_id);
+    }
+
+    let serialized = format!("{}\n", serde_json::to_string_pretty(&root)?);
+    atomic_write_file(settings_path, serialized.as_bytes())?;
+
+    Ok(Some(bak))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +388,59 @@ mod tests {
             updated["projectSettingsOverrides"]["proj-1"]["defaultModelSelection"]["model"],
             "gemini-4-hydrogen"
         );
+    }
+
+    #[test]
+    fn sync_global_settings_and_remove_project_override_preserve_keys() {
+        let dir = tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+
+        let original = serde_json::json!({
+            "favorites": ["proj-1"],
+            "projectSettingsOverrides": {
+                "proj-1": {
+                    "defaultModelSelection": { "instanceId": "codex", "model": "gpt-6.1-sol" }
+                },
+                "proj-2": {
+                    "defaultModelSelection": { "instanceId": "antigravity", "model": "gemini-4-hydrogen" }
+                }
+            }
+        });
+        fs::write(&settings_path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        let preset = default_seed_presets()
+            .into_iter()
+            .find(|p| p.id == "agy-dual")
+            .unwrap();
+
+        let bak = sync_global_settings(&settings_path, &preset).unwrap();
+        assert!(bak.is_some());
+
+        let after_global: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(after_global["favorites"], original["favorites"]);
+        assert_eq!(
+            after_global["defaultModelSelection"]["instanceId"],
+            "antigravity_2"
+        );
+        assert_eq!(
+            after_global["defaultModelSelection"]["model"],
+            "gemini-4-hydrogen"
+        );
+        assert_eq!(
+            after_global["fallbackModelSelection"]["instanceId"],
+            "antigravity"
+        );
+        assert_eq!(
+            after_global["fallbackModelSelection"]["model"],
+            "gemini-4-hydrogen"
+        );
+
+        let remove_bak = remove_project_settings_override(&settings_path, "proj-1").unwrap();
+        assert!(remove_bak.is_some());
+        let after_remove: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(after_remove["projectSettingsOverrides"].get("proj-1").is_none());
+        assert!(after_remove["projectSettingsOverrides"].get("proj-2").is_some());
     }
 }

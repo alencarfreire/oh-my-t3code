@@ -2,6 +2,7 @@ import type {
   CompiledFilePreview,
   CompilePreviewResult,
   DashboardSnapshot,
+  GlobalAppConfig,
   PresetConfig,
   ProjectSummary,
   ProviderInstanceInfo,
@@ -29,6 +30,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     description:
       "Preset padrão inspirado no t3-global e cabrito-squad: balanceia antigravity (Agy Veca) e antigravity_2 (Agy Principal) com gemini-4-hydrogen e gemini-4-argon e fallback em 3 níveis.",
     extends: null,
+    enabled: true,
     topology: "intra-thread-squad",
     orchestrator: {
       providerInstanceId: "antigravity_2",
@@ -145,6 +147,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     description:
       "Preset focado em OpenAI Codex com gpt-6.1-sol para arquitetura/backend e gpt-6.1-terra para UI e revisão rápida.",
     extends: null,
+    enabled: true,
     topology: "intra-thread-squad",
     orchestrator: {
       providerInstanceId: "codex",
@@ -229,6 +232,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     description:
       "Combina Agy Principal (gemini-4-hydrogen) como Orquestrador/Frontend com Codex (gpt-6.1-sol) no Backend e QA independente.",
     extends: "agy-dual",
+    enabled: true,
     topology: "issue-thread-orchestrator",
     orchestrator: {
       providerInstanceId: "antigravity_2",
@@ -453,6 +457,8 @@ function buildSeedProjects(): ProjectSummary[] {
       hasLocalPreset: true,
       localPresetId: "agy-dual",
       localPresetExtends: "agy-dual",
+      presetEnabled: true,
+      hasCustomOverride: true,
       detectedSquadSlug: "oh-my-t3code-squad",
       detectedSquadPath:
         "/Users/alencarfreire/.t3/projects/oh-my-t3code/.agents/skills/oh-my-t3code-squad",
@@ -469,6 +475,8 @@ function buildSeedProjects(): ProjectSummary[] {
       hasLocalPreset: false,
       localPresetId: null,
       localPresetExtends: null,
+      presetEnabled: true,
+      hasCustomOverride: true,
       detectedSquadSlug: "cabrito-squad",
       detectedSquadPath:
         "/Users/alencarfreire/Workspace/cabrito/.agents/skills/cabrito-squad",
@@ -485,6 +493,8 @@ function buildSeedProjects(): ProjectSummary[] {
       hasLocalPreset: true,
       localPresetId: "dashboard-meta",
       localPresetExtends: "codex-squad",
+      presetEnabled: true,
+      hasCustomOverride: true,
       detectedSquadSlug: "dashboard-meta-squad",
       detectedSquadPath:
         "/Users/alencarfreire/Workspace/dashboard-meta/.agents/skills/dashboard-meta-squad",
@@ -727,6 +737,10 @@ function computeSimpleUnifiedDiff(
 }
 
 export class MockIpcStore {
+  private globalConfig: GlobalAppConfig = {
+    activeGlobalPresetId: "agy-dual",
+    enabled: true,
+  };
   private projects: ProjectSummary[] = [];
   private subagents: SubagentActivity[] = [];
   private providerInstances: ProviderInstanceInfo[] = [];
@@ -740,6 +754,10 @@ export class MockIpcStore {
   }
 
   reset(): void {
+    this.globalConfig = {
+      activeGlobalPresetId: "agy-dual",
+      enabled: true,
+    };
     this.projects = buildSeedProjects();
     this.subagents = buildSeedSubagents();
     this.providerInstances = buildSeedProviderInstances();
@@ -766,22 +784,46 @@ export class MockIpcStore {
   }
 
   getDashboardSnapshot(): DashboardSnapshot {
+    const activeGlobal =
+      this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
+      this.globalPresets[0];
+    const firstFallback = activeGlobal?.fallbackChain[0];
+
     return structuredClone({
+      globalConfig: this.globalConfig,
       projects: this.projects,
       subagents: this.subagents,
       providerInstances: this.providerInstances,
       globalPresets: this.globalPresets,
       skills: this.skills,
-      defaultModelSelection: {
-        instanceId: "antigravity_2",
-        model: "gemini-4-hydrogen",
-        options: [{ id: "thinking_level", value: "high" }],
-      },
-      fallbackModelSelection: {
-        instanceId: "antigravity",
-        model: "gemini-4-hydrogen",
-        options: [{ id: "thinking_level", value: "high" }],
-      },
+      defaultModelSelection: activeGlobal
+        ? {
+            instanceId: activeGlobal.orchestrator.providerInstanceId,
+            model: activeGlobal.orchestrator.model,
+            options: Object.entries(activeGlobal.orchestrator.options).map(([id, value]) => ({
+              id,
+              value,
+            })),
+          }
+        : {
+            instanceId: "antigravity_2",
+            model: "gemini-4-hydrogen",
+            options: [{ id: "thinking_level", value: "high" }],
+          },
+      fallbackModelSelection: firstFallback
+        ? {
+            instanceId: firstFallback.providerInstanceId,
+            model: firstFallback.model,
+            options: Object.entries(firstFallback.options).map(([id, value]) => ({
+              id,
+              value,
+            })),
+          }
+        : {
+            instanceId: "antigravity",
+            model: "gemini-4-hydrogen",
+            options: [{ id: "thinking_level", value: "high" }],
+          },
       sqliteAvailable: true,
       settingsAvailable: true,
     });
@@ -804,7 +846,10 @@ export class MockIpcStore {
         this.globalPresets.find((p) => p.id === "codex-squad") ?? this.globalPresets[0],
       );
     } else {
-      resolved = structuredClone(this.globalPresets[0]);
+      resolved = structuredClone(
+        this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
+          this.globalPresets[0],
+      );
     }
 
     return {
@@ -842,6 +887,8 @@ export class MockIpcStore {
       proj.hasLocalPreset = true;
       proj.localPresetId = saved.id;
       proj.localPresetExtends = saved.extends;
+      proj.presetEnabled = saved.enabled;
+      proj.hasCustomOverride = saved.id !== this.globalConfig.activeGlobalPresetId;
       proj.updatedAt = new Date().toISOString();
     }
     return this.getProjectPreset(projectId, workspaceRoot);
@@ -972,6 +1019,8 @@ export class MockIpcStore {
       proj.hasLocalPreset = true;
       proj.localPresetId = targetPreset.id;
       proj.localPresetExtends = targetPreset.extends ?? targetPreset.id;
+      proj.presetEnabled = targetPreset.enabled;
+      proj.hasCustomOverride = true;
       proj.detectedSquadSlug = `${preview.projectSlug}-squad`;
       proj.detectedSquadPath = `${workspaceRoot}/.agents/skills/${preview.projectSlug}-squad`;
       proj.updatedAt = new Date().toISOString();
@@ -1031,6 +1080,7 @@ export class MockIpcStore {
       name: `${slug} (Importado)`,
       description: `Preset importado automaticamente de .agents/skills/${slug}-squad/`,
       extends: "agy-dual",
+      enabled: true,
     };
     this.localPresetsByProject.set(projectId, imported);
     const proj = this.projects.find((p) => p.projectId === projectId);
@@ -1038,9 +1088,90 @@ export class MockIpcStore {
       proj.hasLocalPreset = true;
       proj.localPresetId = imported.id;
       proj.localPresetExtends = imported.extends;
+      proj.presetEnabled = true;
+      proj.hasCustomOverride = true;
       proj.detectedSquadSlug = `${slug}-squad`;
       proj.detectedSquadPath = `${workspaceRoot}/.agents/skills/${slug}-squad`;
     }
     return this.getProjectPreset(projectId, workspaceRoot);
+  }
+
+  setGlobalPresetConfig(activePresetId: string, enabled: boolean): DashboardSnapshot {
+    this.globalConfig = {
+      activeGlobalPresetId: activePresetId,
+      enabled,
+    };
+    return this.getDashboardSnapshot();
+  }
+
+  swapGlobalInstance(): DashboardSnapshot {
+    const active =
+      this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
+      this.globalPresets[0];
+    if (active) {
+      const nextInstance =
+        active.orchestrator.providerInstanceId === "antigravity_2"
+          ? "antigravity"
+          : "antigravity_2";
+      const oppositeInstance =
+        nextInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
+      active.orchestrator.providerInstanceId = nextInstance;
+      if (!active.orchestrator.model.startsWith("gemini-4-")) {
+        active.orchestrator.model = "gemini-4-hydrogen";
+        active.orchestrator.options = { thinking_level: "high" };
+      }
+      if (active.fallbackChain[0]?.providerInstanceId === nextInstance) {
+        active.fallbackChain[0].providerInstanceId = oppositeInstance;
+      }
+    }
+    return this.getDashboardSnapshot();
+  }
+
+  setProjectPresetEnabled(
+    projectId: string,
+    workspaceRoot: string,
+    enabled: boolean,
+  ): SyncResult {
+    const current = this.getProjectPreset(projectId, workspaceRoot);
+    const updated: PresetConfig = {
+      ...structuredClone(current.rawLocalPreset ?? current.resolvedPreset),
+      enabled,
+    };
+    this.localPresetsByProject.set(projectId, updated);
+    const proj = this.projects.find((p) => p.projectId === projectId);
+    if (proj) {
+      proj.hasLocalPreset = true;
+      proj.localPresetId = updated.id;
+      proj.localPresetExtends = updated.extends;
+      proj.presetEnabled = enabled;
+      proj.updatedAt = new Date().toISOString();
+    }
+    if (enabled) {
+      return this.applyPresetSync(projectId, workspaceRoot, null, updated);
+    }
+    return {
+      projectId,
+      workspaceRoot,
+      presetId: updated.id,
+      writtenFiles: [`${workspaceRoot}/.t3code/preset.jsonc`],
+      settingsPath: "/Users/alencarfreire/.t3/userdata/settings.json",
+      backupPath: "/Users/alencarfreire/.t3/userdata/settings.json.bak",
+      activeInstanceId: updated.orchestrator.providerInstanceId,
+      activeModel: updated.orchestrator.model,
+    };
+  }
+
+  removeProjectOverride(projectId: string, _workspaceRoot: string): DashboardSnapshot {
+    this.localPresetsByProject.delete(projectId);
+    const proj = this.projects.find((p) => p.projectId === projectId);
+    if (proj) {
+      proj.hasLocalPreset = false;
+      proj.localPresetId = null;
+      proj.localPresetExtends = null;
+      proj.presetEnabled = true;
+      proj.hasCustomOverride = false;
+      proj.updatedAt = new Date().toISOString();
+    }
+    return this.getDashboardSnapshot();
   }
 }

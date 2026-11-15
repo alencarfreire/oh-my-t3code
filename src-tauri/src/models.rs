@@ -69,6 +69,37 @@ impl AppPaths {
     pub fn settings_path(&self) -> PathBuf {
         self.t3_home.join("userdata").join("settings.json")
     }
+
+    pub fn global_config_path(&self) -> PathBuf {
+        let config_root = self.presets_dir.parent().unwrap_or(&self.presets_dir);
+        config_root.join("config.jsonc")
+    }
+}
+
+pub fn default_true() -> bool {
+    true
+}
+
+fn default_global_preset_id() -> String {
+    "agy-dual".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalAppConfig {
+    #[serde(default = "default_global_preset_id")]
+    pub active_global_preset_id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for GlobalAppConfig {
+    fn default() -> Self {
+        Self {
+            active_global_preset_id: default_global_preset_id(),
+            enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -158,6 +189,8 @@ pub struct PresetConfig {
     pub description: String,
     #[serde(default)]
     pub extends: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default = "default_topology")]
     pub topology: String,
     #[serde(default)]
@@ -247,6 +280,8 @@ pub struct ProjectSummary {
     pub has_local_preset: bool,
     pub local_preset_id: Option<String>,
     pub local_preset_extends: Option<String>,
+    pub preset_enabled: bool,
+    pub has_custom_override: bool,
     pub detected_squad_slug: Option<String>,
     pub detected_squad_path: Option<String>,
     pub active_subagent_count: usize,
@@ -255,6 +290,7 @@ pub struct ProjectSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
+    pub global_config: GlobalAppConfig,
     pub projects: Vec<ProjectSummary>,
     pub subagents: Vec<SubagentActivity>,
     pub provider_instances: Vec<ProviderInstanceInfo>,

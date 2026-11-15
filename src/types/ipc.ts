@@ -39,11 +39,17 @@ export interface RoleConfig {
   verificationCommands: string[];
 }
 
+export interface GlobalAppConfig {
+  activeGlobalPresetId: string;
+  enabled: boolean;
+}
+
 export interface PresetConfig {
   id: string;
   name: string;
   description: string;
   extends: string | null;
+  enabled: boolean;
   topology: TopologyKind;
   orchestrator: OrchestratorSelection;
   fallbackChain: FallbackStep[];
@@ -111,12 +117,15 @@ export interface ProjectSummary {
   hasLocalPreset: boolean;
   localPresetId: string | null;
   localPresetExtends: string | null;
+  presetEnabled: boolean;
+  hasCustomOverride: boolean;
   detectedSquadSlug: string | null;
   detectedSquadPath: string | null;
   activeSubagentCount: number;
 }
 
 export interface DashboardSnapshot {
+  globalConfig: GlobalAppConfig;
   projects: ProjectSummary[];
   subagents: SubagentActivity[];
   providerInstances: ProviderInstanceInfo[];
@@ -191,6 +200,10 @@ export const IPC_COMMANDS = {
   applyPresetSync: "apply_preset_sync",
   swapProjectInstance: "swap_project_instance",
   importProjectSquad: "import_project_squad",
+  setGlobalPresetConfig: "set_global_preset_config",
+  swapGlobalInstance: "swap_global_instance",
+  setProjectPresetEnabled: "set_project_preset_enabled",
+  removeProjectOverride: "remove_project_override",
   openStudioWindow: "open_studio_window",
   togglePopoverWindow: "toggle_popover_window",
 } as const;
@@ -231,6 +244,20 @@ export interface IpcCommandArgs {
     projectId: string;
     workspaceRoot: string;
   };
+  set_global_preset_config: {
+    activePresetId: string;
+    enabled: boolean;
+  };
+  swap_global_instance: Record<string, never> | undefined;
+  set_project_preset_enabled: {
+    projectId: string;
+    workspaceRoot: string;
+    enabled: boolean;
+  };
+  remove_project_override: {
+    projectId: string;
+    workspaceRoot: string;
+  };
   open_studio_window: {
     projectId?: string | null;
     presetId?: string | null;
@@ -248,6 +275,10 @@ export interface IpcCommandReturns {
   apply_preset_sync: SyncResult;
   swap_project_instance: SyncResult;
   import_project_squad: ResolvedProjectPreset;
+  set_global_preset_config: DashboardSnapshot;
+  swap_global_instance: DashboardSnapshot;
+  set_project_preset_enabled: SyncResult;
+  remove_project_override: DashboardSnapshot;
   open_studio_window: void;
   toggle_popover_window: void;
 }

@@ -1,8 +1,11 @@
 use crate::models::{
-    AppPaths, AppResult, DashboardSnapshot, ProjectSummary, ProviderInstanceInfo, SkillMetadata,
-    SubagentActivity, T3ModelOption, T3ModelSelection,
+    AppPaths, AppResult, DashboardSnapshot, GlobalAppConfig, PresetConfig, ProjectSummary,
+    ProviderInstanceInfo, SkillMetadata, SubagentActivity, T3ModelOption, T3ModelSelection,
 };
-use crate::preset_engine::{detect_squad_dir, list_global_presets, local_preset_path, strip_jsonc_comments};
+use crate::preset_engine::{
+    detect_squad_dir, list_global_presets, load_global_config, local_preset_path,
+    resolve_jsonc_against_globals, strip_jsonc_comments,
+};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -239,17 +242,43 @@ fn table_columns(conn: &Connection, table: &str) -> HashSet<String> {
     cols
 }
 
-fn read_local_preset_meta(workspace_root: &Path) -> (bool, Option<String>, Option<String>) {
+struct LocalPresetMeta {
+    has_local_preset: bool,
+    id: Option<String>,
+    extends: Option<String>,
+    enabled: bool,
+    raw_jsonc: Option<String>,
+}
+
+fn read_local_preset_meta(workspace_root: &Path) -> LocalPresetMeta {
     let path = local_preset_path(workspace_root);
     if !path.exists() {
-        return (false, None, None);
+        return LocalPresetMeta {
+            has_local_preset: false,
+            id: None,
+            extends: None,
+            enabled: true,
+            raw_jsonc: None,
+        };
     }
     let Ok(raw) = fs::read_to_string(&path) else {
-        return (true, None, None);
+        return LocalPresetMeta {
+            has_local_preset: true,
+            id: None,
+            extends: None,
+            enabled: true,
+            raw_jsonc: None,
+        };
     };
     let clean = strip_jsonc_comments(&raw);
     let Ok(val) = serde_json::from_str::<Value>(&clean) else {
-        return (true, None, None);
+        return LocalPresetMeta {
+            has_local_preset: true,
+            id: None,
+            extends: None,
+            enabled: true,
+            raw_jsonc: Some(raw),
+        };
     };
     let id = val
         .get("id")
@@ -259,7 +288,138 @@ fn read_local_preset_meta(workspace_root: &Path) -> (bool, Option<String>, Optio
         .get("extends")
         .and_then(|v| v.as_str())
         .map(ToString::to_string);
-    (true, id, extends)
+    let enabled = val
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    LocalPresetMeta {
+        has_local_preset: true,
+        id,
+        extends,
+        enabled,
+        raw_jsonc: Some(raw),
+    }
+}
+
+fn normalize_selection_options(options: &[T3ModelOption]) -> BTreeMap<String, Value> {
+    let mut map = BTreeMap::new();
+    for opt in options {
+        let key = if opt.id == "thinkingLevel" {
+            "thinking_level".to_string()
+        } else {
+            opt.id.clone()
+        };
+        map.insert(key, opt.value.clone());
+    }
+    map
+}
+
+fn selections_differ(a: &T3ModelSelection, b: &T3ModelSelection) -> bool {
+    a.instance_id != b.instance_id
+        || a.model != b.model
+        || normalize_selection_options(&a.options) != normalize_selection_options(&b.options)
+}
+
+fn preset_selection(preset: &PresetConfig) -> T3ModelSelection {
+    let options = preset
+        .orchestrator
+        .options
+        .iter()
+        .map(|(k, v)| T3ModelOption {
+            id: if k == "thinkingLevel" {
+                "thinking_level".to_string()
+            } else {
+                k.clone()
+            },
+            value: Value::String(v.clone()),
+        })
+        .collect();
+    T3ModelSelection {
+        instance_id: preset.orchestrator.provider_instance_id.clone(),
+        model: preset.orchestrator.model.clone(),
+        options,
+    }
+}
+
+pub struct GlobalOverrideContext<'a> {
+    pub settings_overrides: &'a HashMap<String, T3ModelSelection>,
+    pub global_config: &'a GlobalAppConfig,
+    pub global_active_preset: Option<&'a PresetConfig>,
+    pub global_default_selection: Option<&'a T3ModelSelection>,
+    pub presets_dir: &'a Path,
+}
+
+fn compute_has_custom_override(
+    project_id: &str,
+    local_meta: &LocalPresetMeta,
+    detected_squad: Option<&(String, String)>,
+    ctx: &GlobalOverrideContext<'_>,
+) -> bool {
+    let active_global_id = ctx.global_config.active_global_preset_id.as_str();
+
+    // 1. Check .t3code/preset.jsonc against the active global preset
+    if local_meta.has_local_preset {
+        if local_meta.id.as_deref() != Some(active_global_id) {
+            return true;
+        }
+        if let Some(ext) = local_meta.extends.as_deref() {
+            if ext != active_global_id {
+                return true;
+            }
+        }
+        if let (Some(raw), Some(global_preset)) =
+            (local_meta.raw_jsonc.as_deref(), ctx.global_active_preset)
+        {
+            match resolve_jsonc_against_globals(ctx.presets_dir, raw, active_global_id) {
+                Ok(resolved_local) => {
+                    if resolved_local.roles != global_preset.roles
+                        || resolved_local.orchestrator != global_preset.orchestrator
+                        || resolved_local.fallback_chain != global_preset.fallback_chain
+                        || resolved_local.contention != global_preset.contention
+                        || resolved_local.topology != global_preset.topology
+                    {
+                        return true;
+                    }
+                }
+                Err(_) => return true,
+            }
+        } else if local_meta.raw_jsonc.is_none() {
+            return true;
+        }
+    }
+
+    // 2. Check .agents/skills/*-squad/SKILL.md configured specifically for this project
+    if let Some((_, squad_dir)) = detected_squad {
+        let skill_md_path = Path::new(squad_dir).join("SKILL.md");
+        match fs::read_to_string(&skill_md_path) {
+            Ok(content) => {
+                let is_compiler_generated =
+                    content.contains("— Playbook do Orquestrador (T3 Code)");
+                if !is_compiler_generated {
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+
+    // 3. Check projectSettingsOverrides[project_id] in settings.json against global selection
+    if let Some(override_sel) = ctx.settings_overrides.get(project_id) {
+        let fallback_global_sel = ctx.global_active_preset.map(preset_selection);
+        let effective_global = ctx
+            .global_default_selection
+            .or(fallback_global_sel.as_ref());
+        match effective_global {
+            Some(global_sel) => {
+                if selections_differ(override_sel, global_sel) {
+                    return true;
+                }
+            }
+            None => return true,
+        }
+    }
+
+    false
 }
 
 fn extract_prompt_preview(raw: &str) -> String {
@@ -288,6 +448,23 @@ fn is_active_status(status: &str) -> bool {
 pub fn read_sqlite_state(
     sqlite_path: &Path,
     settings_overrides: &HashMap<String, T3ModelSelection>,
+) -> AppResult<(Vec<ProjectSummary>, Vec<SubagentActivity>)> {
+    let default_cfg = GlobalAppConfig::default();
+    let ctx = GlobalOverrideContext {
+        settings_overrides,
+        global_config: &default_cfg,
+        global_active_preset: None,
+        global_default_selection: None,
+        presets_dir: Path::new("."),
+    };
+    read_sqlite_state_with_context(sqlite_path, &ctx)
+}
+
+/// Reads projects, threads, and subagent rows from `statev2.sqlite` (read-only)
+/// with global preset context to compute `preset_enabled` and `has_custom_override`.
+pub fn read_sqlite_state_with_context(
+    sqlite_path: &Path,
+    ctx: &GlobalOverrideContext<'_>,
 ) -> AppResult<(Vec<ProjectSummary>, Vec<SubagentActivity>)> {
     let conn = open_sqlite_readonly(sqlite_path)?;
 
@@ -359,15 +536,20 @@ pub fn read_sqlite_state(
                 }
             }
 
-            if let Some(override_sel) = settings_overrides.get(&project_id) {
+            if let Some(override_sel) = ctx.settings_overrides.get(&project_id) {
                 active_instance_id = Some(override_sel.instance_id.clone());
                 active_model = Some(override_sel.model.clone());
             }
 
             let ws_path = Path::new(&workspace_root);
-            let (has_local_preset, local_preset_id, local_preset_extends) =
-                read_local_preset_meta(ws_path);
+            let local_meta = read_local_preset_meta(ws_path);
             let detected_squad = detect_squad_dir(ws_path);
+            let has_custom_override = compute_has_custom_override(
+                &project_id,
+                &local_meta,
+                detected_squad.as_ref(),
+                ctx,
+            );
 
             project_titles.insert(project_id.clone(), title.clone());
             projects.push(ProjectSummary {
@@ -378,9 +560,11 @@ pub fn read_sqlite_state(
                 active_instance_id,
                 active_model,
                 updated_at,
-                has_local_preset,
-                local_preset_id,
-                local_preset_extends,
+                has_local_preset: local_meta.has_local_preset,
+                local_preset_id: local_meta.id,
+                local_preset_extends: local_meta.extends,
+                preset_enabled: local_meta.enabled,
+                has_custom_override,
                 detected_squad_slug: detected_squad.as_ref().map(|(s, _)| s.clone()),
                 detected_squad_path: detected_squad.map(|(_, p)| p),
                 active_subagent_count: 0,
@@ -663,19 +847,36 @@ pub fn scan_global_skills(skill_roots: &[(String, std::path::PathBuf)]) -> Vec<S
 /// Builds the full dashboard snapshot read-only.
 pub fn build_dashboard_snapshot(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let settings = read_t3_settings(&paths.settings_path());
+    let global_config = load_global_config(&paths.global_config_path());
+    let global_presets = list_global_presets(&paths.presets_dir)?;
+    let global_active_preset = global_presets
+        .iter()
+        .find(|p| p.id == global_config.active_global_preset_id);
+    let effective_global_selection = settings
+        .default_model_selection
+        .clone()
+        .or_else(|| global_active_preset.map(preset_selection));
+
     let sqlite_path = paths.sqlite_path();
 
     let (sqlite_available, projects, subagents) = if sqlite_path.exists() {
-        let (projs, subs) = read_sqlite_state(&sqlite_path, &settings.project_overrides)?;
+        let ctx = GlobalOverrideContext {
+            settings_overrides: &settings.project_overrides,
+            global_config: &global_config,
+            global_active_preset,
+            global_default_selection: effective_global_selection.as_ref(),
+            presets_dir: &paths.presets_dir,
+        };
+        let (projs, subs) = read_sqlite_state_with_context(&sqlite_path, &ctx)?;
         (true, projs, subs)
     } else {
         (false, Vec::new(), Vec::new())
     };
 
-    let global_presets = list_global_presets(&paths.presets_dir)?;
     let skills = scan_global_skills(&paths.skill_roots);
 
     Ok(DashboardSnapshot {
+        global_config,
         projects,
         subagents,
         provider_instances: settings.provider_instances,

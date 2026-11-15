@@ -117,6 +117,30 @@ export async function invokeIpc<K extends IpcCommandName>(
         a.workspaceRoot,
       ) as IpcCommandReturns[K];
     }
+    case "set_global_preset_config": {
+      const a = args as IpcCommandArgs["set_global_preset_config"];
+      return mockStore.setGlobalPresetConfig(
+        a.activePresetId,
+        a.enabled,
+      ) as IpcCommandReturns[K];
+    }
+    case "swap_global_instance":
+      return mockStore.swapGlobalInstance() as IpcCommandReturns[K];
+    case "set_project_preset_enabled": {
+      const a = args as IpcCommandArgs["set_project_preset_enabled"];
+      return mockStore.setProjectPresetEnabled(
+        a.projectId,
+        a.workspaceRoot,
+        a.enabled,
+      ) as IpcCommandReturns[K];
+    }
+    case "remove_project_override": {
+      const a = args as IpcCommandArgs["remove_project_override"];
+      return mockStore.removeProjectOverride(
+        a.projectId,
+        a.workspaceRoot,
+      ) as IpcCommandReturns[K];
+    }
     case "open_studio_window": {
       const a = (args ?? {}) as IpcCommandArgs["open_studio_window"];
       mockNavigateListeners.forEach((fn) =>

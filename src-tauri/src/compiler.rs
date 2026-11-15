@@ -1,13 +1,17 @@
 use crate::models::{
-    AppError, AppPaths, AppResult, CompilePreviewResult, CompiledFilePreview, PresetConfig,
-    RoleConfig, SyncResult,
+    AppError, AppPaths, AppResult, CompilePreviewResult, CompiledFilePreview, DashboardSnapshot,
+    GlobalAppConfig, PresetConfig, RoleConfig, SyncResult,
 };
 use crate::preset_engine::{
     atomic_write_file, derive_project_slug, ensure_seed_presets, get_project_preset,
-    local_preset_path, resolve_global_preset, resolve_preset_inheritance, validate_safe_id,
+    load_global_config, local_preset_path, resolve_global_preset, resolve_preset_inheritance,
+    save_global_config, save_global_preset, save_project_preset, validate_safe_id,
 };
-use crate::settings_sync::{compute_unified_diff, preview_settings_override, sync_project_settings};
-use crate::t3_reader::read_t3_settings;
+use crate::settings_sync::{
+    compute_unified_diff, preview_settings_override, remove_project_settings_override,
+    sync_global_settings, sync_project_settings,
+};
+use crate::t3_reader::{build_dashboard_snapshot, read_t3_settings};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -490,6 +494,146 @@ pub fn swap_project_primary_instance(
     apply_preset_to_project(paths, project_id, workspace_root, None, Some(updated))
 }
 
+/// Saves the global Oh My T3Code config (`~/.config/oh-my-t3code/config.jsonc`) and,
+/// when `enabled == true`, syncs `defaultModelSelection` and `fallbackModelSelection` to `settings.json`.
+pub fn set_global_preset_config(
+    paths: &AppPaths,
+    active_preset_id: String,
+    enabled: bool,
+) -> AppResult<DashboardSnapshot> {
+    ensure_seed_presets(&paths.presets_dir)?;
+    validate_safe_id(&active_preset_id, "active_preset_id")?;
+    let preset = resolve_global_preset(&paths.presets_dir, &active_preset_id)?;
+
+    let config = GlobalAppConfig {
+        active_global_preset_id: preset.id.clone(),
+        enabled,
+    };
+    save_global_config(&paths.global_config_path(), &config)?;
+
+    if enabled {
+        sync_global_settings(&paths.settings_path(), &preset)?;
+    }
+
+    build_dashboard_snapshot(paths)
+}
+
+/// Quick toggle between `antigravity` (Agy Veca) and `antigravity_2` (Agy Principal) on the active global preset.
+pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
+    ensure_seed_presets(&paths.presets_dir)?;
+    let global_cfg = load_global_config(&paths.global_config_path());
+    let mut preset = resolve_global_preset(&paths.presets_dir, &global_cfg.active_global_preset_id)?;
+
+    let next_instance = if preset.orchestrator.provider_instance_id == "antigravity_2" {
+        "antigravity".to_string()
+    } else {
+        "antigravity_2".to_string()
+    };
+    let opposite_instance = if next_instance == "antigravity_2" {
+        "antigravity".to_string()
+    } else {
+        "antigravity_2".to_string()
+    };
+
+    preset.orchestrator.provider_instance_id = next_instance.clone();
+    if let Some(legacy_val) = preset.orchestrator.options.remove("thinkingLevel") {
+        preset
+            .orchestrator
+            .options
+            .entry("thinking_level".to_string())
+            .or_insert(legacy_val);
+    }
+    if !preset.orchestrator.model.starts_with("gemini-4-") {
+        preset.orchestrator.model = "gemini-4-hydrogen".to_string();
+        preset
+            .orchestrator
+            .options
+            .insert("thinking_level".to_string(), "high".to_string());
+    }
+
+    if let Some(first_fb) = preset.fallback_chain.first_mut() {
+        if first_fb.provider_instance_id == next_instance {
+            first_fb.provider_instance_id = opposite_instance;
+        }
+    }
+
+    let saved = save_global_preset(&paths.presets_dir, preset)?;
+    save_global_config(&paths.global_config_path(), &global_cfg)?;
+
+    if global_cfg.enabled {
+        sync_global_settings(&paths.settings_path(), &saved)?;
+    }
+
+    build_dashboard_snapshot(paths)
+}
+
+/// Enables or disables a project's preset without deleting `.t3code/preset.jsonc`.
+/// When `enabled == false`, removes `projectSettingsOverrides[project_id]` from `settings.json`.
+/// When `enabled == true`, compiles `.agents/skills/<slug>-squad/` and syncs `projectSettingsOverrides[project_id]`.
+pub fn set_project_preset_enabled(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+    enabled: bool,
+) -> AppResult<SyncResult> {
+    ensure_seed_presets(&paths.presets_dir)?;
+    let current = get_project_preset(paths, project_id, workspace_root, None)?;
+    let mut target_preset = current.raw_local_preset.unwrap_or(current.resolved_preset);
+    target_preset.enabled = enabled;
+
+    if enabled {
+        return apply_preset_to_project(paths, project_id, workspace_root, None, Some(target_preset));
+    }
+
+    let saved = save_project_preset(paths, project_id, workspace_root, target_preset)?;
+    let backup_path = remove_project_settings_override(&paths.settings_path(), project_id)?;
+    let preset_path = local_preset_path(Path::new(workspace_root));
+
+    Ok(SyncResult {
+        project_id: project_id.to_string(),
+        workspace_root: workspace_root.to_string(),
+        preset_id: saved.resolved_preset.id,
+        written_files: vec![preset_path.display().to_string()],
+        settings_path: paths.settings_path().display().to_string(),
+        backup_path: backup_path.map(|p| p.display().to_string()),
+        active_instance_id: saved.resolved_preset.orchestrator.provider_instance_id,
+        active_model: saved.resolved_preset.orchestrator.model,
+    })
+}
+
+/// Removes a project's custom override (`.t3code/preset.jsonc` and `projectSettingsOverrides[project_id]`),
+/// reverting the project to follow the global default configuration.
+pub fn remove_project_override(
+    paths: &AppPaths,
+    project_id: &str,
+    workspace_root: &str,
+) -> AppResult<DashboardSnapshot> {
+    let ws_root = Path::new(workspace_root);
+    if !ws_root.exists() {
+        return Err(AppError::NotFound(format!(
+            "Workspace root does not exist: {workspace_root}"
+        )));
+    }
+
+    let preset_path = local_preset_path(ws_root);
+    ensure_within_workspace(ws_root, &preset_path)?;
+    if preset_path.exists() {
+        fs::remove_file(&preset_path)?;
+        if let Some(t3code_dir) = preset_path.parent() {
+            if t3code_dir.is_dir()
+                && fs::read_dir(t3code_dir)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(false)
+            {
+                let _ = fs::remove_dir(t3code_dir);
+            }
+        }
+    }
+
+    remove_project_settings_override(&paths.settings_path(), project_id)?;
+    build_dashboard_snapshot(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,5 +713,111 @@ mod tests {
         // Second swap switches back to antigravity_2
         let res2 = swap_project_primary_instance(&paths, "proj-swap", ws.to_str().unwrap()).unwrap();
         assert_eq!(res2.active_instance_id, "antigravity_2");
+    }
+
+    #[test]
+    fn global_config_sync_and_swap_global_instance_update_settings_and_config() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let config_dir = dir.path().join("oh-my-t3code");
+        let presets_dir = config_dir.join("presets");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        let snap1 = set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+        assert_eq!(snap1.global_config.active_global_preset_id, "agy-dual");
+        assert!(snap1.global_config.enabled);
+        assert!(paths.global_config_path().exists());
+        assert_eq!(
+            snap1.default_model_selection.as_ref().unwrap().instance_id,
+            "antigravity_2"
+        );
+        assert_eq!(
+            snap1.fallback_model_selection.as_ref().unwrap().instance_id,
+            "antigravity"
+        );
+
+        let snap2 = swap_global_instance(&paths).unwrap();
+        assert_eq!(
+            snap2.default_model_selection.as_ref().unwrap().instance_id,
+            "antigravity"
+        );
+        assert_eq!(
+            snap2.fallback_model_selection.as_ref().unwrap().instance_id,
+            "antigravity_2"
+        );
+
+        // Disable global config: settings.json keeps favorites and config.jsonc records enabled: false
+        let snap3 = set_global_preset_config(&paths, "codex-squad".to_string(), false).unwrap();
+        assert_eq!(snap3.global_config.active_global_preset_id, "codex-squad");
+        assert!(!snap3.global_config.enabled);
+        let settings_raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(paths.settings_path()).unwrap()).unwrap();
+        assert_eq!(settings_raw["favorites"], serde_json::json!(["keep-me"]));
+        assert_eq!(
+            settings_raw["defaultModelSelection"]["instanceId"],
+            "antigravity"
+        );
+    }
+
+    #[test]
+    fn project_preset_enable_toggle_and_remove_override_work_safely() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        let ws = dir.path().join("proj-toggle");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(t3_home.join("userdata").join("settings.json"), "{}").unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        // Enable with codex-squad first
+        apply_preset_to_project(
+            &paths,
+            "proj-1",
+            ws.to_str().unwrap(),
+            Some("codex-squad".to_string()),
+            None,
+        )
+        .unwrap();
+        assert!(local_preset_path(&ws).exists());
+
+        // Disable preserves .t3code/preset.jsonc with enabled: false and removes override from settings.json
+        set_project_preset_enabled(&paths, "proj-1", ws.to_str().unwrap(), false).unwrap();
+        assert!(local_preset_path(&ws).exists());
+        let resolved_off =
+            get_project_preset(&paths, "proj-1", ws.to_str().unwrap(), None).unwrap();
+        assert!(!resolved_off.resolved_preset.enabled);
+        let settings_off = read_t3_settings(&paths.settings_path());
+        assert!(!settings_off.project_overrides.contains_key("proj-1"));
+
+        // Re-enable restores override in settings.json
+        set_project_preset_enabled(&paths, "proj-1", ws.to_str().unwrap(), true).unwrap();
+        let resolved_on =
+            get_project_preset(&paths, "proj-1", ws.to_str().unwrap(), None).unwrap();
+        assert!(resolved_on.resolved_preset.enabled);
+        let settings_on = read_t3_settings(&paths.settings_path());
+        assert!(settings_on.project_overrides.contains_key("proj-1"));
+
+        // Remove override deletes .t3code/preset.jsonc and removes projectSettingsOverrides entry
+        remove_project_override(&paths, "proj-1", ws.to_str().unwrap()).unwrap();
+        assert!(!local_preset_path(&ws).exists());
+        let settings_removed = read_t3_settings(&paths.settings_path());
+        assert!(!settings_removed.project_overrides.contains_key("proj-1"));
     }
 }

@@ -1,6 +1,6 @@
 use crate::models::{
-    AppError, AppPaths, AppResult, ContentionPolicy, FallbackStep, OrchestratorSelection,
-    PresetConfig, ResolvedProjectPreset, RoleConfig,
+    AppError, AppPaths, AppResult, ContentionPolicy, FallbackStep, GlobalAppConfig,
+    OrchestratorSelection, PresetConfig, ResolvedProjectPreset, RoleConfig,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
@@ -9,6 +9,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAX_INHERITANCE_DEPTH: usize = 16;
+pub const OMOS_CANONICAL_ROLES: [&str; 5] = [
+    "explorer",
+    "oracle",
+    "designer",
+    "fixer",
+    "qa-reviewer",
+];
 
 /// Validates a preset or role identifier to prevent path traversal and invalid filenames.
 pub fn validate_safe_id(id: &str, label: &str) -> AppResult<()> {
@@ -198,6 +205,7 @@ struct PresetPatch {
     name: Option<String>,
     description: Option<String>,
     extends: Option<String>,
+    enabled: Option<bool>,
     topology: Option<String>,
     orchestrator: Option<OrchestratorPatch>,
     fallback_chain: Option<Vec<FallbackStep>>,
@@ -242,6 +250,7 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         Some(d) if !d.trim().is_empty() => d,
         _ => base.description,
     };
+    let enabled = patch.enabled.unwrap_or(base.enabled);
     let topology = patch.topology.unwrap_or(base.topology);
 
     let mut orchestrator = base.orchestrator;
@@ -324,6 +333,7 @@ fn merge_patch(base: PresetConfig, patch: PresetPatch, fallback_id: &str) -> Pre
         name,
         description,
         extends: patch.extends,
+        enabled,
         topology,
         orchestrator,
         fallback_chain,
@@ -338,6 +348,7 @@ fn empty_base_preset(id: &str) -> PresetConfig {
         name: id.to_string(),
         description: String::new(),
         extends: None,
+        enabled: true,
         topology: "intra-thread-squad".to_string(),
         orchestrator: OrchestratorSelection::default(),
         fallback_chain: Vec::new(),
@@ -476,47 +487,69 @@ pub fn default_seed_presets() -> Vec<PresetConfig> {
 fn build_agy_dual_preset() -> PresetConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
-        "backend".to_string(),
+        "explorer".to_string(),
         RoleConfig {
-            id: "backend".to_string(),
-            title: "Backend".to_string(),
-            description: "APIs, models, domínio, jobs, migrations e suíte de testes unitários/integração.".to_string(),
-            when_to_use: "Implementações de domínio, regras de negócio, SQL/persistência, CLIs e endpoints.".to_string(),
+            id: "explorer".to_string(),
+            title: "Explorer".to_string(),
+            description: "Pesquisa rápida de código, mapeamento read-only do repositório e consulta de docs.".to_string(),
+            when_to_use: "Descoberta inicial de arquivos, símbolos, contratos IPC e documentação via context7/ai-memory.".to_string(),
             provider_instance_id: "antigravity".to_string(),
             model: "gemini-4-hydrogen".to_string(),
+            options: BTreeMap::from([("thinking_level".to_string(), "low".to_string())]),
+            skills: vec![
+                "ai-memory-retrieval".to_string(),
+                "systematic-debugging".to_string(),
+            ],
+            mcps: vec!["context7".to_string(), "ai-memory".to_string()],
+            allowed_paths: vec!["**/* (read-only)".to_string()],
+            forbidden_paths: vec!["Edições em arquivos de código ou configuração".to_string()],
+            invariants: vec![
+                "Atuar estritamente em modo read-only retornando paths e símbolos verificados.".to_string(),
+            ],
+            verification_commands: vec![],
+        },
+    );
+    roles.insert(
+        "oracle".to_string(),
+        RoleConfig {
+            id: "oracle".to_string(),
+            title: "Oracle".to_string(),
+            description: "Arquitetura, trade-offs de alto risco, simplificação de design e debug complexo.".to_string(),
+            when_to_use: "Decisões estruturais, migrações críticas, concorrência e análise de causa raiz difícil.".to_string(),
+            provider_instance_id: "antigravity_2".to_string(),
+            model: "gemini-4-argon".to_string(),
             options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
             skills: vec![
-                "tdd-and-testing".to_string(),
                 "systematic-debugging".to_string(),
+                "code-review-and-security".to_string(),
                 "ai-memory-retrieval".to_string(),
             ],
             mcps: vec!["ai-memory".to_string(), "context7".to_string()],
-            allowed_paths: vec!["src-tauri/**".to_string(), "app/**".to_string(), "db/**".to_string()],
-            forbidden_paths: vec!["src/components/**".to_string(), "app/views/**".to_string()],
+            allowed_paths: vec!["**/* (arquitetura e diagnóstico)".to_string()],
+            forbidden_paths: vec!["Mudanças cosméticas fora do escopo arquitetural".to_string()],
             invariants: vec![
-                "Executar ciclo Red-Green-Refactor antes de declarar conclusão.".to_string(),
-                "Nunca quebrar contratos de API/IPC sem alinhar com Frontend.".to_string(),
+                "Preservar acesso read-only ao statev2.sqlite e escrita atômica com backup em settings.json.".to_string(),
             ],
             verification_commands: vec![
                 "cargo check --manifest-path src-tauri/Cargo.toml".to_string(),
-                "cargo test --manifest-path src-tauri/Cargo.toml".to_string(),
             ],
         },
     );
     roles.insert(
-        "frontend".to_string(),
+        "designer".to_string(),
         RoleConfig {
-            id: "frontend".to_string(),
-            title: "Frontend UI".to_string(),
-            description: "Componentes React/Hotwire, Tailwind CSS v4, acessibilidade e ergonomia visual.".to_string(),
-            when_to_use: "Telas, estados vazios, interações, estilos Tailwind v4 e tipagem de UI.".to_string(),
+            id: "designer".to_string(),
+            title: "Designer".to_string(),
+            description: "Implementação de UI/UX, layout, tipografia, responsividade e Tailwind CSS v4.".to_string(),
+            when_to_use: "Telas, estados vazios, interações, acessibilidade, design tokens e componentes visuais.".to_string(),
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-hydrogen".to_string(),
             options: BTreeMap::from([("thinking_level".to_string(), "medium".to_string())]),
             skills: vec![
                 "tailwind-v4-design".to_string(),
-                "better-accessibility".to_string(),
+                "frontend-design".to_string(),
                 "better-ui".to_string(),
+                "better-accessibility".to_string(),
                 "better-layout".to_string(),
             ],
             mcps: vec!["context7".to_string(), "playwright".to_string(), "ai-memory".to_string()],
@@ -530,6 +563,35 @@ fn build_agy_dual_preset() -> PresetConfig {
                 "bun run typecheck".to_string(),
                 "bun run test".to_string(),
                 "bun run build".to_string(),
+            ],
+        },
+    );
+    roles.insert(
+        "fixer".to_string(),
+        RoleConfig {
+            id: "fixer".to_string(),
+            title: "Fixer".to_string(),
+            description: "Implementação rápida e bem delimitada de backend, módulos de domínio e correções.".to_string(),
+            when_to_use: "Implementações de domínio, APIs, persistência, CLIs, módulos Rust/Rails e correções com testes.".to_string(),
+            provider_instance_id: "antigravity".to_string(),
+            model: "gemini-4-hydrogen".to_string(),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
+            skills: vec![
+                "tdd-and-testing".to_string(),
+                "systems-rust-go-crystal".to_string(),
+                "rails-8-modern".to_string(),
+                "systematic-debugging".to_string(),
+            ],
+            mcps: vec!["ai-memory".to_string(), "context7".to_string()],
+            allowed_paths: vec!["src-tauri/**".to_string(), "app/**".to_string(), "db/**".to_string()],
+            forbidden_paths: vec!["src/components/**".to_string(), "app/views/**".to_string()],
+            invariants: vec![
+                "Executar ciclo Red-Green-Refactor antes de declarar conclusão.".to_string(),
+                "Nunca quebrar contratos de API/IPC sem alinhar com Frontend.".to_string(),
+            ],
+            verification_commands: vec![
+                "cargo check --manifest-path src-tauri/Cargo.toml".to_string(),
+                "cargo test --manifest-path src-tauri/Cargo.toml".to_string(),
             ],
         },
     );
@@ -566,8 +628,9 @@ fn build_agy_dual_preset() -> PresetConfig {
     PresetConfig {
         id: "agy-dual".to_string(),
         name: "Agy Dual (Veca + Principal)".to_string(),
-        description: "Preset padrão inspirado no t3-global e cabrito-squad: balanceia antigravity (Agy Veca) e antigravity_2 (Agy Principal) com gemini-4-hydrogen e gemini-4-argon e fallback em 3 níveis.".to_string(),
+        description: "Preset padrão estilo oh-my-opencode-slim adaptado ao T3 Code: balanceia antigravity (Agy Veca) e antigravity_2 (Agy Principal) com explorer, oracle, designer, fixer e qa-reviewer.".to_string(),
         extends: None,
+        enabled: true,
         topology: "intra-thread-squad".to_string(),
         orchestrator: OrchestratorSelection {
             provider_instance_id: "antigravity_2".to_string(),
@@ -611,6 +674,14 @@ fn build_agy_dual_preset() -> PresetConfig {
 
 fn build_codex_squad_preset() -> PresetConfig {
     let mut roles = BTreeMap::new();
+    let luna_opts = BTreeMap::from([
+        ("reasoningEffort".to_string(), "low".to_string()),
+        ("serviceTier".to_string(), "default".to_string()),
+    ]);
+    let xhigh_opts = BTreeMap::from([
+        ("reasoningEffort".to_string(), "xhigh".to_string()),
+        ("serviceTier".to_string(), "default".to_string()),
+    ]);
     let sol_opts = BTreeMap::from([
         ("reasoningEffort".to_string(), "high".to_string()),
         ("serviceTier".to_string(), "default".to_string()),
@@ -621,18 +692,88 @@ fn build_codex_squad_preset() -> PresetConfig {
     ]);
 
     roles.insert(
-        "backend".to_string(),
+        "explorer".to_string(),
         RoleConfig {
-            id: "backend".to_string(),
-            title: "Backend".to_string(),
-            description: "Models, schema, auth/sessão, queries, rotas e testes de domínio.".to_string(),
-            when_to_use: "Mudanças em schema, serviços, APIs, jobs e lógica de negócios.".to_string(),
+            id: "explorer".to_string(),
+            title: "Explorer".to_string(),
+            description: "Pesquisa rápida de código, mapeamento read-only e consulta de docs com gpt-6-luna.".to_string(),
+            when_to_use: "Mapeamento de codebase, busca de símbolos e leitura de documentação.".to_string(),
+            provider_instance_id: "codex".to_string(),
+            model: "gpt-6-luna".to_string(),
+            options: luna_opts,
+            skills: vec!["ai-memory-retrieval".to_string(), "systematic-debugging".to_string()],
+            mcps: vec!["context7".to_string(), "ai-memory".to_string()],
+            allowed_paths: vec!["**/* (read-only)".to_string()],
+            forbidden_paths: vec!["Edições em arquivos de produção".to_string()],
+            invariants: vec![
+                "Atuar em modo somente leitura e citar caminhos e linhas verificados.".to_string(),
+            ],
+            verification_commands: vec![],
+        },
+    );
+    roles.insert(
+        "oracle".to_string(),
+        RoleConfig {
+            id: "oracle".to_string(),
+            title: "Oracle".to_string(),
+            description: "Arquitetura, trade-offs de alto risco, simplificação e debug complexo com gpt-6.1-sol (xhigh).".to_string(),
+            when_to_use: "Decisões de schema, concorrência, arquitetura de serviços e debugging profundo.".to_string(),
+            provider_instance_id: "codex".to_string(),
+            model: "gpt-6.1-sol".to_string(),
+            options: xhigh_opts,
+            skills: vec!["systematic-debugging".to_string(), "code-review-and-security".to_string(), "ai-memory-retrieval".to_string()],
+            mcps: vec!["ai-memory".to_string(), "context7".to_string()],
+            allowed_paths: vec!["**/* (arquitetura e diagnóstico)".to_string()],
+            forbidden_paths: vec!["Mudanças cosméticas fora do escopo arquitetural".to_string()],
+            invariants: vec![
+                "Preservar integridade de schema, segurança e contratos IPC/API.".to_string(),
+            ],
+            verification_commands: vec!["git status --short".to_string()],
+        },
+    );
+    roles.insert(
+        "designer".to_string(),
+        RoleConfig {
+            id: "designer".to_string(),
+            title: "Designer".to_string(),
+            description: "Implementação de UI/UX, layout, tipografia, responsividade e Tailwind CSS v4 com gpt-6.1-terra.".to_string(),
+            when_to_use: "Implementação e ajuste de interface, CSS, acessibilidade e comportamento no navegador.".to_string(),
+            provider_instance_id: "codex".to_string(),
+            model: "gpt-6.1-terra".to_string(),
+            options: terra_opts.clone(),
+            skills: vec![
+                "tailwind-v4-design".to_string(),
+                "frontend-design".to_string(),
+                "better-ui".to_string(),
+                "better-accessibility".to_string(),
+            ],
+            mcps: vec!["context7".to_string(), "playwright".to_string()],
+            allowed_paths: vec!["app/views/**".to_string(), "app/javascript/**".to_string(), "src/**".to_string()],
+            forbidden_paths: vec!["db/**".to_string(), "app/models/**".to_string()],
+            invariants: vec![
+                "Manter escape seguro, contraste WCAG e responsividade desktop/mobile.".to_string(),
+            ],
+            verification_commands: vec!["bun run typecheck".to_string()],
+        },
+    );
+    roles.insert(
+        "fixer".to_string(),
+        RoleConfig {
+            id: "fixer".to_string(),
+            title: "Fixer".to_string(),
+            description: "Implementação rápida e bem delimitada de backend, módulos e correções com gpt-6.1-sol.".to_string(),
+            when_to_use: "Models, schema, serviços, módulos Rust/Rails e correções bem delimitadas.".to_string(),
             provider_instance_id: "codex".to_string(),
             model: "gpt-6.1-sol".to_string(),
             options: sol_opts.clone(),
-            skills: vec!["tdd-and-testing".to_string(), "systematic-debugging".to_string()],
+            skills: vec![
+                "tdd-and-testing".to_string(),
+                "systems-rust-go-crystal".to_string(),
+                "rails-8-modern".to_string(),
+                "systematic-debugging".to_string(),
+            ],
             mcps: vec!["ai-memory".to_string(), "context7".to_string()],
-            allowed_paths: vec!["app/models/**".to_string(), "app/controllers/**".to_string(), "db/**".to_string()],
+            allowed_paths: vec!["app/models/**".to_string(), "app/controllers/**".to_string(), "db/**".to_string(), "src-tauri/**".to_string()],
             forbidden_paths: vec!["app/views/**".to_string(), "app/assets/**".to_string()],
             invariants: vec![
                 "Um único executor de DB de testes por vez; sem escritas paralelas em schema/rotas.".to_string(),
@@ -642,75 +783,11 @@ fn build_codex_squad_preset() -> PresetConfig {
         },
     );
     roles.insert(
-        "delivery-manager".to_string(),
-        RoleConfig {
-            id: "delivery-manager".to_string(),
-            title: "Delivery Manager".to_string(),
-            description: "Evidências finais, Linear/Git, recomendação de prioridade e Settle.".to_string(),
-            when_to_use: "Planejamento de rodada, checagem de escopo no Linear e encerramento controlado.".to_string(),
-            provider_instance_id: "codex".to_string(),
-            model: "gpt-6.1-sol".to_string(),
-            options: BTreeMap::from([
-                ("reasoningEffort".to_string(), "medium".to_string()),
-                ("serviceTier".to_string(), "default".to_string()),
-            ]),
-            skills: vec!["linear-issues".to_string(), "ai-memory-retrieval".to_string()],
-            mcps: vec!["linear".to_string(), "ai-memory".to_string()],
-            allowed_paths: vec!["docs/**".to_string()],
-            forbidden_paths: vec!["app/**".to_string(), "src/**".to_string()],
-            invariants: vec![
-                "Nunca fechar issue ou fazer merge sem aprovação explícita do usuário.".to_string(),
-                "Entregar sempre evidências reais de testes, commits e pendências.".to_string(),
-            ],
-            verification_commands: vec!["git status --short".to_string()],
-        },
-    );
-    roles.insert(
-        "fixer".to_string(),
-        RoleConfig {
-            id: "fixer".to_string(),
-            title: "Fixer sob demanda".to_string(),
-            description: "Correção pontual com causa conhecida e arquivos explícitos.".to_string(),
-            when_to_use: "Ajustes localizados após achado de QA sem alteração de schema/segurança.".to_string(),
-            provider_instance_id: "codex".to_string(),
-            model: "gpt-6.1-terra".to_string(),
-            options: terra_opts.clone(),
-            skills: vec!["systematic-debugging".to_string(), "tdd-and-testing".to_string()],
-            mcps: vec!["ai-memory".to_string()],
-            allowed_paths: vec!["Arquivos explícitos do briefing".to_string()],
-            forbidden_paths: vec!["db/migrate/**".to_string(), "config/routes.rb".to_string()],
-            invariants: vec![
-                "Se a causa não se confirmar ou o escopo crescer, devolver para Backend/Sol.".to_string(),
-            ],
-            verification_commands: vec!["bin/rails test".to_string()],
-        },
-    );
-    roles.insert(
-        "frontend".to_string(),
-        RoleConfig {
-            id: "frontend".to_string(),
-            title: "Frontend".to_string(),
-            description: "Views, helpers, assets, Turbo/Stimulus, layout e acessibilidade.".to_string(),
-            when_to_use: "Implementação e ajuste de interface, CSS e comportamento no navegador.".to_string(),
-            provider_instance_id: "codex".to_string(),
-            model: "gpt-6.1-sol".to_string(),
-            options: sol_opts.clone(),
-            skills: vec!["tailwind-v4-design".to_string(), "better-accessibility".to_string(), "better-ui".to_string()],
-            mcps: vec!["context7".to_string(), "playwright".to_string()],
-            allowed_paths: vec!["app/views/**".to_string(), "app/javascript/**".to_string(), "app/assets/**".to_string()],
-            forbidden_paths: vec!["db/**".to_string(), "app/models/**".to_string()],
-            invariants: vec![
-                "Manter escape seguro e responsividade desktop/mobile.".to_string(),
-            ],
-            verification_commands: vec!["bin/rails test:system".to_string()],
-        },
-    );
-    roles.insert(
         "qa-reviewer".to_string(),
         RoleConfig {
             id: "qa-reviewer".to_string(),
             title: "QA / Reviewer".to_string(),
-            description: "Revisão independente, segurança, UX e verificação completa de critérios.".to_string(),
+            description: "Auditoria independente de segurança, testes e CI completo com gpt-6-astra.".to_string(),
             when_to_use: "Validação independente antes da entrega final ao usuário.".to_string(),
             provider_instance_id: "codex".to_string(),
             model: "gpt-6-astra".to_string(),
@@ -730,8 +807,9 @@ fn build_codex_squad_preset() -> PresetConfig {
     PresetConfig {
         id: "codex-squad".to_string(),
         name: "Codex Squad (Issue Threads)".to_string(),
-        description: "Preset estruturado inspirado no dashboard-meta-squad: topologia de threads por issue com Codex Sol, Terra e Astra, Delivery Manager e controle estrito de contenção.".to_string(),
+        description: "Preset estruturado estilo oh-my-opencode-slim para OpenAI Codex: Luna (explorer), Sol (oracle/fixer), Terra (designer) e Astra (qa-reviewer).".to_string(),
         extends: None,
+        enabled: true,
         topology: "issue-thread-orchestrator".to_string(),
         orchestrator: OrchestratorSelection {
             provider_instance_id: "codex".to_string(),
@@ -783,19 +861,85 @@ fn build_codex_squad_preset() -> PresetConfig {
 fn build_hybrid_preset() -> PresetConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
-        "backend".to_string(),
+        "explorer".to_string(),
         RoleConfig {
-            id: "backend".to_string(),
-            title: "Backend (Codex Sol)".to_string(),
-            description: "Arquitetura de dados, APIs e lógica crítica com Codex Sol.".to_string(),
-            when_to_use: "Serviços complexos, migrações, concorrência e algoritmos centrais.".to_string(),
+            id: "explorer".to_string(),
+            title: "Explorer (Hydrogen)".to_string(),
+            description: "Pesquisa rápida de código, mapeamento read-only e consulta de docs com gemini-4-hydrogen.".to_string(),
+            when_to_use: "Descoberta rápida de arquivos, referências e documentação.".to_string(),
+            provider_instance_id: "antigravity".to_string(),
+            model: "gemini-4-hydrogen".to_string(),
+            options: BTreeMap::from([("thinking_level".to_string(), "low".to_string())]),
+            skills: vec!["ai-memory-retrieval".to_string(), "systematic-debugging".to_string()],
+            mcps: vec!["context7".to_string(), "ai-memory".to_string()],
+            allowed_paths: vec!["**/* (read-only)".to_string()],
+            forbidden_paths: vec!["Edições em arquivos de produção".to_string()],
+            invariants: vec!["Operação estritamente read-only.".to_string()],
+            verification_commands: vec![],
+        },
+    );
+    roles.insert(
+        "oracle".to_string(),
+        RoleConfig {
+            id: "oracle".to_string(),
+            title: "Oracle (Codex Sol)".to_string(),
+            description: "Arquitetura, trade-offs de alto risco, simplificação e debug complexo com Codex Sol.".to_string(),
+            when_to_use: "Decisões críticas de arquitetura, concorrência e algoritmos centrais.".to_string(),
+            provider_instance_id: "codex".to_string(),
+            model: "gpt-6.1-sol".to_string(),
+            options: BTreeMap::from([
+                ("reasoningEffort".to_string(), "xhigh".to_string()),
+                ("serviceTier".to_string(), "default".to_string()),
+            ]),
+            skills: vec!["systematic-debugging".to_string(), "code-review-and-security".to_string(), "ai-memory-retrieval".to_string()],
+            mcps: vec!["ai-memory".to_string(), "context7".to_string()],
+            allowed_paths: vec!["**/* (arquitetura e diagnóstico)".to_string()],
+            forbidden_paths: vec!["Alterações visuais fora do escopo arquitetural".to_string()],
+            invariants: vec!["Validar invariantes de segurança, concorrência e contratos IPC.".to_string()],
+            verification_commands: vec!["cargo check --manifest-path src-tauri/Cargo.toml".to_string()],
+        },
+    );
+    roles.insert(
+        "designer".to_string(),
+        RoleConfig {
+            id: "designer".to_string(),
+            title: "Designer (Hydrogen)".to_string(),
+            description: "Implementação de UI/UX, layout, tipografia, responsividade e Tailwind CSS v4 com gemini-4-hydrogen.".to_string(),
+            when_to_use: "Componentes visuais, CSS, responsividade e acessibilidade.".to_string(),
+            provider_instance_id: "antigravity".to_string(),
+            model: "gemini-4-hydrogen".to_string(),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
+            skills: vec![
+                "tailwind-v4-design".to_string(),
+                "frontend-design".to_string(),
+                "better-ui".to_string(),
+                "better-accessibility".to_string(),
+            ],
+            mcps: vec!["context7".to_string(), "playwright".to_string(), "ai-memory".to_string()],
+            allowed_paths: vec!["src/**".to_string()],
+            forbidden_paths: vec!["src-tauri/**".to_string()],
+            invariants: vec!["Manter paridade 1:1 com tipos IPC.".to_string()],
+            verification_commands: vec!["bun run typecheck".to_string(), "bun run build".to_string()],
+        },
+    );
+    roles.insert(
+        "fixer".to_string(),
+        RoleConfig {
+            id: "fixer".to_string(),
+            title: "Fixer (Codex Sol)".to_string(),
+            description: "Implementação rápida e bem delimitada de backend, módulos e correções com Codex Sol.".to_string(),
+            when_to_use: "Serviços, persistência, módulos Rust/Rails e correções bem delimitadas.".to_string(),
             provider_instance_id: "codex".to_string(),
             model: "gpt-6.1-sol".to_string(),
             options: BTreeMap::from([
                 ("reasoningEffort".to_string(), "high".to_string()),
                 ("serviceTier".to_string(), "default".to_string()),
             ]),
-            skills: vec!["tdd-and-testing".to_string(), "systematic-debugging".to_string()],
+            skills: vec![
+                "tdd-and-testing".to_string(),
+                "systems-rust-go-crystal".to_string(),
+                "rails-8-modern".to_string(),
+            ],
             mcps: vec!["ai-memory".to_string(), "context7".to_string()],
             allowed_paths: vec!["src-tauri/**".to_string(), "backend/**".to_string()],
             forbidden_paths: vec!["src/components/**".to_string()],
@@ -804,38 +948,16 @@ fn build_hybrid_preset() -> PresetConfig {
         },
     );
     roles.insert(
-        "frontend".to_string(),
-        RoleConfig {
-            id: "frontend".to_string(),
-            title: "Frontend & Research (Hydrogen)".to_string(),
-            description: "Iteração rápida de UI, React/Tailwind e mapeamento de código com gemini-4-hydrogen.".to_string(),
-            when_to_use: "Componentes visuais, CSS, responsividade e exploração rápida.".to_string(),
-            provider_instance_id: "antigravity".to_string(),
-            model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
-            skills: vec![
-                "tailwind-v4-design".to_string(),
-                "vercel-react-best-practices".to_string(),
-                "better-ui".to_string(),
-            ],
-            mcps: vec!["context7".to_string(), "playwright".to_string()],
-            allowed_paths: vec!["src/**".to_string()],
-            forbidden_paths: vec!["src-tauri/**".to_string()],
-            invariants: vec!["Manter paridade 1:1 com tipos IPC.".to_string()],
-            verification_commands: vec!["bun run typecheck".to_string(), "bun run build".to_string()],
-        },
-    );
-    roles.insert(
         "qa-reviewer".to_string(),
         RoleConfig {
             id: "qa-reviewer".to_string(),
             title: "QA / Reviewer (Argon)".to_string(),
-            description: "Auditoria independente de segurança e contrato com gemini-4-argon.".to_string(),
-            when_to_use: "Validação final após integração entre Backend Codex e Frontend Agy.".to_string(),
+            description: "Auditoria independente de segurança, testes e CI com gemini-4-argon.".to_string(),
+            when_to_use: "Validação final após integração entre Fixer Codex e Designer Agy.".to_string(),
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-argon".to_string(),
             options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
-            skills: vec!["code-review-and-security".to_string(), "security-audit".to_string()],
+            skills: vec!["code-review-and-security".to_string(), "security-audit".to_string(), "webapp-testing".to_string()],
             mcps: vec!["ai-memory".to_string(), "playwright".to_string()],
             allowed_paths: vec!["**/* (read-only audit)".to_string()],
             forbidden_paths: vec!["Alteração direta de código sem retorno ao implementador".to_string()],
@@ -847,8 +969,9 @@ fn build_hybrid_preset() -> PresetConfig {
     PresetConfig {
         id: "hybrid-agy-codex".to_string(),
         name: "Hybrid (Agy + Codex)".to_string(),
-        description: "Estratégia híbrida: gemini-4-hydrogen para UI e pesquisa rápida, Codex gpt-6.1-sol para backend crítico e gemini-4-argon para QA independente.".to_string(),
+        description: "Estratégia híbrida estilo oh-my-opencode-slim: gemini-4-hydrogen para explorer/designer, Codex gpt-6.1-sol para oracle/fixer e gemini-4-argon para qa-reviewer.".to_string(),
         extends: None,
+        enabled: true,
         topology: "intra-thread-squad".to_string(),
         orchestrator: OrchestratorSelection {
             provider_instance_id: "antigravity_2".to_string(),
@@ -904,8 +1027,18 @@ pub fn looks_like_mojibake(s: &str) -> bool {
     false
 }
 
+fn has_all_omos_roles(raw: &str) -> bool {
+    let Ok(parsed) = parse_jsonc_preset(raw) else {
+        return false;
+    };
+    OMOS_CANONICAL_ROLES
+        .iter()
+        .all(|role_id| parsed.roles.contains_key(*role_id))
+}
+
 /// Ensures the 3 built-in global presets exist in `presets_dir` without overwriting user edits,
-/// while automatically repairing/migrating legacy seed files containing `"thinkingLevel"` or UTF-8 mojibake.
+/// while automatically repairing/migrating legacy seed files containing `"thinkingLevel"`, UTF-8 mojibake,
+/// or missing the canonical OMOS roles (`explorer`, `oracle`, `designer`, `fixer`, `qa-reviewer`).
 pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
     fs::create_dir_all(presets_dir)?;
     for preset in default_seed_presets() {
@@ -924,7 +1057,10 @@ pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
             None => Some((&jsonc_path, true)),
             Some((path, is_jsonc)) => match fs::read_to_string(path) {
                 Ok(raw) => {
-                    if raw.contains("\"thinkingLevel\"") || looks_like_mojibake(&raw) {
+                    if raw.contains("\"thinkingLevel\"")
+                        || looks_like_mojibake(&raw)
+                        || !has_all_omos_roles(&raw)
+                    {
                         Some((path, is_jsonc))
                     } else {
                         None
@@ -948,6 +1084,34 @@ pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+/// Loads `~/.config/oh-my-t3code/config.jsonc` safely, returning defaults (`agy-dual`, `enabled: true`) if absent or invalid.
+pub fn load_global_config(config_path: &Path) -> GlobalAppConfig {
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return GlobalAppConfig::default();
+    };
+    let clean = strip_jsonc_comments(&raw);
+    let Ok(cfg) = serde_json::from_str::<GlobalAppConfig>(&clean) else {
+        return GlobalAppConfig::default();
+    };
+    if validate_safe_id(&cfg.active_global_preset_id, "active_global_preset_id").is_err() {
+        return GlobalAppConfig {
+            active_global_preset_id: GlobalAppConfig::default().active_global_preset_id,
+            enabled: cfg.enabled,
+        };
+    }
+    cfg
+}
+
+/// Saves `~/.config/oh-my-t3code/config.jsonc` atomically.
+pub fn save_global_config(config_path: &Path, config: &GlobalAppConfig) -> AppResult<()> {
+    validate_safe_id(&config.active_global_preset_id, "active_global_preset_id")?;
+    let content = format!(
+        "// Oh My T3Code global configuration\n{}\n",
+        serde_json::to_string_pretty(config)?
+    );
+    atomic_write_file(config_path, content.as_bytes())
 }
 
 /// Lists and resolves all global presets in `presets_dir` sorted by `id`.
@@ -1083,11 +1247,13 @@ pub fn get_project_preset(
         });
     }
 
+    let global_cfg = load_global_config(&paths.global_config_path());
     let fallback_id = match active_instance_hint {
         Some("codex") => "codex-squad",
-        _ => "agy-dual",
+        _ => global_cfg.active_global_preset_id.as_str(),
     };
-    let resolved = resolve_global_preset(&paths.presets_dir, fallback_id)?;
+    let resolved = resolve_global_preset(&paths.presets_dir, fallback_id)
+        .or_else(|_| resolve_global_preset(&paths.presets_dir, "agy-dual"))?;
 
     Ok(ResolvedProjectPreset {
         project_id: project_id.to_string(),
@@ -1134,9 +1300,9 @@ mod tests {
             /* multi
                line comment */
             "roles": {
-                "backend": {
-                    "id": "backend",
-                    "title": "Backend",
+                "fixer": {
+                    "id": "fixer",
+                    "title": "Fixer",
                     "providerInstanceId": "antigravity",
                     "model": "gemini-4-hydrogen",
                 },
@@ -1144,11 +1310,12 @@ mod tests {
         }"#;
         let parsed = parse_jsonc_preset(raw).expect("valid jsonc");
         assert_eq!(parsed.id, "demo");
+        assert!(parsed.enabled);
         assert_eq!(
             parsed.name,
             "Demo // keep inside string /* also keep */"
         );
-        assert!(parsed.roles.contains_key("backend"));
+        assert!(parsed.roles.contains_key("fixer"));
     }
 
     #[test]
@@ -1194,7 +1361,7 @@ mod tests {
                 "providerInstanceId": "antigravity"
             },
             "roles": {
-                "backend": {
+                "fixer": {
                     "model": "gemini-4-argon"
                 }
             }
@@ -1203,17 +1370,21 @@ mod tests {
         let resolved =
             resolve_jsonc_against_globals(presets_dir, child_jsonc, "custom-child").unwrap();
         assert_eq!(resolved.id, "custom-child");
+        assert!(resolved.enabled);
         assert_eq!(resolved.orchestrator.provider_instance_id, "antigravity");
         // Inherited from agy-dual
         assert_eq!(resolved.orchestrator.model, "gemini-4-hydrogen");
         assert_eq!(
-            resolved.roles.get("backend").unwrap().model,
+            resolved.roles.get("fixer").unwrap().model,
             "gemini-4-argon"
         );
-        // Inherited skills from agy-dual backend role
-        assert!(!resolved.roles.get("backend").unwrap().skills.is_empty());
-        // Inherited frontend role untouched
-        assert!(resolved.roles.contains_key("frontend"));
+        // Inherited skills from agy-dual fixer role
+        assert!(!resolved.roles.get("fixer").unwrap().skills.is_empty());
+        // Inherited OMOS roles untouched
+        assert!(resolved.roles.contains_key("explorer"));
+        assert!(resolved.roles.contains_key("oracle"));
+        assert!(resolved.roles.contains_key("designer"));
+        assert!(resolved.roles.contains_key("qa-reviewer"));
     }
 
     #[test]
@@ -1273,11 +1444,21 @@ mod tests {
     }
 
     #[test]
-    fn seed_presets_roundtrip_preserve_utf8_and_thinking_level() {
+    fn seed_presets_have_omos_roles_enabled_and_preserve_utf8() {
         let seeds = default_seed_presets();
         assert_eq!(seeds.len(), 3);
 
         for seed in &seeds {
+            assert!(seed.enabled, "seed {} should start enabled", seed.id);
+            for canonical in OMOS_CANONICAL_ROLES {
+                assert!(
+                    seed.roles.contains_key(canonical),
+                    "seed {} missing OMOS canonical role '{}'",
+                    seed.id,
+                    canonical
+                );
+            }
+
             let jsonc = format!(
                 "// Built-in preset: {}\n{}\n",
                 seed.name,
@@ -1321,12 +1502,13 @@ mod tests {
             Some("high")
         );
         assert!(!hybrid.orchestrator.options.contains_key("thinkingLevel"));
-        assert!(hybrid.roles["frontend"].options.contains_key("thinking_level"));
+        assert!(hybrid.roles["explorer"].options.contains_key("thinking_level"));
+        assert!(hybrid.roles["designer"].options.contains_key("thinking_level"));
         assert!(hybrid.roles["qa-reviewer"].options.contains_key("thinking_level"));
     }
 
     #[test]
-    fn ensure_seed_presets_upgrades_legacy_thinking_level_and_mojibake() {
+    fn ensure_seed_presets_upgrades_legacy_thinking_level_mojibake_and_missing_omos_roles() {
         let dir = tempdir().unwrap();
         let presets_dir = dir.path();
 
@@ -1337,7 +1519,14 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a clean custom user edit on codex-squad (no thinkingLevel, no mojibake)
+        // Simulate legacy hybrid-agy-codex with old non-OMOS roles (backend/frontend only)
+        fs::write(
+            presets_dir.join("hybrid-agy-codex.jsonc"),
+            r#"{"id":"hybrid-agy-codex","name":"Hybrid","roles":{"backend":{"id":"backend","title":"Backend","providerInstanceId":"codex","model":"gpt-6.1-sol"}}}"#,
+        )
+        .unwrap();
+
+        // Simulate a clean custom user edit on codex-squad (all OMOS roles, no thinkingLevel, no mojibake)
         let mut custom_codex = build_codex_squad_preset();
         custom_codex.name = "Codex Customizado".to_string();
         fs::write(
@@ -1355,8 +1544,34 @@ mod tests {
         );
         assert!(!upgraded_agy.orchestrator.options.contains_key("thinkingLevel"));
         assert!(!looks_like_mojibake(&upgraded_agy.description));
+        for role_id in OMOS_CANONICAL_ROLES {
+            assert!(upgraded_agy.roles.contains_key(role_id));
+        }
+
+        let upgraded_hybrid = resolve_global_preset(presets_dir, "hybrid-agy-codex").unwrap();
+        for role_id in OMOS_CANONICAL_ROLES {
+            assert!(upgraded_hybrid.roles.contains_key(role_id));
+        }
 
         let kept_codex = resolve_global_preset(presets_dir, "codex-squad").unwrap();
         assert_eq!(kept_codex.name, "Codex Customizado");
+    }
+
+    #[test]
+    fn global_config_defaults_and_roundtrips_atomically() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("config.jsonc");
+
+        let default_cfg = load_global_config(&cfg_path);
+        assert_eq!(default_cfg.active_global_preset_id, "agy-dual");
+        assert!(default_cfg.enabled);
+
+        let updated = GlobalAppConfig {
+            active_global_preset_id: "codex-squad".to_string(),
+            enabled: false,
+        };
+        save_global_config(&cfg_path, &updated).unwrap();
+        let reloaded = load_global_config(&cfg_path);
+        assert_eq!(reloaded, updated);
     }
 }

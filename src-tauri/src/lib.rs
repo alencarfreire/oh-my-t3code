@@ -120,6 +120,41 @@ fn import_project_squad(
 }
 
 #[tauri::command]
+fn set_global_preset_config(
+    active_preset_id: String,
+    enabled: bool,
+) -> Result<DashboardSnapshot, String> {
+    let paths = AppPaths::from_env().map_err(String::from)?;
+    compiler::set_global_preset_config(&paths, active_preset_id, enabled).map_err(String::from)
+}
+
+#[tauri::command]
+fn swap_global_instance() -> Result<DashboardSnapshot, String> {
+    let paths = AppPaths::from_env().map_err(String::from)?;
+    compiler::swap_global_instance(&paths).map_err(String::from)
+}
+
+#[tauri::command]
+fn set_project_preset_enabled(
+    project_id: String,
+    workspace_root: String,
+    enabled: bool,
+) -> Result<SyncResult, String> {
+    let paths = AppPaths::from_env().map_err(String::from)?;
+    compiler::set_project_preset_enabled(&paths, &project_id, &workspace_root, enabled)
+        .map_err(String::from)
+}
+
+#[tauri::command]
+fn remove_project_override(
+    project_id: String,
+    workspace_root: String,
+) -> Result<DashboardSnapshot, String> {
+    let paths = AppPaths::from_env().map_err(String::from)?;
+    compiler::remove_project_override(&paths, &project_id, &workspace_root).map_err(String::from)
+}
+
+#[tauri::command]
 fn open_studio_window(
     app: AppHandle,
     project_id: Option<String>,
@@ -293,6 +328,10 @@ pub fn run() {
             apply_preset_sync,
             swap_project_instance,
             import_project_squad,
+            set_global_preset_config,
+            swap_global_instance,
+            set_project_preset_enabled,
+            remove_project_override,
             open_studio_window,
             toggle_popover_window,
         ])
