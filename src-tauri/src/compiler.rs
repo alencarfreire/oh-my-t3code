@@ -10,8 +10,8 @@ use crate::preset_engine::{
     validate_safe_id,
 };
 use crate::settings_sync::{
-    compute_unified_diff, preview_settings_override, remove_project_settings_override,
-    sync_global_settings, sync_project_settings,
+    compute_unified_diff, preview_settings_override, remove_global_settings_override,
+    remove_project_settings_override, sync_global_settings, sync_project_settings,
 };
 use crate::t3_reader::{build_dashboard_snapshot_unlocked, read_t3_settings};
 use std::collections::BTreeMap;
@@ -555,8 +555,25 @@ pub fn swap_project_primary_instance(
     apply_preset_to_project_unlocked(paths, project_id, workspace_root, None, Some(updated))
 }
 
-/// Saves the global Oh My T3Code config (`~/.config/oh-my-t3code/config.jsonc`) and,
-/// when `enabled == true`, syncs `defaultModelSelection` and `fallbackModelSelection` to `settings.json`.
+/// Saves a global preset and, when it is the active global preset and global sync is enabled,
+/// automatically synchronizes `defaultModelSelection` and `fallbackModelSelection` in `settings.json`.
+pub fn save_global_preset_and_sync(
+    paths: &AppPaths,
+    preset: PresetConfig,
+) -> AppResult<PresetConfig> {
+    let _guard = lock_config_state();
+    ensure_seed_presets_unlocked(&paths.presets_dir)?;
+    let saved = save_global_preset_unlocked(&paths.presets_dir, preset)?;
+    let global_cfg = load_global_config_unlocked(&paths.global_config_path());
+    if saved.id == global_cfg.active_global_preset_id && global_cfg.enabled {
+        sync_global_settings(&paths.settings_path(), &saved)?;
+    }
+    Ok(saved)
+}
+
+/// Saves the global Oh My T3Code config (`~/.config/oh-my-t3code/config.jsonc`).
+/// When `enabled == true`, syncs `defaultModelSelection` and `fallbackModelSelection` to `settings.json`.
+/// When `enabled == false`, removes those global override keys from `settings.json` while preserving all other keys.
 pub fn set_global_preset_config(
     paths: &AppPaths,
     active_preset_id: String,
@@ -575,6 +592,8 @@ pub fn set_global_preset_config(
 
     if enabled {
         sync_global_settings(&paths.settings_path(), &preset)?;
+    } else {
+        remove_global_settings_override(&paths.settings_path())?;
     }
 
     build_dashboard_snapshot_unlocked(paths)
@@ -587,6 +606,11 @@ pub fn swap_global_instance(paths: &AppPaths) -> AppResult<DashboardSnapshot> {
     let _guard = lock_config_state();
     ensure_seed_presets_unlocked(&paths.presets_dir)?;
     let global_cfg = load_global_config_unlocked(&paths.global_config_path());
+    if !global_cfg.enabled {
+        return Err(AppError::InvalidInput(
+            "Preset global está desativado. Reative-o antes de inverter a instância.".into(),
+        ));
+    }
     let mut preset =
         resolve_global_preset_unlocked(&paths.presets_dir, &global_cfg.active_global_preset_id)?;
 
@@ -929,16 +953,24 @@ mod tests {
             "antigravity_2"
         );
 
-        // Disable global config: settings.json keeps favorites and config.jsonc records enabled: false
+        // Disable global config: settings.json removes global model selections, keeps favorites, and config.jsonc records enabled: false
         let snap3 = set_global_preset_config(&paths, "codex-squad".to_string(), false).unwrap();
         assert_eq!(snap3.global_config.active_global_preset_id, "codex-squad");
         assert!(!snap3.global_config.enabled);
+        assert!(snap3.default_model_selection.is_none());
+        assert!(snap3.fallback_model_selection.is_none());
         let settings_raw: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(paths.settings_path()).unwrap()).unwrap();
         assert_eq!(settings_raw["favorites"], serde_json::json!(["keep-me"]));
+        assert!(settings_raw.get("defaultModelSelection").is_none());
+        assert!(settings_raw.get("fallbackModelSelection").is_none());
+
+        // Re-enable global config: settings.json restores defaultModelSelection and fallbackModelSelection for codex-squad
+        let snap4 = set_global_preset_config(&paths, "codex-squad".to_string(), true).unwrap();
+        assert!(snap4.global_config.enabled);
         assert_eq!(
-            settings_raw["defaultModelSelection"]["instanceId"],
-            "antigravity"
+            snap4.default_model_selection.as_ref().unwrap().instance_id,
+            "codex"
         );
     }
 
@@ -1145,5 +1177,116 @@ mod tests {
         }
         let cfg = load_global_config(&paths.global_config_path());
         assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn swap_global_instance_rejects_when_global_disabled_without_mutating_files() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+        set_global_preset_config(&paths, "agy-dual".to_string(), false).unwrap();
+
+        let preset_before = fs::read_to_string(paths.presets_dir.join("agy-dual.jsonc")).unwrap();
+        let settings_before = fs::read_to_string(paths.settings_path()).unwrap();
+
+        let err = swap_global_instance(&paths).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+        assert!(
+            err.to_string()
+                .contains("Preset global está desativado"),
+            "unexpected error message: {err}"
+        );
+
+        // Neither presets/<id>.jsonc nor settings.json may be mutated
+        let preset_after = fs::read_to_string(paths.presets_dir.join("agy-dual.jsonc")).unwrap();
+        let settings_after = fs::read_to_string(paths.settings_path()).unwrap();
+        assert_eq!(preset_before, preset_after);
+        assert_eq!(settings_before, settings_after);
+    }
+
+    #[test]
+    fn save_global_preset_and_sync_updates_settings_only_when_active_and_enabled() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let presets_dir = dir.path().join("oh-my-t3code").join("presets");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::write(
+            t3_home.join("userdata").join("settings.json"),
+            r#"{"favorites":["keep-me"]}"#,
+        )
+        .unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+
+        // Active global is agy-dual with enabled: true
+        set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+
+        // 1. Editing and saving the active global preset syncs settings.json immediately
+        let mut edited_agy = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        edited_agy.orchestrator.provider_instance_id = "antigravity".to_string();
+        edited_agy.orchestrator.model = "gemini-4-argon".to_string();
+        let saved = save_global_preset_and_sync(&paths, edited_agy).unwrap();
+        assert_eq!(saved.orchestrator.provider_instance_id, "antigravity");
+        assert_eq!(saved.orchestrator.model, "gemini-4-argon");
+
+        let settings_after_active: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(paths.settings_path()).unwrap()).unwrap();
+        assert_eq!(
+            settings_after_active["defaultModelSelection"]["instanceId"],
+            "antigravity"
+        );
+        assert_eq!(
+            settings_after_active["defaultModelSelection"]["model"],
+            "gemini-4-argon"
+        );
+        assert_eq!(
+            settings_after_active["favorites"],
+            serde_json::json!(["keep-me"])
+        );
+
+        // 2. Saving a NON-active global preset does NOT overwrite settings.json
+        let mut edited_codex = resolve_global_preset(&paths.presets_dir, "codex-squad").unwrap();
+        edited_codex.orchestrator.model = "gpt-6.1-terra".to_string();
+        save_global_preset_and_sync(&paths, edited_codex).unwrap();
+
+        let settings_after_inactive: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(paths.settings_path()).unwrap()).unwrap();
+        assert_eq!(
+            settings_after_inactive["defaultModelSelection"]["instanceId"],
+            "antigravity"
+        );
+        assert_eq!(
+            settings_after_inactive["defaultModelSelection"]["model"],
+            "gemini-4-argon"
+        );
+
+        // 3. When global config is paused (enabled: false), saving the active preset does NOT write to settings.json
+        set_global_preset_config(&paths, "agy-dual".to_string(), false).unwrap();
+        let mut edited_paused = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+        edited_paused.orchestrator.model = "gemini-4-hydrogen".to_string();
+        save_global_preset_and_sync(&paths, edited_paused).unwrap();
+
+        let settings_after_paused: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(paths.settings_path()).unwrap()).unwrap();
+        assert!(settings_after_paused.get("defaultModelSelection").is_none());
+        assert!(settings_after_paused.get("fallbackModelSelection").is_none());
     }
 }

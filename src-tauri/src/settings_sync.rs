@@ -299,12 +299,50 @@ pub fn sync_global_settings(
             &level1.options,
         );
         root_obj.insert("fallbackModelSelection".to_string(), fallback_sel);
+    } else {
+        root_obj.remove("fallbackModelSelection");
     }
 
     let serialized = format!("{}\n", serde_json::to_string_pretty(&root)?);
     atomic_write_file(settings_path, serialized.as_bytes())?;
 
     Ok(backup_path)
+}
+
+/// Backs up `settings.json` to `settings.json.bak` and atomically removes global
+/// `defaultModelSelection` and `fallbackModelSelection` keys, preserving all other keys
+/// (`projectSettingsOverrides`, `favorites`, etc.).
+pub fn remove_global_settings_override(settings_path: &Path) -> AppResult<Option<PathBuf>> {
+    let _guard = lock_settings_file();
+
+    if !settings_path.exists() {
+        return Ok(None);
+    }
+
+    let existing_bytes = fs::read(settings_path)?;
+    let mut root: Value = serde_json::from_slice(&existing_bytes)?;
+    let Some(root_obj) = root.as_object_mut() else {
+        return Err(AppError::InvalidInput(
+            "settings.json root must be a JSON object".into(),
+        ));
+    };
+
+    let has_global_keys = root_obj.contains_key("defaultModelSelection")
+        || root_obj.contains_key("fallbackModelSelection");
+    if !has_global_keys {
+        return Ok(None);
+    }
+
+    let bak = settings_path.with_file_name("settings.json.bak");
+    atomic_write_file(&bak, &existing_bytes)?;
+
+    root_obj.remove("defaultModelSelection");
+    root_obj.remove("fallbackModelSelection");
+
+    let serialized = format!("{}\n", serde_json::to_string_pretty(&root)?);
+    atomic_write_file(settings_path, serialized.as_bytes())?;
+
+    Ok(Some(bak))
 }
 
 /// Backs up `settings.json` to `settings.json.bak` and atomically removes `projectSettingsOverrides[project_id]`.
@@ -561,5 +599,50 @@ mod tests {
                 "residual temp file left behind: {name}"
             );
         }
+    }
+
+    #[test]
+    fn remove_global_settings_override_removes_global_keys_creates_backup_and_preserves_other_keys()
+    {
+        let dir = tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+
+        // Missing file -> Ok(None)
+        assert!(remove_global_settings_override(&settings_path).unwrap().is_none());
+
+        let original = serde_json::json!({
+            "favorites": ["proj-1"],
+            "customUnknownKey": { "nested": "keep" },
+            "defaultModelSelection": { "instanceId": "antigravity_2", "model": "gemini-4-hydrogen" },
+            "fallbackModelSelection": { "instanceId": "antigravity", "model": "gemini-4-hydrogen" },
+            "projectSettingsOverrides": {
+                "proj-1": {
+                    "defaultModelSelection": { "instanceId": "codex", "model": "gpt-6.1-sol" }
+                }
+            }
+        });
+        fs::write(&settings_path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+        let bak = remove_global_settings_override(&settings_path)
+            .unwrap()
+            .expect("backup must be created when global keys exist");
+        assert!(bak.exists());
+
+        let bak_val: Value = serde_json::from_str(&fs::read_to_string(&bak).unwrap()).unwrap();
+        assert_eq!(bak_val, original);
+
+        let updated: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(updated.get("defaultModelSelection").is_none());
+        assert!(updated.get("fallbackModelSelection").is_none());
+        assert_eq!(updated["favorites"], original["favorites"]);
+        assert_eq!(updated["customUnknownKey"], original["customUnknownKey"]);
+        assert_eq!(
+            updated["projectSettingsOverrides"],
+            original["projectSettingsOverrides"]
+        );
+
+        // Idempotent second call when global keys are already absent -> Ok(None)
+        assert!(remove_global_settings_override(&settings_path).unwrap().is_none());
     }
 }

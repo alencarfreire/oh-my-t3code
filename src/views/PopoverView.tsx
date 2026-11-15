@@ -53,14 +53,14 @@ function defaultPresetForProject(
 
 const SWAP_PILL_CLASSES: Record<string, string> = {
   indigo:
-    "border-indigo-400/35 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25 hover:border-indigo-400/55",
-  sky: "border-sky-400/35 bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 hover:border-sky-400/55",
+    "border-indigo-400/35 bg-indigo-500/15 text-indigo-200 enabled:hover:bg-indigo-500/25 enabled:hover:border-indigo-400/55",
+  sky: "border-sky-400/35 bg-sky-500/15 text-sky-200 enabled:hover:bg-sky-500/25 enabled:hover:border-sky-400/55",
   emerald:
-    "border-emerald-400/35 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-400/55",
+    "border-emerald-400/35 bg-emerald-500/15 text-emerald-200 enabled:hover:bg-emerald-500/25 enabled:hover:border-emerald-400/55",
   amber:
-    "border-amber-400/35 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25 hover:border-amber-400/55",
+    "border-amber-400/35 bg-amber-500/15 text-amber-200 enabled:hover:bg-amber-500/25 enabled:hover:border-amber-400/55",
   neutral:
-    "border-white/15 bg-zinc-800/80 text-zinc-200 hover:bg-zinc-700/80 hover:border-white/25",
+    "border-white/15 bg-zinc-800/80 text-zinc-200 enabled:hover:bg-zinc-700/80 enabled:hover:border-white/25",
 };
 
 const STATIC_PILL_CLASSES: Record<string, string> = {
@@ -290,7 +290,7 @@ export function PopoverView() {
   };
 
   const handleSwapGlobalInstance = async () => {
-    if (!snapshot) return;
+    if (!snapshot || !snapshot.globalConfig.enabled) return;
     setBusyGlobalAction("swap");
     setErrorMsg(null);
     try {
@@ -485,8 +485,9 @@ export function PopoverView() {
     globalInstanceId === "codex";
   const globalSwapLabel =
     globalInstanceId === "codex" ? `${globalInstanceLabel} · ${globalModel}` : globalInstanceLabel;
-  const globalSwapTitle =
-    globalInstanceId === "codex"
+  const globalSwapTitle = !snapshot?.globalConfig.enabled
+    ? "Ative o Preset Global para inverter a instância"
+    : globalInstanceId === "codex"
       ? "Alternar modelo global Codex (gpt-6.1-sol ⇄ gpt-6.1-terra)"
       : "Inverter instância global (Agy Veca ⇄ Agy Principal)";
 
@@ -663,14 +664,14 @@ export function PopoverView() {
                 {canSwapGlobal ? (
                   <button
                     type="button"
-                    disabled={busyGlobalAction !== null}
+                    disabled={busyGlobalAction !== null || !snapshot.globalConfig.enabled}
                     onClick={() => void handleSwapGlobalInstance()}
                     aria-label="Inverter instância global"
                     title={globalSwapTitle}
                     className={[
                       "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium whitespace-nowrap",
                       "transition-[background-color,border-color,color,transform,opacity] duration-150 ease-out",
-                      "enabled:active:scale-[0.96] disabled:opacity-50",
+                      "enabled:active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
                       SWAP_PILL_CLASSES[globalInstanceTone] ?? SWAP_PILL_CLASSES.neutral,
                     ].join(" ")}

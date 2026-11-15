@@ -102,9 +102,13 @@ export function StudioView({
       if (!snap) return;
       const found = snap.globalPresets.find((p) => p.id === presetId);
       if (!found) return;
+      const nextDraft = clonePreset(found);
+      if (found.id === snap.globalConfig.activeGlobalPresetId) {
+        nextDraft.enabled = snap.globalConfig.enabled;
+      }
       setSelection({ kind: "global", presetId: found.id });
       setProjectMeta(null);
-      setDraftPreset(clonePreset(found));
+      setDraftPreset(nextDraft);
       const firstRole = Object.keys(found.roles).sort()[0] ?? null;
       setSelectedRoleId(firstRole);
       setDirty(false);
@@ -274,10 +278,21 @@ export function StudioView({
     try {
       const saved = await invokeIpc("save_global_preset", { preset: draftPreset });
       const refreshed = await invokeIpc("get_dashboard_snapshot");
+      const isSyncedGlobal =
+        saved.id === refreshed.globalConfig.activeGlobalPresetId &&
+        refreshed.globalConfig.enabled;
+      const nextDraft = clonePreset(saved);
+      if (saved.id === refreshed.globalConfig.activeGlobalPresetId) {
+        nextDraft.enabled = refreshed.globalConfig.enabled;
+      }
       setSnapshot(refreshed);
-      setDraftPreset(clonePreset(saved));
+      setDraftPreset(nextDraft);
       setDirty(false);
-      setStatusMessage(`Preset global '${saved.id}' salvo com sucesso.`);
+      setStatusMessage(
+        isSyncedGlobal
+          ? `Preset global '${saved.id}' salvo e sincronizado com settings.json.`
+          : `Preset global '${saved.id}' salvo com sucesso.`,
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -294,12 +309,28 @@ export function StudioView({
       setSaving(true);
       setErrorMsg(null);
       try {
-        const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
-          activePresetId: draftPreset.id,
-          enabled: nextEnabled,
-        });
-        setSnapshot(updated);
-        setDraftPreset({ ...draftPreset, enabled: nextEnabled });
+        const updatedConfigSnap = await invokeIpc(
+          IPC_COMMANDS.setGlobalPresetConfig,
+          {
+            activePresetId: draftPreset.id,
+            enabled: nextEnabled,
+          },
+        );
+        setSnapshot(updatedConfigSnap);
+        const updatedDraft = { ...clonePreset(draftPreset), enabled: nextEnabled };
+        setDraftPreset(updatedDraft);
+
+        if (!dirty) {
+          const saved = await invokeIpc(IPC_COMMANDS.saveGlobalPreset, {
+            preset: updatedDraft,
+          });
+          const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+          const nextDraft = clonePreset(saved);
+          nextDraft.enabled = refreshed.globalConfig.enabled;
+          setSnapshot(refreshed);
+          setDraftPreset(nextDraft);
+        }
+
         setStatusMessage(
           nextEnabled
             ? `Preset Global '${draftPreset.id}' ativado e sincronizado.`

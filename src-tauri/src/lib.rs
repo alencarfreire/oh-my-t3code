@@ -57,7 +57,7 @@ fn get_project_preset(
 #[tauri::command]
 fn save_global_preset(preset: PresetConfig) -> Result<PresetConfig, String> {
     let paths = AppPaths::from_env().map_err(String::from)?;
-    preset_engine::save_global_preset(&paths.presets_dir, preset).map_err(String::from)
+    compiler::save_global_preset_and_sync(&paths, preset).map_err(String::from)
 }
 
 #[tauri::command]

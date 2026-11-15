@@ -1,8 +1,8 @@
 use oh_my_t3code_lib::{
     compiler::{
         apply_preset_to_project, compile_preset_preview, remove_project_override,
-        set_global_preset_config, set_project_preset_enabled, swap_global_instance,
-        swap_project_primary_instance,
+        save_global_preset_and_sync, set_global_preset_config, set_project_preset_enabled,
+        swap_global_instance, swap_project_primary_instance,
     },
     get_dashboard_snapshot_from_paths,
     importer::import_existing_squad,
@@ -633,4 +633,94 @@ fn vtech_110_global_config_toggle_and_override_filtering_flow() {
         .find(|p| p.project_id == "proj-agy")
         .unwrap();
     assert!(p_agy_manual.has_custom_override);
+}
+
+#[test]
+fn vtech_116_sm1_global_pause_save_sync_and_fallback_flow() {
+    let tmp = tempdir().unwrap();
+    let t3_home = tmp.path().join(".t3");
+    let userdata_dir = t3_home.join("userdata");
+    let presets_dir = tmp.path().join("config").join("presets");
+    let skills_root = tmp.path().join("skills");
+    let agy_ws = tmp.path().join("projeto-teste-agy");
+    let codex_ws = tmp.path().join("projeto-teste-codex");
+
+    fs::create_dir_all(&userdata_dir).unwrap();
+    fs::create_dir_all(&agy_ws).unwrap();
+    fs::create_dir_all(&codex_ws).unwrap();
+
+    seed_test_sqlite(&userdata_dir.join("statev2.sqlite"), &agy_ws, &codex_ws);
+    seed_test_skills(&skills_root);
+
+    let settings_path = userdata_dir.join("settings.json");
+    let initial_settings = serde_json::json!({
+        "favorites": ["proj-agy"],
+        "customUserPreference": { "preserveMe": true },
+        "projectSettingsOverrides": {
+            "proj-codex": {
+                "defaultModelSelection": { "instanceId": "codex", "model": "gpt-6.1-sol" }
+            }
+        }
+    });
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&initial_settings).unwrap(),
+    )
+    .unwrap();
+
+    let paths = AppPaths {
+        t3_home,
+        presets_dir,
+        skill_roots: vec![("skillshare".to_string(), skills_root)],
+    };
+
+    // Activate agy-dual globally
+    let snap_active = set_global_preset_config(&paths, "agy-dual".to_string(), true).unwrap();
+    assert!(snap_active.global_config.enabled);
+    assert!(snap_active.default_model_selection.is_some());
+    assert!(snap_active.fallback_model_selection.is_some());
+
+    // SM1-BUG-3: get_project_preset with Some("codex") hint resolves to active_global_preset_id ("agy-dual"), not "codex-squad"
+    let resolved_codex_hint =
+        get_project_preset(&paths, "proj-codex", codex_ws.to_str().unwrap(), Some("codex"))
+            .unwrap();
+    assert_eq!(resolved_codex_hint.resolved_preset.id, "agy-dual");
+
+    // SM1-BUG-2: Editing and saving active global preset syncs settings.json
+    let mut edited_agy = resolve_global_preset(&paths.presets_dir, "agy-dual").unwrap();
+    edited_agy.orchestrator.provider_instance_id = "antigravity".to_string();
+    edited_agy.orchestrator.model = "gemini-4-argon".to_string();
+    save_global_preset_and_sync(&paths, edited_agy).unwrap();
+    let settings_synced = read_t3_settings(&settings_path);
+    assert_eq!(
+        settings_synced.default_model_selection.as_ref().unwrap().instance_id,
+        "antigravity"
+    );
+    assert_eq!(
+        settings_synced.default_model_selection.as_ref().unwrap().model,
+        "gemini-4-argon"
+    );
+
+    // SM1-BUG-1: Pausing global preset removes defaultModelSelection & fallbackModelSelection while preserving projectSettingsOverrides and favorites
+    let snap_paused = set_global_preset_config(&paths, "agy-dual".to_string(), false).unwrap();
+    assert!(!snap_paused.global_config.enabled);
+    assert!(snap_paused.default_model_selection.is_none());
+    assert!(snap_paused.fallback_model_selection.is_none());
+
+    let raw_paused: Value =
+        serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert!(raw_paused.get("defaultModelSelection").is_none());
+    assert!(raw_paused.get("fallbackModelSelection").is_none());
+    assert_eq!(raw_paused["favorites"], initial_settings["favorites"]);
+    assert_eq!(
+        raw_paused["customUserPreference"],
+        initial_settings["customUserPreference"]
+    );
+    assert_eq!(
+        raw_paused["projectSettingsOverrides"],
+        initial_settings["projectSettingsOverrides"]
+    );
+
+    // SM1-BUG-1: swap_global_instance rejects when paused
+    assert!(swap_global_instance(&paths).is_err());
 }

@@ -1047,6 +1047,7 @@ export class MockIpcStore {
       this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
       this.globalPresets[0];
     const firstFallback = activeGlobal?.fallbackChain[0];
+    const globalEnabled = this.globalConfig.enabled;
 
     return structuredClone({
       globalConfig: this.globalConfig,
@@ -1055,40 +1056,28 @@ export class MockIpcStore {
       providerInstances: this.providerInstances,
       globalPresets: this.globalPresets,
       skills: this.skills,
-      defaultModelSelection: activeGlobal
-        ? {
-            instanceId: activeGlobal.orchestrator.providerInstanceId,
-            model: activeGlobal.orchestrator.model,
-            options: Object.entries(activeGlobal.orchestrator.options).map(([id, value]) => ({
-              id,
-              value,
-            })),
-          }
-        : {
-            instanceId: "codex",
-            model: "gpt-6.1-sol",
-            options: [
-              { id: "reasoningEffort", value: "medium" },
-              { id: "serviceTier", value: "default" },
-            ],
-          },
-      fallbackModelSelection: firstFallback
-        ? {
-            instanceId: firstFallback.providerInstanceId,
-            model: firstFallback.model,
-            options: Object.entries(firstFallback.options).map(([id, value]) => ({
-              id,
-              value,
-            })),
-          }
-        : {
-            instanceId: "codex",
-            model: "gpt-6.1-terra",
-            options: [
-              { id: "reasoningEffort", value: "high" },
-              { id: "serviceTier", value: "default" },
-            ],
-          },
+      defaultModelSelection:
+        globalEnabled && activeGlobal
+          ? {
+              instanceId: activeGlobal.orchestrator.providerInstanceId,
+              model: activeGlobal.orchestrator.model,
+              options: Object.entries(activeGlobal.orchestrator.options).map(([id, value]) => ({
+                id,
+                value,
+              })),
+            }
+          : null,
+      fallbackModelSelection:
+        globalEnabled && firstFallback
+          ? {
+              instanceId: firstFallback.providerInstanceId,
+              model: firstFallback.model,
+              options: Object.entries(firstFallback.options).map(([id, value]) => ({
+                id,
+                value,
+              })),
+            }
+          : null,
       sqliteAvailable: true,
       settingsAvailable: true,
     });
@@ -1388,6 +1377,11 @@ export class MockIpcStore {
   }
 
   swapGlobalInstance(): DashboardSnapshot {
+    if (!this.globalConfig.enabled) {
+      throw new Error(
+        "Preset global está desativado. Reative-o antes de inverter a instância.",
+      );
+    }
     const active =
       this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
       this.globalPresets[0];

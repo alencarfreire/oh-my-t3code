@@ -1589,7 +1589,7 @@ pub(crate) fn save_project_preset_unlocked(
     })
 }
 
-/// Resolves the active preset for a project, falling back to detected squad or `default` / `codex-squad`.
+/// Resolves the active preset for a project, falling back to `config.active_global_preset_id` (or `default`).
 pub fn get_project_preset(
     paths: &AppPaths,
     project_id: &str,
@@ -1604,7 +1604,7 @@ pub(crate) fn get_project_preset_unlocked(
     paths: &AppPaths,
     project_id: &str,
     workspace_root: &str,
-    active_instance_hint: Option<&str>,
+    _active_instance_hint: Option<&str>,
 ) -> AppResult<ResolvedProjectPreset> {
     ensure_seed_presets_unlocked(&paths.presets_dir)?;
     let root = Path::new(workspace_root);
@@ -1630,10 +1630,7 @@ pub(crate) fn get_project_preset_unlocked(
     }
 
     let global_cfg = load_global_config_unlocked(&paths.global_config_path());
-    let fallback_id = match active_instance_hint {
-        Some("codex") => "codex-squad",
-        _ => global_cfg.active_global_preset_id.as_str(),
-    };
+    let fallback_id = global_cfg.active_global_preset_id.as_str();
     let resolved = resolve_global_preset_unlocked(&paths.presets_dir, fallback_id)
         .or_else(|_| resolve_global_preset_unlocked(&paths.presets_dir, "default"))
         .or_else(|_| resolve_global_preset_unlocked(&paths.presets_dir, "agy-dual"))?;
@@ -2074,5 +2071,59 @@ mod tests {
                 "residual temp file left behind: {name}"
             );
         }
+    }
+
+    #[test]
+    fn get_project_preset_respects_active_global_preset_id_even_with_codex_hint() {
+        let dir = tempdir().unwrap();
+        let t3_home = dir.path().join(".t3");
+        let config_root = dir.path().join("oh-my-t3code");
+        let presets_dir = config_root.join("presets");
+        let ws = dir.path().join("codex-project");
+        fs::create_dir_all(t3_home.join("userdata")).unwrap();
+        fs::create_dir_all(&ws).unwrap();
+
+        let paths = AppPaths {
+            t3_home,
+            presets_dir,
+            skill_roots: Vec::new(),
+        };
+        ensure_seed_presets(&paths.presets_dir).unwrap();
+
+        // 1. Default global config (activeGlobalPresetId == "default") with codex hint -> resolves "default" (not "codex-squad")
+        let resolved_default =
+            get_project_preset(&paths, "proj-codex", ws.to_str().unwrap(), Some("codex"))
+                .unwrap();
+        assert!(!resolved_default.has_local_override);
+        assert_eq!(resolved_default.resolved_preset.id, "default");
+
+        // 2. Non-codex active global preset (e.g. "agy-dual") with codex hint -> resolves "agy-dual"
+        save_global_config(
+            &paths.global_config_path(),
+            &GlobalAppConfig {
+                active_global_preset_id: "agy-dual".to_string(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let resolved_agy =
+            get_project_preset(&paths, "proj-codex", ws.to_str().unwrap(), Some("codex"))
+                .unwrap();
+        assert!(!resolved_agy.has_local_override);
+        assert_eq!(resolved_agy.resolved_preset.id, "agy-dual");
+
+        // 3. Invalid/missing active global preset falls back cleanly to "default"
+        save_global_config(
+            &paths.global_config_path(),
+            &GlobalAppConfig {
+                active_global_preset_id: "nonexistent-preset".to_string(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let resolved_fallback =
+            get_project_preset(&paths, "proj-codex", ws.to_str().unwrap(), Some("codex"))
+                .unwrap();
+        assert_eq!(resolved_fallback.resolved_preset.id, "default");
     }
 }
