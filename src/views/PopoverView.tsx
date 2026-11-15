@@ -91,33 +91,81 @@ export function PopoverView() {
   const [newOverridePresetId, setNewOverridePresetId] = useState("");
   const [applyingNewOverride, setApplyingNewOverride] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const snapshotRef = useRef<DashboardSnapshot | null>(null);
+  snapshotRef.current = snapshot;
+  const busyGlobalRef = useRef<"config" | "swap" | null>(null);
+  const snapshotSeqRef = useRef(0);
+  const loadSeqRef = useRef(0);
+  const lastSyncedPresetRef = useRef<Record<string, string>>({});
+  const syncedTimersRef = useRef<Map<string, number>>(new Map());
+  const isMountedRef = useRef(true);
 
-  const loadSnapshot = useCallback(async (isRefresh = false) => {
-    if (isRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    setErrorMsg(null);
-    try {
-      const data = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
-      setSnapshot(data);
-      setSelectedPresets((prev) => {
-        const next = { ...prev };
-        for (const project of data.projects) {
-          if (!next[project.projectId]) {
-            next[project.projectId] = defaultPresetForProject(project, data);
-          }
-        }
-        return next;
-      });
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+  useEffect(() => {
+    isMountedRef.current = true;
+    const timers = syncedTimersRef.current;
+    return () => {
+      isMountedRef.current = false;
+      timers.forEach((timerId) => window.clearTimeout(timerId));
+      timers.clear();
+    };
   }, []);
+
+  const syncSelectedPresetsWithSnapshot = useCallback((data: DashboardSnapshot) => {
+    const prevSynced = lastSyncedPresetRef.current;
+    const nextLastSynced: Record<string, string> = {};
+    for (const project of data.projects) {
+      nextLastSynced[project.projectId] = defaultPresetForProject(project, data);
+    }
+    lastSyncedPresetRef.current = nextLastSynced;
+
+    setSelectedPresets((prev) => {
+      const next: Record<string, string> = {};
+      for (const project of data.projects) {
+        const backendPreset = nextLastSynced[project.projectId];
+        const prevBackend = prevSynced[project.projectId];
+        if (
+          !project.hasCustomOverride ||
+          !prev[project.projectId] ||
+          prevBackend === undefined ||
+          prevBackend !== backendPreset
+        ) {
+          next[project.projectId] = backendPreset;
+        } else {
+          next[project.projectId] = prev[project.projectId];
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const loadSnapshot = useCallback(
+    async (isRefresh = false) => {
+      const seq = ++snapshotSeqRef.current;
+      const loadSeq = ++loadSeqRef.current;
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setErrorMsg(null);
+      try {
+        const data = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+        if (seq !== snapshotSeqRef.current) return;
+        snapshotRef.current = data;
+        setSnapshot(data);
+        syncSelectedPresetsWithSnapshot(data);
+      } catch (err) {
+        if (seq !== snapshotSeqRef.current) return;
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (loadSeq === loadSeqRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [syncSelectedPresetsWithSnapshot],
+  );
 
   useEffect(() => {
     void loadSnapshot(false);
@@ -245,16 +293,21 @@ export function PopoverView() {
   }, [normalizedQuery, overrideProjects, snapshot]);
 
   const handleToggleGlobalEnabled = async () => {
-    if (!snapshot) return;
-    const nextEnabled = !snapshot.globalConfig.enabled;
+    const currentSnapshot = snapshotRef.current;
+    if (!currentSnapshot || busyGlobalRef.current !== null) return;
+    const nextEnabled = !currentSnapshot.globalConfig.enabled;
+    busyGlobalRef.current = "config";
     setBusyGlobalAction("config");
     setErrorMsg(null);
     try {
       const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
-        activePresetId: snapshot.globalConfig.activeGlobalPresetId,
+        activePresetId: currentSnapshot.globalConfig.activeGlobalPresetId,
         enabled: nextEnabled,
       });
+      snapshotSeqRef.current += 1;
+      snapshotRef.current = updated;
       setSnapshot(updated);
+      syncSelectedPresetsWithSnapshot(updated);
       setStatusMessage(
         nextEnabled
           ? `Preset Global (${updated.globalConfig.activeGlobalPresetId}) ativado e sincronizado no T3 Code.`
@@ -263,20 +316,26 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyGlobalRef.current = null;
       setBusyGlobalAction(null);
     }
   };
 
   const handleChangeGlobalPreset = async (nextPresetId: string) => {
-    if (!snapshot) return;
+    const currentSnapshot = snapshotRef.current;
+    if (!currentSnapshot || busyGlobalRef.current !== null) return;
+    busyGlobalRef.current = "config";
     setBusyGlobalAction("config");
     setErrorMsg(null);
     try {
       const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
         activePresetId: nextPresetId,
-        enabled: snapshot.globalConfig.enabled,
+        enabled: currentSnapshot.globalConfig.enabled,
       });
+      snapshotSeqRef.current += 1;
+      snapshotRef.current = updated;
       setSnapshot(updated);
+      syncSelectedPresetsWithSnapshot(updated);
       setStatusMessage(
         updated.globalConfig.enabled
           ? `Preset Global Default alterado para ${nextPresetId} e sincronizado no settings.json.`
@@ -285,17 +344,29 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyGlobalRef.current = null;
       setBusyGlobalAction(null);
     }
   };
 
   const handleSwapGlobalInstance = async () => {
-    if (!snapshot || !snapshot.globalConfig.enabled) return;
+    const currentSnapshot = snapshotRef.current;
+    if (
+      !currentSnapshot ||
+      !currentSnapshot.globalConfig.enabled ||
+      busyGlobalRef.current !== null
+    ) {
+      return;
+    }
+    busyGlobalRef.current = "swap";
     setBusyGlobalAction("swap");
     setErrorMsg(null);
     try {
       const updated = await invokeIpc(IPC_COMMANDS.swapGlobalInstance);
+      snapshotSeqRef.current += 1;
+      snapshotRef.current = updated;
       setSnapshot(updated);
+      syncSelectedPresetsWithSnapshot(updated);
       const nextPreset =
         updated.globalPresets.find(
           (p) => p.id === updated.globalConfig.activeGlobalPresetId,
@@ -312,12 +383,13 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyGlobalRef.current = null;
       setBusyGlobalAction(null);
     }
   };
 
   const handleToggleProjectEnabled = async (project: ProjectSummary) => {
-    if (!snapshot) return;
+    if (!snapshotRef.current) return;
     const nextEnabled = !project.presetEnabled;
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "toggle" }));
     setErrorMsg(null);
@@ -352,7 +424,10 @@ export function PopoverView() {
         projectId: project.projectId,
         workspaceRoot: project.workspaceRoot,
       });
+      snapshotSeqRef.current += 1;
+      snapshotRef.current = updated;
       setSnapshot(updated);
+      syncSelectedPresetsWithSnapshot(updated);
       setStatusMessage(
         `Override de ${project.title} removido — projeto voltou ao Global Default.`,
       );
@@ -369,13 +444,14 @@ export function PopoverView() {
 
   const handleApplyNewProjectOverride = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!snapshot) return;
+    const currentSnapshot = snapshotRef.current;
+    if (!currentSnapshot) return;
     const targetProject = unconfiguredProjects.find(
       (p) => p.projectId === newOverrideProjectId,
     );
     if (!targetProject) return;
     const presetId =
-      newOverridePresetId || snapshot.globalConfig.activeGlobalPresetId;
+      newOverridePresetId || currentSnapshot.globalConfig.activeGlobalPresetId;
 
     setApplyingNewOverride(true);
     setErrorMsg(null);
@@ -386,9 +462,10 @@ export function PopoverView() {
         presetIdOrCustom: presetId,
         customPreset: null,
       });
+      const latestSnapshot = snapshotRef.current ?? currentSnapshot;
       const label = resolveInstanceShortLabel(
         result.activeInstanceId,
-        snapshot.providerInstances,
+        latestSnapshot.providerInstances,
       );
       setSelectedPresets((prev) => ({
         ...prev,
@@ -407,10 +484,18 @@ export function PopoverView() {
   };
 
   const handleSyncProject = async (project: ProjectSummary) => {
-    if (!snapshot) return;
+    const currentSnapshot = snapshotRef.current;
+    if (!currentSnapshot) return;
     const presetId =
-      selectedPresets[project.projectId] ?? defaultPresetForProject(project, snapshot);
+      selectedPresets[project.projectId] ??
+      defaultPresetForProject(project, currentSnapshot);
 
+    const existingTimer = syncedTimersRef.current.get(project.projectId);
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
+      syncedTimersRef.current.delete(project.projectId);
+    }
+    setSyncedProjectIds((prev) => ({ ...prev, [project.projectId]: false }));
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "sync" }));
     setErrorMsg(null);
     try {
@@ -420,18 +505,32 @@ export function PopoverView() {
         presetIdOrCustom: presetId,
         customPreset: null,
       });
+      const prevTimerBeforeSchedule = syncedTimersRef.current.get(project.projectId);
+      if (prevTimerBeforeSchedule !== undefined) {
+        window.clearTimeout(prevTimerBeforeSchedule);
+        syncedTimersRef.current.delete(project.projectId);
+      }
       setSyncedProjectIds((prev) => ({ ...prev, [project.projectId]: true }));
+      const latestSnapshot = snapshotRef.current ?? currentSnapshot;
       const label = resolveInstanceShortLabel(
         result.activeInstanceId,
-        snapshot.providerInstances,
+        latestSnapshot.providerInstances,
       );
       setStatusMessage(
         `Sincronizado! ${project.title} atualizado com ${result.presetId} (${label} · ${result.activeModel}).`,
       );
       await loadSnapshot(true);
-      window.setTimeout(() => {
-        setSyncedProjectIds((prev) => ({ ...prev, [project.projectId]: false }));
-      }, 2600);
+      if (isMountedRef.current) {
+        const timerBeforeTimeout = syncedTimersRef.current.get(project.projectId);
+        if (timerBeforeTimeout !== undefined) {
+          window.clearTimeout(timerBeforeTimeout);
+        }
+        const timerId = window.setTimeout(() => {
+          syncedTimersRef.current.delete(project.projectId);
+          setSyncedProjectIds((prev) => ({ ...prev, [project.projectId]: false }));
+        }, 2600);
+        syncedTimersRef.current.set(project.projectId, timerId);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -444,7 +543,8 @@ export function PopoverView() {
   };
 
   const handleSwapInstance = async (project: ProjectSummary) => {
-    if (!snapshot || !project.presetEnabled) return;
+    const currentSnapshot = snapshotRef.current;
+    if (!currentSnapshot || !project.presetEnabled) return;
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "swap" }));
     setErrorMsg(null);
     try {
@@ -452,9 +552,10 @@ export function PopoverView() {
         projectId: project.projectId,
         workspaceRoot: project.workspaceRoot,
       });
+      const latestSnapshot = snapshotRef.current ?? currentSnapshot;
       const label = resolveInstanceShortLabel(
         result.activeInstanceId,
-        snapshot.providerInstances,
+        latestSnapshot.providerInstances,
       );
       setStatusMessage(
         result.activeInstanceId === "codex"
@@ -632,7 +733,7 @@ export function PopoverView() {
 
                 <StatusToggle
                   enabled={snapshot.globalConfig.enabled}
-                  disabled={busyGlobalAction === "config"}
+                  disabled={busyGlobalAction !== null}
                   onClick={() => void handleToggleGlobalEnabled()}
                   aria-label="Alternar status do Preset Global"
                 />
@@ -648,7 +749,7 @@ export function PopoverView() {
                   aria-label="Preset Global Default"
                   sizeVariant="xs"
                   value={snapshot.globalConfig.activeGlobalPresetId}
-                  disabled={busyGlobalAction === "config"}
+                  disabled={busyGlobalAction !== null}
                   onChange={(e) => void handleChangeGlobalPreset(e.target.value)}
                   wrapperClassName="min-w-0 flex-1"
                 >

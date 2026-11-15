@@ -28,7 +28,11 @@ import {
 import { Badge, getInstanceBadgeTone } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { StatusToggle } from "../components/ui/StatusToggle";
-import { invokeIpc, listenStudioNavigate } from "../lib/ipc-client";
+import {
+  invokeIpc,
+  listenStudioNavigate,
+  type StudioNavigatePayload,
+} from "../lib/ipc-client";
 import {
   clonePreset,
   createEmptyPreset,
@@ -42,6 +46,7 @@ import {
   type PresetConfig,
   type ProjectSummary,
   type ResolvedProjectPreset,
+  type SyncResult,
 } from "../types/ipc";
 
 type StudioTabId = "overview" | "roles" | "skills" | "contention" | "preview";
@@ -95,6 +100,10 @@ export function StudioView({
 
   const snapshotRef = useRef<DashboardSnapshot | null>(null);
   snapshotRef.current = snapshot;
+  const selectionSeqRef = useRef(0);
+  const previewSeqRef = useRef(0);
+  const pendingNavigateRef = useRef<StudioNavigatePayload | null>(null);
+  const navigateSeqRef = useRef(0);
 
   const selectGlobalPreset = useCallback(
     (presetId: string, sourceSnapshot?: DashboardSnapshot | null) => {
@@ -102,6 +111,9 @@ export function StudioView({
       if (!snap) return;
       const found = snap.globalPresets.find((p) => p.id === presetId);
       if (!found) return;
+      selectionSeqRef.current += 1;
+      previewSeqRef.current += 1;
+      setPreviewLoading(false);
       const nextDraft = clonePreset(found);
       if (found.id === snap.globalConfig.activeGlobalPresetId) {
         nextDraft.enabled = snap.globalConfig.enabled;
@@ -119,6 +131,9 @@ export function StudioView({
   );
 
   const selectProject = useCallback(async (project: ProjectSummary) => {
+    const seq = ++selectionSeqRef.current;
+    previewSeqRef.current += 1;
+    setPreviewLoading(false);
     setErrorMsg(null);
     setSelection({ kind: "project", projectId: project.projectId });
     setPreviewTargetProjectId(project.projectId);
@@ -128,6 +143,7 @@ export function StudioView({
         projectId: project.projectId,
         workspaceRoot: project.workspaceRoot,
       });
+      if (seq !== selectionSeqRef.current) return;
       setProjectMeta(resolved);
       setDraftPreset(clonePreset(resolved.resolvedPreset));
       const firstRole =
@@ -135,9 +151,31 @@ export function StudioView({
       setSelectedRoleId(firstRole);
       setDirty(false);
     } catch (err) {
+      if (seq !== selectionSeqRef.current) return;
       setErrorMsg(err instanceof Error ? err.message : String(err));
     }
   }, []);
+
+  const applyNavigationPayload = useCallback(
+    async (payload: StudioNavigatePayload, snap: DashboardSnapshot) => {
+      if (payload.projectId) {
+        const proj = snap.projects.find((p) => p.projectId === payload.projectId);
+        if (proj) {
+          await selectProject(proj);
+          return true;
+        }
+      }
+      if (payload.presetId) {
+        const preset = snap.globalPresets.find((p) => p.id === payload.presetId);
+        if (preset) {
+          selectGlobalPreset(preset.id, snap);
+          return true;
+        }
+      }
+      return false;
+    },
+    [selectGlobalPreset, selectProject],
+  );
 
   const loadInitial = useCallback(async () => {
     setLoading(true);
@@ -146,6 +184,15 @@ export function StudioView({
       const data = await invokeIpc("get_dashboard_snapshot");
       snapshotRef.current = data;
       setSnapshot(data);
+
+      const pendingNav = pendingNavigateRef.current;
+      pendingNavigateRef.current = null;
+      if (pendingNav) {
+        const applied = await applyNavigationPayload(pendingNav, data);
+        if (applied) {
+          return;
+        }
+      }
 
       if (initialProjectId) {
         const proj = data.projects.find((p) => p.projectId === initialProjectId);
@@ -177,7 +224,13 @@ export function StudioView({
     } finally {
       setLoading(false);
     }
-  }, [initialPresetId, initialProjectId, selectGlobalPreset, selectProject]);
+  }, [
+    applyNavigationPayload,
+    initialPresetId,
+    initialProjectId,
+    selectGlobalPreset,
+    selectProject,
+  ]);
 
   useEffect(() => {
     void loadInitial();
@@ -185,25 +238,39 @@ export function StudioView({
 
   // Listen for `studio://navigate` events emitted from Rust when Popover opens Studio for a project
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listenStudioNavigate((payload) => {
-      const snap = snapshotRef.current;
-      if (!snap) return;
-      if (payload.projectId) {
-        const proj = snap.projects.find((p) => p.projectId === payload.projectId);
-        if (proj) {
-          void selectProject(proj);
-        }
-      } else if (payload.presetId) {
-        selectGlobalPreset(payload.presetId);
+      if (cancelled) return;
+      if (!snapshotRef.current) {
+        pendingNavigateRef.current = payload;
+        return;
       }
+      const navSeq = ++navigateSeqRef.current;
+      void (async () => {
+        try {
+          const freshSnap = await invokeIpc("get_dashboard_snapshot");
+          if (cancelled || navSeq !== navigateSeqRef.current) return;
+          snapshotRef.current = freshSnap;
+          setSnapshot(freshSnap);
+          await applyNavigationPayload(payload, freshSnap);
+        } catch (err) {
+          if (cancelled || navSeq !== navigateSeqRef.current) return;
+          setErrorMsg(err instanceof Error ? err.message : String(err));
+        }
+      })();
     }).then((fn) => {
-      unlisten = fn;
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
     });
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
-  }, [selectGlobalPreset, selectProject]);
+  }, [applyNavigationPayload]);
 
   const activePreviewProject = useMemo(() => {
     if (!snapshot || !previewTargetProjectId) return null;
@@ -213,24 +280,37 @@ export function StudioView({
   }, [previewTargetProjectId, snapshot]);
 
   const runPreview = useCallback(
-    async (targetProject: ProjectSummary | null, preset: PresetConfig | null) => {
+    async (
+      targetProject: ProjectSummary | null,
+      preset: PresetConfig | null,
+      options?: { clearError?: boolean },
+    ) => {
       if (!targetProject || !preset) {
+        previewSeqRef.current += 1;
         setPreviewResult(null);
+        setPreviewLoading(false);
         return;
       }
+      const seq = ++previewSeqRef.current;
       setPreviewLoading(true);
-      setErrorMsg(null);
+      if (options?.clearError ?? true) {
+        setErrorMsg(null);
+      }
       try {
         const result = await invokeIpc("preview_preset_sync", {
           projectId: targetProject.projectId,
           workspaceRoot: targetProject.workspaceRoot,
           preset,
         });
+        if (seq !== previewSeqRef.current) return;
         setPreviewResult(result);
       } catch (err) {
+        if (seq !== previewSeqRef.current) return;
         setErrorMsg(err instanceof Error ? err.message : String(err));
       } finally {
-        setPreviewLoading(false);
+        if (seq === previewSeqRef.current) {
+          setPreviewLoading(false);
+        }
       }
     },
     [],
@@ -239,7 +319,7 @@ export function StudioView({
   // Refresh diff automatically whenever switching to Preview & Diff tab
   useEffect(() => {
     if (activeTab === "preview" && draftPreset && activePreviewProject) {
-      void runPreview(activePreviewProject, draftPreset);
+      void runPreview(activePreviewProject, draftPreset, { clearError: false });
     }
   }, [activePreviewProject, activeTab, draftPreset, runPreview]);
 
@@ -249,6 +329,10 @@ export function StudioView({
   };
 
   const handleCreateGlobalPreset = (id: string, extendsId: string | null) => {
+    selectionSeqRef.current += 1;
+    previewSeqRef.current += 1;
+    setPreviewLoading(false);
+    setPreviewResult(null);
     const base = extendsId
       ? snapshot?.globalPresets.find((p) => p.id === extendsId)
       : null;
@@ -285,6 +369,7 @@ export function StudioView({
       if (saved.id === refreshed.globalConfig.activeGlobalPresetId) {
         nextDraft.enabled = refreshed.globalConfig.enabled;
       }
+      snapshotRef.current = refreshed;
       setSnapshot(refreshed);
       setDraftPreset(nextDraft);
       setDirty(false);
@@ -316,6 +401,7 @@ export function StudioView({
             enabled: nextEnabled,
           },
         );
+        snapshotRef.current = updatedConfigSnap;
         setSnapshot(updatedConfigSnap);
         const updatedDraft = { ...clonePreset(draftPreset), enabled: nextEnabled };
         setDraftPreset(updatedDraft);
@@ -327,6 +413,7 @@ export function StudioView({
           const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
           const nextDraft = clonePreset(saved);
           nextDraft.enabled = refreshed.globalConfig.enabled;
+          snapshotRef.current = refreshed;
           setSnapshot(refreshed);
           setDraftPreset(nextDraft);
         }
@@ -356,16 +443,32 @@ export function StudioView({
       const saved = await invokeIpc(IPC_COMMANDS.saveGlobalPreset, {
         preset: presetToActivate,
       });
-      const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
-        activePresetId: saved.id,
-        enabled: true,
-      });
-      setSnapshot(updated);
       setDraftPreset(clonePreset(saved));
       setDirty(false);
-      setStatusMessage(
-        `Preset '${saved.id}' definido como Global Default (Ativo) e sincronizado no T3 Code.`,
-      );
+
+      try {
+        const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
+          activePresetId: saved.id,
+          enabled: true,
+        });
+        snapshotRef.current = updated;
+        setSnapshot(updated);
+        setStatusMessage(
+          `Preset '${saved.id}' definido como Global Default (Ativo) e sincronizado no T3 Code.`,
+        );
+      } catch (err) {
+        try {
+          const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+          snapshotRef.current = refreshed;
+          setSnapshot(refreshed);
+        } catch {
+          // Keep current snapshot if refresh fails
+        }
+        const detail = err instanceof Error ? err.message : String(err);
+        setErrorMsg(
+          `Preset '${saved.id}' salvo no disco, mas a ativação como Global Default falhou: ${detail}. Tente definir como Global Default novamente.`,
+        );
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -383,21 +486,43 @@ export function StudioView({
         workspaceRoot: projectMeta.workspaceRoot,
         preset: draftPreset,
       });
-      let nextStatusMessage = `Override local salvo em ${saved.localPresetPath} (pausado).`;
-      if (draftPreset.enabled !== false) {
-        const res = await invokeIpc("apply_preset_sync", {
-          projectId: projectMeta.projectId,
-          workspaceRoot: projectMeta.workspaceRoot,
-          presetIdOrCustom: draftPreset.id,
-          customPreset: draftPreset,
-        });
-        nextStatusMessage = `Override salvo e squad compilada (${res.writtenFiles.length} arquivos em .agents/skills + settings.json sincronizado).`;
-      }
       setProjectMeta(saved);
       setDraftPreset(clonePreset(saved.resolvedPreset));
-      const refreshed = await invokeIpc("get_dashboard_snapshot");
-      setSnapshot(refreshed);
       setDirty(false);
+
+      let nextStatusMessage = `Override local salvo em ${saved.localPresetPath} (pausado).`;
+      if (draftPreset.enabled !== false) {
+        try {
+          const res = await invokeIpc("apply_preset_sync", {
+            projectId: projectMeta.projectId,
+            workspaceRoot: projectMeta.workspaceRoot,
+            presetIdOrCustom: draftPreset.id,
+            customPreset: draftPreset,
+          });
+          nextStatusMessage = `Override salvo e squad compilada (${res.writtenFiles.length} arquivos em .agents/skills + settings.json sincronizado).`;
+        } catch (err) {
+          try {
+            const refreshed = await invokeIpc("get_dashboard_snapshot");
+            snapshotRef.current = refreshed;
+            setSnapshot(refreshed);
+          } catch {
+            // Keep current snapshot if refresh fails
+          }
+          const detail = err instanceof Error ? err.message : String(err);
+          setErrorMsg(
+            `Preset salvo no disco (${saved.localPresetPath}), mas a sincronização falhou: ${detail}. Tente sincronizar novamente.`,
+          );
+          return;
+        }
+      }
+
+      try {
+        const refreshed = await invokeIpc("get_dashboard_snapshot");
+        snapshotRef.current = refreshed;
+        setSnapshot(refreshed);
+      } catch {
+        // Keep current snapshot if refresh fails
+      }
       setStatusMessage(nextStatusMessage);
       if (activeTab === "preview" && activePreviewProject) {
         await runPreview(activePreviewProject, saved.resolvedPreset);
@@ -426,6 +551,7 @@ export function StudioView({
         enabled: nextEnabled,
       });
       const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+      snapshotRef.current = refreshed;
       setSnapshot(refreshed);
       setDraftPreset({ ...draftPreset, enabled: nextEnabled });
       setStatusMessage(
@@ -449,6 +575,7 @@ export function StudioView({
         projectId: projectMeta.projectId,
         workspaceRoot: projectMeta.workspaceRoot,
       });
+      snapshotRef.current = refreshed;
       setSnapshot(refreshed);
       selectGlobalPreset(refreshed.globalConfig.activeGlobalPresetId, refreshed);
       setStatusMessage(
@@ -475,6 +602,7 @@ export function StudioView({
         customPreset: null,
       });
       const refreshed = await invokeIpc(IPC_COMMANDS.getDashboardSnapshot);
+      snapshotRef.current = refreshed;
       setSnapshot(refreshed);
       const updatedProj =
         refreshed.projects.find((p) => p.projectId === project.projectId) ?? project;
@@ -494,26 +622,57 @@ export function StudioView({
     setSaving(true);
     setErrorMsg(null);
     try {
+      let savedProjectPreset: ResolvedProjectPreset | null = null;
       if (selection?.kind === "project" && projectMeta) {
-        await invokeIpc("save_project_preset", {
+        savedProjectPreset = await invokeIpc("save_project_preset", {
           projectId: projectMeta.projectId,
           workspaceRoot: projectMeta.workspaceRoot,
           preset: draftPreset,
         });
+        setProjectMeta(savedProjectPreset);
+        setDraftPreset(clonePreset(savedProjectPreset.resolvedPreset));
+        setDirty(false);
       }
-      const res = await invokeIpc("apply_preset_sync", {
-        projectId: activePreviewProject.projectId,
-        workspaceRoot: activePreviewProject.workspaceRoot,
-        presetIdOrCustom: draftPreset.id,
-        customPreset: draftPreset,
-      });
-      const refreshed = await invokeIpc("get_dashboard_snapshot");
-      setSnapshot(refreshed);
+
+      const presetForSync = savedProjectPreset?.resolvedPreset ?? draftPreset;
+      let res: SyncResult;
+      try {
+        res = await invokeIpc("apply_preset_sync", {
+          projectId: activePreviewProject.projectId,
+          workspaceRoot: activePreviewProject.workspaceRoot,
+          presetIdOrCustom: presetForSync.id,
+          customPreset: presetForSync,
+        });
+      } catch (err) {
+        if (savedProjectPreset) {
+          try {
+            const refreshed = await invokeIpc("get_dashboard_snapshot");
+            snapshotRef.current = refreshed;
+            setSnapshot(refreshed);
+          } catch {
+            // Keep current snapshot if refresh fails
+          }
+          const detail = err instanceof Error ? err.message : String(err);
+          setErrorMsg(
+            `Preset salvo no disco (${savedProjectPreset.localPresetPath}), mas a sincronização falhou: ${detail}. Tente sincronizar novamente.`,
+          );
+          return;
+        }
+        throw err;
+      }
+
+      try {
+        const refreshed = await invokeIpc("get_dashboard_snapshot");
+        snapshotRef.current = refreshed;
+        setSnapshot(refreshed);
+      } catch {
+        // Keep current snapshot if refresh fails
+      }
       setDirty(false);
       setStatusMessage(
         `Sincronizado! ${res.writtenFiles.length} arquivos gravados e settings.json atualizado (${res.activeInstanceId} · ${res.activeModel}).`,
       );
-      await runPreview(activePreviewProject, draftPreset);
+      await runPreview(activePreviewProject, presetForSync);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -522,6 +681,7 @@ export function StudioView({
   };
 
   const handleImportSquad = async (project: ProjectSummary) => {
+    const seq = ++selectionSeqRef.current;
     setImportingProjectId(project.projectId);
     setErrorMsg(null);
     try {
@@ -530,7 +690,12 @@ export function StudioView({
         workspaceRoot: project.workspaceRoot,
       });
       const refreshed = await invokeIpc("get_dashboard_snapshot");
+      snapshotRef.current = refreshed;
       setSnapshot(refreshed);
+      if (seq !== selectionSeqRef.current) return;
+      previewSeqRef.current += 1;
+      setPreviewLoading(false);
+      setPreviewResult(null);
       setSelection({ kind: "project", projectId: project.projectId });
       setProjectMeta(imported);
       setDraftPreset(clonePreset(imported.resolvedPreset));
