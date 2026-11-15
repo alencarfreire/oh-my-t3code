@@ -20,9 +20,9 @@ While the **Popover** has focus, use these keyboard shortcuts:
 
 | Shortcut | Action |
 | :--- | :--- |
-| `⌘K` / `Ctrl+K` or `/` | Focuses the filter input for projects with overrides (shown when 2 or more overrides exist) |
+| `⌘K` / `Ctrl+K` or `/` | Focuses the quick project filter input (shown whenever **2 or more T3 Code projects** are registered, with or without overrides) |
 | `⌘,` / `Ctrl+,` | Hides the Popover and opens the **Preset Studio** |
-| `Esc` | Closes the **Popover** |
+| `Esc` | Clears the active search filter first if non-empty; closes the **Popover** when the filter is empty |
 
 > [!NOTE]
 > Pressing `/` focuses the search input only when your cursor is outside an `input`, `textarea`, or `select` field.
@@ -36,10 +36,9 @@ Directly below the header sits the **`Preset Global (Default)`** card, which con
 - **Status badges**: **`Global Ativo`** (Active) / **`Global Pausado`** (Paused) in the header, and **`Instalado por padrão`** (blue badge shown when the active preset is `default`)
 - **Toggle `Ativo` / `Desativado`**: enables or pauses the Global Preset. When active, it displays `Padrão para todos os projetos · <model>` and syncs `defaultModelSelection` and `fallbackModelSelection` to `~/.t3/userdata/settings.json`. When disabled, it displays `Desativado — projetos sem override usam config padrão do T3 Code`
 - **`Preset Global Default` dropdown**: selects which global preset in `~/.config/oh-my-t3code/presets/*.jsonc` acts as the default (`default` or custom global presets you create)
-- **Swap `⇄` button**: switches between configured provider instances/accounts or models in T3 Code in one click when rate limits hit:
-  - When primary and secondary instances of the same provider are configured (such as `antigravity` ⇄ `antigravity_2`): displays the active instance label and swaps between both configured instances (`Inverter instância global`)
-  - On Codex presets (`codex`): displays `Codex · <model>` and toggles between configured models (such as `gpt-6.1-sol` ⇄ `gpt-6.1-terra`)
-  - On other providers (`claudeAgent`, `opencode`, `grok`): displays a pill with the configured instance name
+- **Swap `⇄` button (orchestrator only) & `Swap Squad` button (squad + inherited)**: available when the Global Preset is `Ativo` and the provider supports switching (alongside the reminder `"Swaps aplicam-se a novas threads no T3 Code."`):
+  - **`⇄` pill**: switches only the orchestrator (`defaultModelSelection` and `fallbackChain[0]` collision guard) between configured instances or models — e.g. `antigravity` ⇄ `antigravity_2` (`Inverter instância global`) or `Codex · <model>` (`gpt-6.1-sol` ⇄ `gpt-6.1-terra`). On other providers (`claudeAgent`, `opencode`, `grok`), it renders a static pill with the configured instance name.
+  - **`Swap Squad` button**: switches the orchestrator **and** selectively rebalances matching global worker roles (`includeRoles: true`), re-syncs active inherited projects (`resyncInherited: true`), and surfaces the impact summary (`GlobalSwapReport`, showing updated roles/projects and any partial errors).
 - **Settings icon (`Editar Preset Global no Studio`)**: opens the **Preset Studio** directly on the active Global Preset
 
 ### `Saúde global da sessão e RAM` strip (Global Session Health & RAM)
@@ -68,7 +67,7 @@ To add an override to a project that currently follows the Global Default:
 3. Under **`Preset de Override`**, pick the starting preset to base the override on.
 4. Click **`Aplicar Override`** (Apply Override), or **`Cancelar`** (Cancel) to abort.
 
-When **2 or more** projects have overrides, the **`Filtrar projetos, overrides ou instância…`** (`⌘K`) filter bar appears automatically. It matches project title, path (`workspaceRoot`), local preset `id` or `extends`, detected squad slug, and configured instance name (such as `antigravity`, `antigravity_2`, `Codex`, etc.).
+When **2 or more T3 Code projects are registered (`snapshot.projects.length > 1`)**, the **`Filtrar projetos, overrides ou instância…`** (`⌘K`) filter bar appears automatically. It matches project title, path (`workspaceRoot`), local preset `id` or `extends`, detected squad slug, and configured instance name (such as `antigravity`, `antigravity_2`, `Codex`, etc.). When a search query is active, matching unconfigured projects also appear right below under **`Seguindo Global Default (N)`**, displaying their session health badge/summary plus quick buttons (**`Configurar`** to open the inline override form pre-selected, the **Preset Studio** icon, and **`Abrir thread pai novo`** when a health alert is active).
 
 Each card in **`Projetos com Override`** displays status badges, session health telemetry, and dedicated actions:
 
@@ -84,7 +83,7 @@ Each card in **`Projetos com Override`** displays status badges, session health 
   - Clicking **`Abrir thread pai novo`** builds and copies a ready-to-use handoff prompt to your clipboard — including the alert reason, affected threads, `sessionPolicy` constraints, and instructions to resume via `ai-memory` (`memory_briefing`, `memory_handoff_accept`, and `memory_query`) — **without writing to `statev2.sqlite` (`SQLite Read-Only`) or creating threads automatically**. Simply open a new parent thread in T3 Code and paste the copied prompt.
 - **Card actions**:
   - **Individual toggle (`Ativo` / `Desativado`)**: pauses or reactivates the project override without deleting `.t3code/preset.jsonc`. Pausing removes `projectSettingsOverrides[projectId]` from `settings.json`
-  - **One-click Swap `⇄`**: toggles between configured instances of the same provider (e.g. `antigravity` ⇄ `antigravity_2`) or between configured models on `codex` (e.g. `gpt-6.1-sol` ⇄ `gpt-6.1-terra`), recompiles the squad, and updates `settings.json`
+  - **One-click Swap `⇄` & `Swap Squad`**: available when the override is active. The **`⇄`** pill switches only the project orchestrator between configured instances of the same provider (e.g. `antigravity` ⇄ `antigravity_2`) or between configured models on `codex` (e.g. `gpt-6.1-sol` ⇄ `gpt-6.1-terra`) and updates `settings.json`; **`Swap Squad`** (`includeRoles: true`) also selectively rebalances matching worker roles in `roles/*.md` (preserving `disabledRoles` and roles on other providers/models)
   - **`Global` button**: removes the override (`.t3code/preset.jsonc` and `projectSettingsOverrides[projectId]`) and returns the project to the **Global Default**
   - **Preset dropdown + `Sync` button**: applies the chosen preset to the project (displays `Sync…` while writing and `Sincronizado!` when complete)
   - **Settings icon (`Editar no Preset Studio`)**: opens the **Preset Studio** directly on the selected project
@@ -100,6 +99,8 @@ Below the global preset and overrides sections, the **Popover** renders the coll
 </p>
 
 The **Popover** footer confirms the safety guarantees with the **`SQLite Read-Only · ~/.t3`** badge and the **`Esc para fechar`** (Esc to close) reminder.
+
+---
 
 ## 2. Preset Studio (`1120×760px`)
 
@@ -125,10 +126,10 @@ The top bar adapts its badges and actions based on the item selected in the side
 
 - **Global Mode**:
   - Displays the **`Preset Global`** badge (plus **`Default Global`** and **`Instalado por padrão`** when applicable) and the file path `~/.config/oh-my-t3code/presets/<id>.jsonc`
-  - Actions: **`StatusToggle`** (`Ativo` / `Desativado`), **`Definir como Global Default`** (Set as Global Default, shown when the selected preset is not the active global default), and **`Salvar Preset Global`** (Save Global Preset)
+  - Actions: **`StatusToggle`** (`Ativo` / `Desativado`), **`Inverter Instância`** / **`Alternar Modelo`** (orchestrator only), **`Swap Squad`** (switches the orchestrator, rebalances matching worker roles, and re-syncs active inherited projects; available when enabled and supported by the provider), **`Definir como Global Default`** (Set as Global Default, shown when the selected preset is not the active global default), and **`Salvar Preset Global`** (Save Global Preset)
 - **Project Mode**:
   - Displays the **`Projeto · Override Local`** badge and the file path `<repo>/.t3code/preset.jsonc`
-  - Actions: **`StatusToggle`** (`Ativo` / `Desativado`), **`Voltar ao Global (Remover Override)`** (Return to Global / Remove Override), **`Salvar Override`** (Save Override), and **`Revisar Diff & Sincronizar`** (Review Diff & Sync, which jumps straight to the **`Preview & Diff`** tab)
+  - Actions: **`StatusToggle`** (`Ativo` / `Desativado`), **`Inverter Instância`** / **`Alternar Modelo`** (project orchestrator only), **`Swap Squad`** (switches the orchestrator and selectively rebalances `roles/*.md` when the override is active), **`Voltar ao Global (Remover Override)`** (Return to Global / Remove Override), **`Salvar Override`** (Save Override), and **`Revisar Diff & Sincronizar`** (Review Diff & Sync, which jumps straight to the **`Preview & Diff`** tab)
 - **`Alterações não salvas` badge**: appears in amber whenever the current draft differs from the file saved on disk
 - **Architecture summary strip**: shows **`Orquestrador`** (Orchestrator), **`Topologia`** (`Intra-Thread` or `Issue-Thread`), **`Fallback: N nível(is)`**, and **`Papéis: N`** (Roles) at a glance
 
@@ -245,6 +246,8 @@ Generates and displays the deterministic compilation output before anything is w
 
 *`Preview & Diff` tab: `Unified Diff` view highlighting changes to Section 5 of `SKILL.md` (`Gestão de sessão e concorrência`) before writing to disk.*
 
+---
+
 ## 3. Recommended daily workflows
 
 These five workflows cover the most common tasks when operating multiple accounts, session limits, and repositories in T3 Code.
@@ -266,17 +269,17 @@ These five workflows cover the most common tasks when operating multiple account
 
 ### Scenario 3: Hitting a rate limit or quota mid-session
 
-1. Left-click the menu bar icon to open the **Popover**.
-2. If the session belongs to a project with its own override, click the **`⇄`** pill directly on that project's card to switch between configured instances of the same provider (such as `antigravity` ⇄ `antigravity_2`) or between configured models (such as `Codex · gpt-6.1-sol` ⇄ `gpt-6.1-terra`).
-3. If the project follows the global default, click the **`⇄`** pill inside the **`Preset Global (Default)`** card.
-4. Within seconds, the backend backs up `settings.json` to `.bak`, updates it atomically, and routes the project's squad to the alternate instance or model.
+1. Left-click the menu bar icon to open the **Popover** (or use the **Preset Studio** header).
+2. If the session belongs to a project with its own override, click the **`⇄`** pill on that project's card to switch only its orchestrator (`antigravity` ⇄ `antigravity_2` or `Codex · gpt-6.1-sol` ⇄ `gpt-6.1-terra`), or click **`Swap Squad`** to also selectively rebalance matching worker roles in `roles/*.md`.
+3. If the project follows the global default, click the **`⇄`** pill (orchestrator only) or **`Swap Squad`** (orchestrator + global worker roles + re-sync of active inherited projects) inside the **`Preset Global (Default)`** card.
+4. Within seconds, the backend backs up `settings.json` to `.bak`, updates it atomically, and routes new T3 Code threads for the squad to the alternate instance or model.
 
 ### Scenario 4: Testing preset changes safely in Browser Preview
 
 1. From the project root, run `bun run dev` to start the frontend on port `1420` with `MockIpcStore` enabled (no real files under `~/.t3` or `~/.config/oh-my-t3code` are touched).
 2. Open `http://localhost:1420` in your browser, or jump straight to `http://localhost:1420/?view=studio` and `http://localhost:1420/?view=popover`.
 3. Experiment with new presets using `extends`, configure `fallbackChain`, test filters, and inspect the generated **Unified Diff** using the in-memory sample projects.
-4. Once satisfied with the configuration, apply it in the native app (`bun run tauri:dev`).
+4. Once satisfied with the configuration, reproduce or apply it in the native app (`bun run tauri:dev`).
 
 ### Scenario 5: Recovering a session after `Pai gordo`, `ACP morto` (`AcpRequestError`), or `Alerta de RAM (8 GB)`
 

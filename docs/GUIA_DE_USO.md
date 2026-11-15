@@ -20,9 +20,9 @@ Com o **Popover** em foco, use os seguintes atalhos de teclado:
 
 | Atalho | Ação |
 | :--- | :--- |
-| `⌘K` / `Ctrl+K` ou `/` | Foca o campo de filtro rápido de projetos com override (quando há 2 ou mais overrides) |
+| `⌘K` / `Ctrl+K` ou `/` | Foca o campo de filtro rápido de projetos (exibido quando há **2 ou mais projetos cadastrados no T3 Code**, com ou sem override) |
 | `⌘,` / `Ctrl+,` | Oculta o Popover e abre o **Preset Studio** |
-| `Esc` | Fecha o **Popover** |
+| `Esc` | Se houver texto na busca, limpa o filtro primeiro; com o filtro vazio, fecha o **Popover** |
 
 > [!NOTE]
 > O atalho `/` só foca o campo de busca quando o cursor não está dentro de um campo de texto (`input`, `textarea` ou `select`).
@@ -36,10 +36,9 @@ Logo abaixo fica o card em destaque **Preset Global (Default)**, que controla o 
 - **Badges de estado**: **Global Ativo** / **Global Pausado** no cabeçalho e **Instalado por padrão** (badge azul quando o preset ativo é o `default`).
 - **Toggle `Ativo` / `Desativado`**: ativa ou pausa o Preset Global. Quando ativo, exibe `Padrão para todos os projetos · <modelo>` e sincroniza `defaultModelSelection` e `fallbackModelSelection` em `~/.t3/userdata/settings.json`. Quando desativado, exibe `Desativado — projetos sem override usam config padrão do T3 Code`.
 - **Dropdown `Preset Global Default`**: escolhe qual preset global em `~/.config/oh-my-t3code/presets/*.jsonc` é o padrão (`default` ou presets globais criados por você).
-- **Botão Swap `⇄`**: alterna em 1 clique entre múltiplas instâncias/contas ou modelos configurados no T3 Code quando a cota aperta:
-  - Quando há instâncias primária e secundária configuradas do mesmo provedor (por exemplo, `antigravity` ⇄ `antigravity_2`): exibe a instância ativa e inverte entre as duas instâncias configuradas (`Inverter instância global`).
-  - Em presets Codex (`codex`): exibe `Codex · <modelo>` e alterna entre os modelos configurados (como `gpt-6.1-sol` ⇄ `gpt-6.1-terra`).
-  - Em outros provedores (`claudeAgent`, `opencode`, `grok`), exibe uma pílula com o nome da instância configurada.
+- **Botão Swap `⇄` (somente orquestrador)** e **`Swap Squad` (squad + herdados)**: disponíveis quando o Preset Global está `Ativo` e o provedor permite alternância (com o lembrete `"Swaps aplicam-se a novas threads no T3 Code."`):
+  - **Pílula `⇄`**: alterna apenas o orquestrador (`defaultModelSelection` e ajuste de colisão em `fallbackChain[0]`) entre as instâncias ou modelos configurados — por exemplo, `antigravity` ⇄ `antigravity_2` (`Inverter instância global`) ou `Codex · <modelo>` (`gpt-6.1-sol` ⇄ `gpt-6.1-terra`). Em outros provedores (`claudeAgent`, `opencode`, `grok`), exibe uma pílula estática com o nome da instância configurada.
+  - **Botão `Swap Squad`**: além de alternar o orquestrador, rebalanceia seletivamente os papéis compatíveis da squad no preset global (`includeRoles: true`), ressincroniza projetos herdados ativos (`resyncInherited: true`) e exibe o resumo de impacto (`GlobalSwapReport`, incluindo papéis/projetos atualizados e eventuais erros parciais).
 - **Ícone de configurações (`Editar Preset Global no Studio`)**: abre o **Preset Studio** já posicionado no Preset Global ativo.
 
 ### Faixa `Saúde global da sessão e RAM`
@@ -68,7 +67,7 @@ Para criar um override em um projeto que hoje segue o Global Default:
 3. Em **Preset de Override**, escolha o preset inicial que servirá de base.
 4. Clique em **Aplicar Override** (ou **Cancelar** para desistir).
 
-Quando houver **2 ou mais** projetos com override, o campo **Filtrar projetos, overrides ou instância…** (`⌘K`) é exibido automaticamente e busca por título do projeto, caminho (`workspaceRoot`), `id` ou `extends` do preset local, slug da squad detectada ou nome da instância configurada (como `antigravity`, `antigravity_2`, `Codex`, etc.).
+Quando houver **2 ou mais projetos cadastrados no T3 Code (`snapshot.projects.length > 1`)**, o campo **Filtrar projetos, overrides ou instância…** (`⌘K`) é exibido automaticamente e busca por título do projeto, caminho (`workspaceRoot`), `id` ou `extends` do preset local, slug da squad detectada ou nome da instância configurada (como `antigravity`, `antigravity_2`, `Codex`, etc.). Quando o filtro está preenchido, projetos sem override local que correspondem à busca também aparecem logo abaixo na subseção **`Seguindo Global Default (N)`**, exibindo badge/resumo de saúde, o botão **`Configurar`** (que abre o formulário inline já pré-selecionado), o atalho para o **Preset Studio** e **`Abrir thread pai novo`** quando houver alerta de saúde.
 
 Cada card na lista **Projetos com Override** exibe badges, telemetria de saúde e ações dedicadas:
 
@@ -84,7 +83,7 @@ Cada card na lista **Projetos com Override** exibe badges, telemetria de saúde 
   - Ao clicar em **`Abrir thread pai novo`**, o **Popover** gera e copia para a área de transferência um prompt completo de handoff — com o motivo do alerta, threads afetadas, diretrizes da `sessionPolicy` e instruções para retomar via `ai-memory` (`memory_briefing`, `memory_handoff_accept` e `memory_query`) — **sem escrever no `statev2.sqlite` (`SQLite Read-Only`) nem criar threads automaticamente**. Basta abrir um thread pai novo no T3 Code e colar o prompt.
 - **Ações do card**:
   - **Toggle individual (`Ativo` / `Desativado`)**: pausa ou reativa o override do projeto sem apagar `.t3code/preset.jsonc`. Ao pausar, remove `projectSettingsOverrides[projectId]` de `settings.json`.
-  - **Swap `⇄` em 1 clique**: alterna entre instâncias configuradas do mesmo provedor (ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados no `codex` (ex.: `gpt-6.1-sol` ⇄ `gpt-6.1-terra`), recompila a squad e atualiza `settings.json`.
+  - **Swap `⇄` em 1 clique** e **`Swap Squad`**: disponíveis quando o override está ativo. A pílula **`⇄`** alterna apenas o orquestrador entre instâncias configuradas do mesmo provedor (ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados no `codex` (ex.: `gpt-6.1-sol` ⇄ `gpt-6.1-terra`) e atualiza `settings.json`; já **`Swap Squad`** (`includeRoles: true`) também rebalanceia seletivamente os papéis compatíveis em `roles/*.md` (preservando `disabledRoles` e papéis de outros provedores/modelos).
   - **Botão `Global`**: remove o override (`.t3code/preset.jsonc` e `projectSettingsOverrides[projectId]`) e devolve o projeto ao **Global Default**.
   - **Dropdown de preset + botão `Sync`**: aplica o preset escolhido ao projeto (`Sync…` durante a gravação e `Sincronizado!` ao concluir).
   - **Ícone de configurações (`Editar no Preset Studio`)**: abre o **Preset Studio** diretamente no projeto selecionado.
@@ -127,10 +126,10 @@ O topo do editor adapta os badges e botões conforme o item selecionado na sideb
 
 - **Em Modo Global**:
   - Exibe o badge **Preset Global** (além de **Default Global** e **Instalado por padrão**, quando aplicável) e o caminho `~/.config/oh-my-t3code/presets/<id>.jsonc`.
-  - Ações: **StatusToggle** (`Ativo` / `Desativado`), **Definir como Global Default** (quando o preset selecionado ainda não for o Global Default) e **Salvar Preset Global**.
+  - Ações: **StatusToggle** (`Ativo` / `Desativado`), **Inverter Instância** / **Alternar Modelo** (troca apenas o orquestrador), **Swap Squad** (alterna o orquestrador, rebalanceia papéis compatíveis e ressincroniza projetos herdados ativos; disponível quando o preset/global está ativo e o provedor permite swap), **Definir como Global Default** (quando o preset selecionado ainda não for o Global Default) e **Salvar Preset Global**.
 - **Em Modo Projeto**:
   - Exibe o badge **Projeto · Override Local** e o caminho `<repo>/.t3code/preset.jsonc`.
-  - Ações: **StatusToggle** (`Ativo` / `Desativado`), **Voltar ao Global (Remover Override)**, **Salvar Override** e **Revisar Diff & Sincronizar** (leva diretamente à aba **Preview & Diff**).
+  - Ações: **StatusToggle** (`Ativo` / `Desativado`), **Inverter Instância** / **Alternar Modelo** (troca apenas o orquestrador do projeto), **Swap Squad** (alterna o orquestrador e rebalanceia seletivamente `roles/*.md` quando o override está ativo), **Voltar ao Global (Remover Override)**, **Salvar Override** e **Revisar Diff & Sincronizar** (leva diretamente à aba **Preview & Diff**).
 - **Badge `Alterações não salvas`**: aparece em âmbar sempre que o rascunho atual difere do arquivo salvo em disco.
 - **Faixa resumo de arquitetura**: mostra instantaneamente `Orquestrador`, `Topologia` (`Intra-Thread` ou `Issue-Thread`), `Fallback: N nível(is)` e `Papéis: N`.
 
@@ -270,10 +269,10 @@ Os cinco fluxos abaixo cobrem as situações mais comuns ao trabalhar com múlti
 
 ### Cenário 3: Atingiu rate limit ou cota durante uma sessão
 
-1. Abra o **Popover** na barra de menus com um clique esquerdo.
-2. Se o problema afetou um projeto com override específico, clique diretamente no pill **⇄** do card desse projeto para alternar entre instâncias configuradas do mesmo provedor (ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados (ex.: `Codex · gpt-6.1-sol` ⇄ `gpt-6.1-terra`).
-3. Se o projeto segue o padrão global, clique no pill **⇄** dentro do card **Preset Global (Default)**.
-4. Em segundos o `settings.json` é atualizado com backup `.bak` e a squad do projeto passa a usar a instância ou modelo alternativo.
+1. Abra o **Popover** na barra de menus com um clique esquerdo (ou use o cabeçalho do **Preset Studio**).
+2. Se o problema afetou um projeto com override específico, clique na pílula **⇄** do card desse projeto para alternar apenas o orquestrador (`antigravity` ⇄ `antigravity_2` ou `Codex · gpt-6.1-sol` ⇄ `gpt-6.1-terra`), ou clique em **`Swap Squad`** para também rebalancear os papéis compatíveis em `roles/*.md`.
+3. Se o projeto segue o padrão global, clique na pílula **⇄** (somente orquestrador) ou em **`Swap Squad`** (orquestrador + papéis globais + ressincronização de projetos herdados ativos) dentro do card **Preset Global (Default)**.
+4. Em segundos o `settings.json` é atualizado com backup `.bak`, a squad passa a usar a instância ou modelo alternativo e a mudança passa a valer para novas threads no T3 Code.
 
 ### Cenário 4: Testar alterações de preset sem risco via Browser Preview
 

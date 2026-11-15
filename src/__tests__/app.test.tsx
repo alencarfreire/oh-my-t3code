@@ -250,7 +250,9 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       expect(
         within(sidebar).getByText("Agy Dual (Veca + Principal)"),
       ).toBeInTheDocument();
-      expect(within(sidebar).getByText("Codex Squad (Sol + Terra)")).toBeInTheDocument();
+      expect(
+        within(sidebar).getByText("Codex Squad (Issue Threads)"),
+      ).toBeInTheDocument();
       expect(within(sidebar).getByText("Hybrid (Agy + Codex)")).toBeInTheDocument();
       expect(within(sidebar).getByText("cabrito")).toBeInTheDocument();
       expect(within(sidebar).getByText("oh-my-t3code")).toBeInTheDocument();
