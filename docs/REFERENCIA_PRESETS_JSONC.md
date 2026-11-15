@@ -1,5 +1,7 @@
 # Referência de presets e configuração JSONC (`oh-my-t3code`)
 
+🌐 [English](en/JSONC_PRESETS_REFERENCE.md) | **Português (Brasil)** · [Voltar ao README](../README.pt-BR.md)
+
 Esta referência documenta o formato completo de configuração do `oh-my-t3code`: variáveis de ambiente, hierarquia de arquivos em disco, sintaxe JSON with Comments (JSONC), esquema de tipos, regras exatas de herança (`extends`), catálogo dos quatro presets seed e funcionamento do Preset Compiler, da sincronização de `settings.json` e do Reverse Importer.
 
 ## Mapa de arquivos e variáveis de ambiente

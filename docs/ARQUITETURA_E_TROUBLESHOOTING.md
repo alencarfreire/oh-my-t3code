@@ -1,5 +1,7 @@
 # Arquitetura, segurança, IPC e troubleshooting (`oh-my-t3code`)
 
+🌐 [English](en/ARCHITECTURE_AND_TROUBLESHOOTING.md) | **Português (Brasil)** · [Voltar ao README](../README.pt-BR.md)
+
 Este documento descreve a arquitetura interna do `oh-my-t3code` (backend Tauri v2 em Rust, frontend React 19 + TypeScript e integração com o T3 Code), detalha as garantias de segurança e integridade de dados, lista os 15 comandos Inter-Process Communication (IPC) e reúne procedimentos diretos para diagnosticar e corrigir problemas operacionais.
 
 ## Arquitetura do sistema
@@ -240,7 +242,7 @@ Alterações nos arquivos abaixo exigem coordenação sequencial (`isolation: "s
 
 ### Suíte completa de verificação
 
-Execute todos os comandos aplicáveis antes de concluir qualquer tarefa (consulte também o [Guia de Uso](GUIA_DE_USO.md), [`README.md`](../README.md) e [`REFERENCIA_PRESETS_JSONC.md`](REFERENCIA_PRESETS_JSONC.md)):
+Execute todos os comandos aplicáveis antes de concluir qualquer tarefa (consulte também o [Guia de Uso](GUIA_DE_USO.md), [`README.pt-BR.md`](../README.pt-BR.md) e [`REFERENCIA_PRESETS_JSONC.md`](REFERENCIA_PRESETS_JSONC.md)):
 
 ```bash
 # Backend Rust / Tauri

@@ -1,5 +1,7 @@
 # Guia completo de uso: Menu Bar Popover & Preset Studio
 
+🌐 [English](en/USER_GUIDE.md) | **Português (Brasil)** · [Voltar ao README](../README.pt-BR.md)
+
 Este guia ensina passo a passo como operar todas as telas, botões, atalhos e fluxos do **Oh My T3Code**, tanto pelo **Menu Bar Popover** (`380×500px`) quanto pelo **Preset Studio** (`1120×760px`).
 
 ## 1. Menu Bar Popover (`380×500px`)

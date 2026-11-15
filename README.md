@@ -1,131 +1,133 @@
 <div align="center">
   <img src="assets/logo.png" alt="oh-my-t3code logo" width="96" height="96" />
   <h1>oh-my-t3code</h1>
-  <p><strong>Companion nativo para macOS, Preset Studio e Compiler determinístico de squads para o T3 Code</strong></p>
-  <p>Inspirado no <code>oh-my-opencode-slim</code> e no <code>oh-my-opencode-companion</code>.</p>
+  <p><strong>Native macOS Companion, Preset Studio, and Deterministic Squad Compiler for T3 Code</strong></p>
+  <p>Inspired by <code>oh-my-opencode-slim</code> and <code>oh-my-opencode-companion</code>.</p>
 </div>
 
-**Oh My T3Code** adiciona presets declarativos globais, overrides por projeto e compilação determinística de squads ao **T3 Code** (`~/.t3`), sem alterar o binário nem o banco de dados do T3 Code.
+<p align="center">🌐 <strong>English</strong> | <a href="README.pt-BR.md">Português (Brasil)</a></p>
 
-Construído com **Tauri v2 (Rust)** no backend e **React 19 + TypeScript + Tailwind CSS v4** na interface, o aplicativo opera discretamente na barra de menus do macOS (`ActivationPolicy::Accessory`) e sincroniza modelos, contas e playbooks de agentes em segundos.
+**Oh My T3Code** adds global declarative presets, per-project overrides, and deterministic squad compilation to **T3 Code** (`~/.t3`), without modifying the T3 Code binary or database.
 
-## O que é o oh-my-t3code
+Built with **Tauri v2 (Rust)** on the backend and **React 19 + TypeScript + Tailwind CSS v4** for the UI, the app runs quietly in the macOS menu bar (`ActivationPolicy::Accessory`) and syncs models, accounts, and agent playbooks in seconds.
 
-O `oh-my-t3code` resolve três dores recorrentes no uso diário de múltiplos agentes e projetos no T3 Code:
+## What `oh-my-t3code` is
 
-- **Gestão centralizada de Presets Globais**: defina um preset padrão em `~/.config/oh-my-t3code/presets/*.jsonc` para aplicar o mesmo orquestrador (`defaultModelSelection`) e fallback (`fallbackModelSelection`) em todos os projetos sem override.
-- **Overrides por repositório com herança (`extends`)**: personalize apenas o que muda em um projeto específico via `<repo>/.t3code/preset.jsonc`, mantendo herança limpa de um preset global.
-- **Swap de instância em 1 clique (`⇄`) e compilação determinística**: alterne instantaneamente entre contas (`Agy Veca` `antigravity` ⇄ `Agy Principal` `antigravity_2`) ou modelos Codex (`gpt-6.1-sol` ⇄ `gpt-6.1-terra`) quando a cota aperta, e compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` com preview de Unified Diff antes de gravar.
+`oh-my-t3code` solves three recurring pain points when running multiple agents and repositories in T3 Code:
 
-## Visão geral da arquitetura
+- **Centralized Global Presets**: define a default preset in `~/.config/oh-my-t3code/presets/*.jsonc` to apply the same orchestrator (`defaultModelSelection`) and fallback (`fallbackModelSelection`) across every project without a local override
+- **Per-repository overrides with inheritance (`extends`)**: customize only what changes for a specific project through `<repo>/.t3code/preset.jsonc` while inheriting cleanly from a global preset
+- **One-click instance swap (`⇄`) and deterministic compilation**: switch between accounts (`Agy Veca` `antigravity` ⇄ `Agy Principal` `antigravity_2`) or Codex models (`gpt-6.1-sol` ⇄ `gpt-6.1-terra`) when rate limits hit, and compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` with a Unified Diff preview before writing to disk
 
-O diagrama abaixo mostra o fluxo de leitura e escrita entre a interface, o backend Rust/Tauri v2, os arquivos locais do T3 Code e o repositório alvo:
+## Architecture overview
+
+The diagram below shows how the UI, the Rust/Tauri v2 backend, local T3 Code files, and the target repository read and write data:
 
 ```mermaid
 flowchart LR
-    User["Usuário (macOS Menu Bar)"] --> Popover["Menu Bar Popover (380×500)"]
+    User["User (macOS Menu Bar)"] --> Popover["Menu Bar Popover (380×500)"]
     User --> Studio["Preset Studio (1120×760)"]
 
-    Popover -->|15 comandos IPC| Tauri["Backend Rust / Tauri v2"]
-    Studio -->|15 comandos IPC| Tauri
+    Popover -->|15 IPC commands| Tauri["Rust / Tauri v2 Backend"]
+    Studio -->|15 IPC commands| Tauri
 
     Tauri -->|Read-Only SQLITE_OPEN_READ_ONLY| SQLite["~/.t3/userdata/statev2.sqlite"]
-    Tauri -->|Backup .bak + Escrita Atômica| Settings["~/.t3/userdata/settings.json"]
-    Tauri -->|Leitura e Escrita| GlobalPresets["~/.config/oh-my-t3code/ (config.jsonc + presets/*.jsonc)"]
-    Tauri -->|Catálogo Read-Only| GlobalSkills["~/.config/skillshare/skills e ~/.gemini/config/skills"]
+    Tauri -->|Backup .bak + Atomic Write| Settings["~/.t3/userdata/settings.json"]
+    Tauri -->|Read & Write| GlobalPresets["~/.config/oh-my-t3code/ (config.jsonc + presets/*.jsonc)"]
+    Tauri -->|Read-Only Catalog| GlobalSkills["~/.config/skillshare/skills and ~/.gemini/config/skills"]
 
-    Tauri -->|Salva Override + Compila Squad| RepoPreset["<repo>/.t3code/preset.jsonc"]
-    Tauri -->|Geração Determinística BTreeMap| RepoSquad["<repo>/.agents/skills/<slug>-squad/ (SKILL.md + roles/*.md)"]
+    Tauri -->|Save Override + Compile Squad| RepoPreset["<repo>/.t3code/preset.jsonc"]
+    Tauri -->|Deterministic BTreeMap Generation| RepoSquad["<repo>/.agents/skills/<slug>-squad/ (SKILL.md + roles/*.md)"]
 ```
 
-## Pré-requisitos
+## Prerequisites
 
-Verifique o ambiente antes de rodar ou empacotar o aplicativo nativo:
+Check your environment before running or packaging the native macOS app:
 
-- **macOS**: sistema operacional alvo principal do MVP nativo (configurado com `ActivationPolicy::Accessory` e `macOSPrivateApi` em `src-tauri/tauri.conf.json`).
-- **Bun**: gerenciador de pacotes e executor de scripts do projeto (`bun.lock`, `bun run ...`).
-- **Rust & Cargo (Edition 2021)** e **Xcode Command Line Tools** (`xcode-select --install`): obrigatórios para compilar e executar o backend Tauri v2 (`src-tauri/Cargo.toml`).
-- **T3 Code (`~/.t3`)**: instalado e inicializado com projetos e provedores configurados. É obrigatório para dados reais em produção, mas opcional se você quiser testar apenas a interface no modo Browser Preview com `MockIpcStore`.
+- **macOS**: primary target OS for the native MVP (configured with `ActivationPolicy::Accessory` and `macOSPrivateApi` in `src-tauri/tauri.conf.json`)
+- **Bun**: project package manager and script runner (`bun.lock`, `bun run <script>`)
+- **Rust & Cargo (Edition 2021)** and **Xcode Command Line Tools** (`xcode-select --install`): required to compile and run the Tauri v2 backend (`src-tauri/Cargo.toml`)
+- **T3 Code (`~/.t3`)**: installed and initialized with configured projects and providers. Required for live data in production, optional if you want to test the UI in Browser Preview mode with `MockIpcStore`
 
-## Instalação e execução rápida
+## Installation and quick start
 
-Clone o repositório e instale as dependências de frontend com o Bun:
+Clone the repository and install frontend dependencies with Bun:
 
 ```bash
-git clone <url-do-repositorio> oh-my-t3code
+git clone https://github.com/alencarfreire/oh-my-t3code.git oh-my-t3code
 cd oh-my-t3code
 bun install
 ```
 
-Depois de instalar as dependências, escolha o modo de execução adequado ao seu objetivo.
+After installing dependencies, pick the run mode that fits your workflow.
 
-### Opção 1: Modo App Nativo macOS (Desenvolvimento)
+### Option 1: Native macOS app mode (development)
 
-Inicia o servidor Vite na porta `1420` e abre o aplicativo nativo Tauri v2 em modo acessório:
+Start the Vite dev server on port `1420` and launch the native Tauri v2 app in accessory mode:
 
 ```bash
 bun run tauri:dev
 ```
 
-O aplicativo sobe sem ícone no Dock e adiciona o ícone do `oh-my-t3code` na barra de menus superior do macOS. Clique com o botão esquerdo no ícone para abrir o **Popover** ou com o botão direito para abrir o menu de contexto (`Alternar Popover`, `Abrir Preset Studio`, `Sair`).
+The app launches without a Dock icon and adds the `oh-my-t3code` icon to the macOS menu bar. Left-click the icon to open the **Popover**, or right-click it to open the context menu (`Alternar Popover` to toggle the popover, `Abrir Preset Studio` to open Preset Studio, and `Sair` to quit).
 
-### Opção 2: Gerar executável e instalador macOS (`.app` e `.dmg`)
+### Option 2: Build the macOS `.app` and `.dmg` installer
 
-Compila o frontend (`tsc -b && vite build`), o binário Rust em release e empacota o aplicativo macOS:
+Compile the frontend (`tsc -b && vite build`), build the Rust release binary, and package the macOS bundle:
 
 ```bash
 bun run tauri:build
 ```
 
-Ao final do build, os artefatos são gerados dentro de `src-tauri/target/release/bundle/` (incluindo o pacote `.app` em `macos/` e a imagem de instalação em `dmg/`).
+Once the build finishes, find the output artifacts inside `src-tauri/target/release/bundle/`, including the `.app` bundle under `macos/` and the `.dmg` installer image under `dmg/`.
 
-### Opção 3: Modo Browser Preview (sem T3 Code e sem compilar Rust)
+### Option 3: Browser preview mode (no T3 Code or Rust required)
 
-Inicia apenas a interface web via Vite na porta `1420` (`strictPort: true`), ativando automaticamente o `MockIpcStore` em memória:
+Start only the web UI through Vite on port `1420` (`strictPort: true`), which activates the in-memory `MockIpcStore` automatically:
 
 ```bash
 bun run dev
 ```
 
-Quando aberto fora do runtime Tauri em `http://localhost:1420`, o aplicativo exibe a barra superior `Browser Preview (Mock IPC ativo)` para alternar entre `Popover (380×500)` e `Preset Studio (1120×760)` usando 4 projetos de exemplo em memória (`oh-my-t3code`, `cabrito`, `dashboard-meta` e `landing-page`). Você também pode abrir cada janela diretamente pelas URLs `http://localhost:1420/?view=popover` e `http://localhost:1420/?view=studio` (com suporte opcional aos parâmetros `projectId` e `presetId` no Studio).
+When opened outside the Tauri runtime at `http://localhost:1420`, the app displays the `Browser Preview (Mock IPC ativo)` top bar to switch between `Popover (380×500)` and `Preset Studio (1120×760)` using 4 in-memory sample projects (`oh-my-t3code`, `cabrito`, `dashboard-meta`, and `landing-page`). You can also open either window directly at `http://localhost:1420/?view=popover` and `http://localhost:1420/?view=studio` (with optional `projectId` and `presetId` query parameters in Studio).
 
-## Primeiros passos em 5 minutos
+## 5-minute quickstart
 
-No primeiro boot do backend nativo (ou no carregamento do mock em memória), a rotina `ensure_seed_presets` inicializa `~/.config/oh-my-t3code/config.jsonc` com `activeGlobalPresetId: "default"` e `enabled: true`, além de criar 4 presets seed em `~/.config/oh-my-t3code/presets/`:
+On the first boot of the native backend (or when loading the in-memory mock), `ensure_seed_presets` initializes `~/.config/oh-my-t3code/config.jsonc` with `activeGlobalPresetId: "default"` and `enabled: true`, and creates 4 seed presets in `~/.config/oh-my-t3code/presets/`:
 
-- **`default` (`Default (OMOS Standard)`)**: preset padrão de instalação no provedor universal `codex`, com orquestrador, `oracle` e `fixer` em `gpt-6.1-sol`, `explorer` e `designer` em `gpt-6-luna` e `qa-reviewer` em `gpt-6-astra`.
-- **`agy-dual` (`Agy Dual (Veca + Principal)`)**: balanceia `antigravity` (`Agy Veca`) e `antigravity_2` (`Agy Principal`) com `gemini-4-hydrogen` e `gemini-4-argon`.
-- **`codex-squad` (`Codex Squad (Issue Threads)`)**: usa topologia `issue-thread-orchestrator` no `codex` com `singleTestDb: true` e política de contenção voltada para suítes concorrentes.
-- **`hybrid-agy-codex` (`Hybrid (Agy + Codex)`)**: combina `antigravity_2` / `antigravity` para orquestração, `explorer` e `designer` com `codex` (`gpt-6.1-sol`) para `oracle` e `fixer`, usando isolamento `worktree`.
+- **`default` (`Default (OMOS Standard)`)**: default installation preset on the universal `codex` provider, using `gpt-6.1-sol` for the orchestrator, `oracle`, and `fixer`, `gpt-6-luna` for `explorer` and `designer`, and `gpt-6-astra` for `qa-reviewer`
+- **`agy-dual` (`Agy Dual (Veca + Principal)`)**: balances `antigravity` (`Agy Veca`) and `antigravity_2` (`Agy Principal`) using `gemini-4-hydrogen` and `gemini-4-argon`
+- **`codex-squad` (`Codex Squad (Issue Threads)`)**: uses the `issue-thread-orchestrator` topology on `codex` with `singleTestDb: true` and contention rules tailored for concurrent test suites
+- **`hybrid-agy-codex` (`Hybrid (Agy + Codex)`)**: combines `antigravity_2` / `antigravity` for orchestration, `explorer`, and `designer` with `codex` (`gpt-6.1-sol`) for `oracle` and `fixer`, using `worktree` isolation
 
-Todos os 4 presets seed trazem os 5 papéis canônicos do `oh-my-opencode-slim` (`explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`). Para começar a operar no dia a dia:
+All 4 seed presets include the 5 canonical `oh-my-opencode-slim` roles (`explorer`, `oracle`, `designer`, `fixer`, and `qa-reviewer`). Follow these steps for your daily workflow:
 
-1. **Defina o Preset Global**: abra o **Popover** na barra de menus, selecione o preset desejado em **Preset Global Default** (por exemplo `agy-dual` ou `default`) e confirme que o toggle está em **Ativo**.
-2. **Adicione um Override apenas onde precisar**: projetos sem override seguem o Global Default automaticamente e ficam ocultos da lista principal; clique em **+ Configurar Projeto** para criar um override em um repositório específico.
-3. **Use o Swap rápido (`⇄`) quando a cota apertar**: clique no pill de instância/modelo no card global ou no card do projeto para inverter `Agy Veca` ⇄ `Agy Principal` (ou alternar `gpt-6.1-sol` ⇄ `gpt-6.1-terra` no Codex) em 1 clique.
-4. **Personalize no Preset Studio (`⌘,`)**: pressione `⌘,` (ou clique em **Studio**) para editar papéis, cadeias de fallback, skills, MCPs, regras de contenção e revisar o Unified Diff antes de gravar no disco.
+1. **Set the Global Preset**: open the **Popover** from the menu bar, select a preset under **Preset Global Default** (such as `agy-dual` or `default`), and confirm the toggle is set to **Ativo** (Active).
+2. **Add an override only where needed**: projects without an override follow the Global Default automatically and stay hidden from the main list; click **`+ Configurar Projeto`** (Configure Project) to create a local override on a specific repository.
+3. **Use the one-click swap (`⇄`) when quota tightens**: click the instance/model pill on the global card or a project card to flip `Agy Veca` ⇄ `Agy Principal` (or toggle `gpt-6.1-sol` ⇄ `gpt-6.1-terra` on Codex) in one click.
+4. **Customize in Preset Studio (`⌘,`)**: press `⌘,` (or click **Studio**) to edit roles, fallback chains, skills, MCPs, and contention rules, then inspect the Unified Diff before writing to disk.
 
-## Mapa da documentação
+## Documentation map
 
-Consulte os guias detalhados para operação da UI, sintaxe JSONC e arquitetura interna:
+Read the detailed guides for UI workflows, JSONC syntax, and internal architecture:
 
-- [Guia Completo de Uso (Popover & Preset Studio)](docs/GUIA_DE_USO.md): passo a passo visual de todas as telas, botões, badges, abas e fluxos diários.
-- [Referência Técnica de Presets JSONC, Herança & Compiler](docs/REFERENCIA_PRESETS_JSONC.md): esquema completo de presets, resolução de `extends`, normalização de opções e formato dos arquivos compilados.
-- [Arquitetura, Segurança, IPC & Solução de Problemas (FAQ)](docs/ARQUITETURA_E_TROUBLESHOOTING.md): detalhes dos módulos Rust, mapa dos 15 comandos IPC e diagnóstico de erros comuns.
-- [Máquinas de Estado & Invariantes (Técnico)](docs/STATE_MACHINES.md): catálogo formal de estados, transições e invariantes entre UI, Rust e arquivos em disco.
+- [Complete User Guide (Popover & Preset Studio)](docs/en/USER_GUIDE.md): step-by-step walkthrough of every screen, button, badge, tab, and daily workflow
+- [JSONC Presets, Inheritance & Compiler Reference](docs/en/JSONC_PRESETS_REFERENCE.md): complete preset schema, `extends` resolution, option normalization, and compiled output format
+- [Architecture, Security, IPC & Troubleshooting](docs/en/ARCHITECTURE_AND_TROUBLESHOOTING.md): Rust module breakdown, all 15 IPC commands, and common error diagnostics
+- [State Machines & Invariants (pt-BR)](docs/STATE_MACHINES.md): formal catalog of states, transitions, and invariants across the UI, Rust backend, and files on disk
 
-## Segurança e garantias
+## Security and safety guarantees
 
-Todas as operações de leitura e gravação obedecem a quatro invariantes arquiteturais estritas:
+Every read and write operation enforces four strict architectural invariants:
 
-- **Acesso estritamente Read-Only ao `statev2.sqlite`**: `~/.t3/userdata/statev2.sqlite` é aberto exclusivamente com as flags `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` e `PRAGMA query_only = true`, eliminando locks de escrita e qualquer risco de corrupção do estado do T3 Code.
-- **Backup obrigatório e escrita atômica em `settings.json`**: antes de gravar qualquer alteração em `~/.t3/userdata/settings.json`, o backend gera um backup em `~/.t3/userdata/settings.json.bak` e grava a nova versão via arquivo temporário único + `sync_all()` + `rename`, preservando 100% das chaves não relacionadas.
-- **Compilação determinística e cache-safe**: `<repo>/.agents/skills/<slug>-squad/SKILL.md` e `roles/*.md` são gerados em ordem determinística com `BTreeMap`, sem timestamps aleatórios ou UUIDs efêmeros, e com preview obrigatório de Unified Diff no Studio antes da gravação.
-- **Paridade estrita de contrato IPC**: todos os 15 comandos Tauri expostos em `src-tauri/src/lib.rs` possuem espelhamento exato de nome, argumentos e retorno em `src/types/ipc.ts` (`IPC_COMMANDS`).
+- **Strictly read-only `statev2.sqlite` access**: the backend opens `~/.t3/userdata/statev2.sqlite` exclusively with `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` and `PRAGMA query_only = true`, preventing write locks and any risk of corrupting T3 Code state
+- **Mandatory backup and atomic writes to `settings.json`**: before writing any change to `~/.t3/userdata/settings.json`, the backend writes a backup to `~/.t3/userdata/settings.json.bak` and persists the new version through a unique temporary file + `sync_all()` + `rename`, preserving 100% of unrelated keys
+- **Deterministic, cache-safe compilation**: `<repo>/.agents/skills/<slug>-squad/SKILL.md` and `roles/*.md` are generated in deterministic `BTreeMap` order with no random timestamps or ephemeral UUIDs, and Studio requires a Unified Diff preview before saving
+- **Strict IPC contract parity**: all 15 Tauri commands exposed in `src-tauri/src/lib.rs` mirror their exact names, arguments, and return types in `src/types/ipc.ts` (`IPC_COMMANDS`)
 
-## Comandos de verificação
+## Verification commands
 
-Execute a suíte abaixo sempre que alterar código Rust ou TypeScript para validar tipagem, compilação e testes unitários:
+Run this suite whenever you change Rust or TypeScript code to verify types, compilation, and unit tests:
 
 ```bash
 cargo check --manifest-path src-tauri/Cargo.toml
