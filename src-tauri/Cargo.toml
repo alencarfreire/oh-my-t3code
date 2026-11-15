@@ -1,6 +1,6 @@
 [package]
 name = "oh-my-t3code"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native macOS Menu Bar companion, Preset Studio, and deterministic squad compiler for T3 Code"
 authors = ["Alencar Freire"]
 edition = "2021"
