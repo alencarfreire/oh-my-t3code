@@ -352,14 +352,25 @@ export function StudioView({
         workspaceRoot: projectMeta.workspaceRoot,
         preset: draftPreset,
       });
+      let nextStatusMessage = `Override local salvo em ${saved.localPresetPath} (pausado).`;
+      if (draftPreset.enabled !== false) {
+        const res = await invokeIpc("apply_preset_sync", {
+          projectId: projectMeta.projectId,
+          workspaceRoot: projectMeta.workspaceRoot,
+          presetIdOrCustom: draftPreset.id,
+          customPreset: draftPreset,
+        });
+        nextStatusMessage = `Override salvo e squad compilada (${res.writtenFiles.length} arquivos em .agents/skills + settings.json sincronizado).`;
+      }
       setProjectMeta(saved);
       setDraftPreset(clonePreset(saved.resolvedPreset));
       const refreshed = await invokeIpc("get_dashboard_snapshot");
       setSnapshot(refreshed);
       setDirty(false);
-      setStatusMessage(
-        `Override local salvo em ${saved.localPresetPath}.`,
-      );
+      setStatusMessage(nextStatusMessage);
+      if (activeTab === "preview" && activePreviewProject) {
+        await runPreview(activePreviewProject, saved.resolvedPreset);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {

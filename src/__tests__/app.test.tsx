@@ -386,6 +386,16 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
       await waitFor(() => {
         expect(screen.getByRole("status")).toHaveTextContent(/Sincronizado!/i);
       });
+
+      // Clicking "Salvar Override" in the Studio header also saves and compiles the squad when enabled
+      await user.click(
+        screen.getByRole("button", { name: /^Salvar Override$/i }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent(
+          /Override salvo e squad compilada \(\d+ arquivos em \.agents\/skills \+ settings\.json sincronizado\)\./i,
+        );
+      });
     });
 
     it("supports canonical oh-my-opencode-slim role templates, Set as Global Default, 1-click model/thinking_level pills, and selected-skills filter", async () => {
