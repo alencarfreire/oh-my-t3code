@@ -46,7 +46,7 @@ bun install
 bun run dev
 
 # Run native macOS Menu Bar app via Tauri v2
-bunx tauri dev
+bun run tauri:dev
 
 # Full verification suite
 cargo check --manifest-path src-tauri/Cargo.toml
