@@ -23,6 +23,39 @@ O `oh-my-t3code` resolve quatro dores recorrentes no uso diário de múltiplos a
   - **Regras determinísticas na Seção 5 do `SKILL.md`**: compila `## 5. Gestão de sessão e concorrência (oh-my-t3code)` com limites de workers Antigravity/totais, thinking por tipo de worker (`workerThinkingByKind`) e handoff preventivo.
   - **Monitoramento em tempo real no Menu Bar Popover**: exibe badges de saúde ao vivo (`OK`, `Pai gordo`, `ACP morto`, `Muitos workers` e `Alerta de RAM (8 GB)`) além do botão **`Abrir thread pai novo`** para copiar o prompt de handoff — sem escrever no `statev2.sqlite` nem reiniciar processos do T3 Code.
 
+## Visão visual da interface
+
+### Menu Bar Popover (`380×500`)
+
+<table>
+  <tr>
+    <td align="center" valign="top">
+      <img src="docs/assets/popover-overview.png" width="380" alt="Menu Bar Popover exibindo saúde global da sessão (OK, Agy 2/2, 2/3 workers, laptop-8gb), card Preset Global (Default) com swap do Codex e lista de projetos com override" />
+      <br />
+      <sub><strong>Visão Geral &amp; Saúde da Sessão</strong>: faixa de concorrência e RAM (<code>OK</code>, <code>Agy 2/2 · 2/3 workers</code>, <code>laptop-8gb</code>), swap no Preset Global e projetos com override.</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="docs/assets/popover-subagents.png" width="380" alt="Menu Bar Popover com o painel Monitor de Subagentes expandido mostrando workers ativos e concluídos lidos do statev2.sqlite" />
+      <br />
+      <sub><strong>Monitor de Subagentes</strong>: leitura em tempo real (read-only) de workers ativos e recentes (<code>Agy Principal</code>, <code>Agy Veca</code>, <code>Codex</code>) no <code>statev2.sqlite</code>.</sub>
+    </td>
+  </tr>
+</table>
+
+### Preset Studio (`1120×760`)
+
+![Preset Studio na aba Matriz de Papéis exibindo barra lateral com presets globais, projetos com override e roteamento do papel Designer](docs/assets/studio-roles-matrix.png)
+
+*Matriz de Papéis: barra lateral com Presets Globais e Projetos com Override ao lado da edição de identidade, roteamento de modelo/instância, escopo de arquivos e comandos de verificação.*
+
+![Preset Studio na aba Pontos de Contenção exibindo Sessão e hardware (sessionPolicy) com hardwareProfile, parentThinkingLevel e limites de workers](docs/assets/studio-session-policy.png)
+
+*Sessão e hardware (`sessionPolicy`): configure perfis de hardware (`laptop-8gb`, `desktop-16gb`, `desktop-32gb-plus`), thinking do thread pai, limites de workers Antigravity/totais e limiares de handoff.*
+
+![Preset Studio na aba Preview & Diff exibindo Unified Diff na Seção 5 do SKILL.md antes da gravação em disco](docs/assets/studio-preview-diff.png)
+
+*Preview & Unified Diff: revise alterações determinísticas na Seção 5 do `SKILL.md`, `roles/*.md`, `.t3code/preset.jsonc` e `settings.json` antes de gravar no disco.*
+
 ## Visão geral da arquitetura
 
 O diagrama abaixo mostra o fluxo de leitura e escrita entre a interface, o backend Rust/Tauri v2, os arquivos locais do T3 Code e o repositório alvo:

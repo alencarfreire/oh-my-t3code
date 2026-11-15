@@ -51,6 +51,12 @@ Logo abaixo do cabeçalho (e abaixo da faixa de subagentes ativos, quando houver
 - **Chip de `hardwareProfile`**: mostra o perfil de hardware ativo no `sessionPolicy` do Preset Global (como `laptop-8gb`, `desktop-16gb` ou `desktop-32gb-plus`).
 - **Alerta explícito `Alerta de RAM (8 GB)`**: quando o limite seguro de workers simultâneos ou de RAM para o perfil é excedido, a faixa destaca um banner em vermelho com o prefixo `Alerta de RAM (8 GB):` e a orientação de contenção correspondente.
 
+<p align="center">
+  <img src="assets/popover-overview.png" width="380" alt="Menu Bar Popover mostrando a faixa Saúde global da sessão e RAM (OK, Agy 2/2, 2/3 workers, laptop-8gb), o card Preset Global (Default) com swap do Codex e a seção Projetos com Override" />
+  <br />
+  <sub><em>Visão geral do Popover: faixa de saúde da sessão e RAM (<code>OK</code>, <code>Agy 2/2 · 2/3 workers</code>, <code>laptop-8gb</code>), card <code>Preset Global (Default)</code> com swap e lista de <code>Projetos com Override</code>.</em></sub>
+</p>
+
 ### Seção `Projetos com Override`
 
 Projetos do T3 Code que não possuem customização ficam ocultos da lista principal porque seguem o **Preset Global (Default)** automaticamente. Apenas projetos com override local, squad detectada ou divergência em `settings.json` aparecem em **Projetos com Override (N)**.
@@ -86,6 +92,12 @@ Cada card na lista **Projetos com Override** exibe badges, telemetria de saúde 
 ### Rodapé e nota sobre subagentes
 
 Abaixo das seções de preset global e overrides, o **Popover** renderiza o painel recolhível **`Monitor de Subagentes`** (iniciado recolhido por padrão, com badge **`N ativo`** / **`N ativos`**), alimentado em modo estritamente read-only a partir de `~/.t3/userdata/statev2.sqlite` (`orchestration_v2_projection_subagents`, exposto via `activeSubagentCount` e `subagents` no `DashboardSnapshot`). Ao expandir o painel, são exibidos os subagentes ativos e recentes com papel (`worker` por padrão), projeto associado, título, provedor/instância, modelo, status e tempo relativo — ou `Nenhum subagente ativo ou recente.` quando não há registros.
+
+<p align="center">
+  <img src="assets/popover-subagents.png" width="380" alt="Menu Bar Popover com o painel Monitor de Subagentes expandido mostrando subagentes ativos e concluídos em tempo real" />
+  <br />
+  <sub><em>Painel <code>Monitor de Subagentes</code> expandido exibindo workers ativos (<code>Agy Principal</code>, <code>Agy Veca</code>) e recentes (<code>Codex</code>) lidos em modo read-only de <code>statev2.sqlite</code>.</em></sub>
+</p>
 
 O rodapé do **Popover** confirma as garantias de segurança com o selo **SQLite Read-Only · ~/.t3** e o lembrete **Esc para fechar**.
 
@@ -162,6 +174,10 @@ Permite configurar cada worker especializado que será compilado em `<repo>/.age
   3. **Escopo de Arquivos**: adicione padrões glob ou diretórios em **Caminhos Permitidos (`allowedPaths`)** (chips verdes) e **Caminhos Proibidos (`forbiddenPaths`)** (chips vermelhos) para evitar conflitos de edição paralela.
   4. **Invariantes & Verificação**: liste regras obrigatórias em **Invariantes do Papel (`invariants`)** e os comandos do **Gate de Qualidade** em **Comandos de Verificação (`verificationCommands`)** (exibidos em formato terminal `$ ...`, como `cargo test --manifest-path src-tauri/Cargo.toml` e `bun run typecheck`).
 
+![Preset Studio na aba Matriz de Papéis exibindo barra lateral com presets globais e projetos com override ao lado do editor do papel Designer](assets/studio-roles-matrix.png)
+
+*Aba `Matriz de Papéis`: barra lateral com `Presets Globais` e `Projetos com Override`, lista de papéis (`roles/`) e roteamento específico de modelo/instância.*
+
 #### Aba 3: `Skills & MCPs`
 
 Associa opcionalmente skills locais e servidores MCP configurados no seu ambiente a cada papel da squad:
@@ -200,6 +216,10 @@ A aba reúne duas seções empilhadas — primeiro **Sessão e hardware (`sessio
 - **Editor `Thinking & Modelo por Tipo de Worker (workerThinkingByKind)`**: define modelo e `thinkingLevel` (`low`, `medium`, `high`, `xhigh`) por especialidade (como `architecture`, `backend`, `frontend`, `qa` e `research`), permite remover entradas existentes ou criar novos tipos via campo **`Novo tipo (ex: security)`** + botão **`Adicionar tipo`**.
 - **`Padrões Proibidos (forbiddenPatterns)`**: editor de chips vermelhos para regras negativas compiladas no `SKILL.md` (ex.: `thinking high no pai`, `continuar thread após provider_error AcpRequestError`).
 
+![Preset Studio na aba Pontos de Contenção exibindo Sessão e hardware (sessionPolicy) com Perfil de Hardware laptop-8gb, Thinking do Thread Pai e limites de workers](assets/studio-session-policy.png)
+
+*Aba `Pontos de Contenção` (`sessionPolicy`): configuração de `hardwareProfile`, `parentThinkingLevel`, tetos de workers Antigravity/totais e orçamento de turns/tokens para handoff.*
+
 **2. Política de Contenção & Isolamento (`contention`)**:
 
 - **Banco de Testes Único (`singleTestDb`)**: quando marcado, orienta a squad a serializar suítes de testes (ex.: RSpec/SQLite) para impedir locks entre workers paralelos.
@@ -222,6 +242,10 @@ Gera e exibe o resultado determinístico da compilação antes de qualquer escri
 - **Gravação**:
   - Em Modo Global, clique em **Salvar Preset Global** para persistir o arquivo em `~/.config/oh-my-t3code/presets/<id>.jsonc`.
   - Para gravar e sincronizar no projeto selecionado, clique em **Salvar & Sincronizar Projeto**: o backend cria o backup `settings.json.bak`, atualiza `settings.json` de forma atômica e escreve apenas os arquivos alterados no repositório.
+
+![Preset Studio na aba Preview & Diff exibindo lista de Arquivos Alvo e Unified Diff determinístico na Seção 5 do SKILL.md](assets/studio-preview-diff.png)
+
+*Aba `Preview & Diff`: comparação em `Unified Diff` mostrando alterações na Seção 5 do `SKILL.md` (`Gestão de sessão e concorrência`) antes da gravação em disco.*
 
 ---
 

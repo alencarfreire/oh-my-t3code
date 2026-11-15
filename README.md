@@ -23,6 +23,39 @@ Built with **Tauri v2 (Rust)** on the backend and **React 19 + TypeScript + Tail
   - **Deterministic Section 5 rules in `SKILL.md`**: compiles `## 5. Gestão de sessão e concorrência (oh-my-t3code)` with Antigravity/total worker concurrency caps, per-task-kind worker thinking (`workerThinkingByKind`), and preventive handoff thresholds
   - **Real-time health monitoring in the Menu Bar Popover**: surfaces live session health badges (`OK`, `Pai gordo`, `ACP morto`, `Muitos workers`, and `Alerta de RAM (8 GB)`) alongside the **`Abrir thread pai novo`** handoff copy button, without writing to `statev2.sqlite` or restarting T3 Code processes
 
+## Interface at a glance
+
+### Menu Bar Popover (`380×500`)
+
+<table>
+  <tr>
+    <td align="center" valign="top">
+      <img src="docs/assets/popover-overview.png" width="380" alt="Menu Bar Popover showing global session health (OK, Agy 2/2, 2/3 workers, laptop-8gb), Global Default Preset card with Codex one-click swap, and projects with overrides" />
+      <br />
+      <sub><strong>Overview &amp; Session Health</strong>: live concurrency/RAM strip (<code>OK</code>, <code>Agy 2/2 · 2/3 workers</code>, <code>laptop-8gb</code>), Global Default Preset swap, and project overrides.</sub>
+    </td>
+    <td align="center" valign="top">
+      <img src="docs/assets/popover-subagents.png" width="380" alt="Menu Bar Popover with the Subagent Monitor panel expanded showing active and completed subagents read from statev2.sqlite" />
+      <br />
+      <sub><strong>Subagent Monitor</strong>: read-only live view of active and recent workers (<code>Agy Principal</code>, <code>Agy Veca</code>, <code>Codex</code>) from <code>statev2.sqlite</code>.</sub>
+    </td>
+  </tr>
+</table>
+
+### Preset Studio (`1120×760`)
+
+![Preset Studio Role Matrix tab showing sidebar presets, project overrides, and Designer role routing](docs/assets/studio-roles-matrix.png)
+
+*Role Matrix (`Matriz de Papéis`): sidebar with Global Presets and Project Overrides alongside per-role identity, model/instance routing, file scopes, and verification commands.*
+
+![Preset Studio Contention Points tab showing hardwareProfile, parentThinkingLevel, concurrency caps, and parent handoff budgets](docs/assets/studio-session-policy.png)
+
+*Session & Hardware Policy (`sessionPolicy`): configure hardware profiles (`laptop-8gb`, `desktop-16gb`, `desktop-32gb-plus`), parent thinking limits, Antigravity/total worker caps, and handoff thresholds.*
+
+![Preset Studio Preview and Diff tab showing Unified Diff in Section 5 of SKILL.md before saving to disk](docs/assets/studio-preview-diff.png)
+
+*Preview & Unified Diff: inspect deterministic changes to `SKILL.md` Section 5, `roles/*.md`, `.t3code/preset.jsonc`, and `settings.json` before writing to disk.*
+
 ## Architecture overview
 
 The diagram below shows how the UI, the Rust/Tauri v2 backend, local T3 Code files, and the target repository read and write data:

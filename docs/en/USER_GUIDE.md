@@ -51,6 +51,12 @@ Directly below the header (and below the active subagents strip whenever workers
 - **`hardwareProfile` chip**: shows the active hardware profile from the Global Preset's `sessionPolicy` (such as `laptop-8gb`, `desktop-16gb`, or `desktop-32gb-plus`).
 - **Explicit `Alerta de RAM (8 GB)` banner**: whenever the safe limit for concurrent Antigravity workers or RAM on the active profile is exceeded, the strip highlights a red alert banner prefixed with `Alerta de RAM (8 GB):` and the corresponding containment advisory.
 
+<p align="center">
+  <img src="../assets/popover-overview.png" width="380" alt="Menu Bar Popover showing the Global Session Health and RAM strip (OK, Agy 2/2, 2/3 workers, laptop-8gb), Global Default Preset card with Codex swap, and Projects with Override list" />
+  <br />
+  <sub><em>Popover overview: session health and RAM strip (<code>OK</code>, <code>Agy 2/2 · 2/3 workers</code>, <code>laptop-8gb</code>), <code>Preset Global (Default)</code> card with swap controls, and <code>Projetos com Override</code>.</em></sub>
+</p>
+
 ### `Projetos com Override` section
 
 T3 Code projects without customizations stay hidden from the main list because they inherit **`Preset Global (Default)`** automatically. Only projects with a local override, a detected squad, or an existing `settings.json` divergence appear under **`Projetos com Override (N)`** (Projects with Override).
@@ -86,6 +92,12 @@ Each card in **`Projetos com Override`** displays status badges, session health 
 ### Footer and subagent activity note
 
 Below the global preset and overrides sections, the **Popover** renders the collapsible **`Monitor de Subagentes`** panel (collapsed by default, with an **`N ativo`** / **`N ativos`** badge), fed in strictly read-only mode from `~/.t3/userdata/statev2.sqlite` (`orchestration_v2_projection_subagents`, exposed via `activeSubagentCount` and `subagents` on `DashboardSnapshot`). Expanding the panel lists active and recent subagents with role (`worker` by default), linked project, title, provider/instance, model, status, and relative time—or `Nenhum subagente ativo ou recente.` when none exist.
+
+<p align="center">
+  <img src="../assets/popover-subagents.png" width="380" alt="Menu Bar Popover with the Subagent Monitor panel expanded showing active and completed subagents in real time" />
+  <br />
+  <sub><em>Expanded <code>Monitor de Subagentes</code> panel showing active (<code>Agy Principal</code>, <code>Agy Veca</code>) and recent (<code>Codex</code>) workers read in read-only mode from <code>statev2.sqlite</code>.</em></sub>
+</p>
 
 The **Popover** footer confirms the safety guarantees with the **`SQLite Read-Only · ~/.t3`** badge and the **`Esc para fechar`** (Esc to close) reminder.
 
@@ -160,6 +172,10 @@ Configures each specialized worker compiled into `<repo>/.agents/skills/<slug>-s
   3. **`Escopo de Arquivos`**: add glob patterns or directories to **`Caminhos Permitidos (allowedPaths)`** (green chips) and **`Caminhos Proibidos (forbiddenPaths)`** (red chips) to prevent parallel edit conflicts
   4. **`Invariantes & Verificação`**: list mandatory rules under **`Invariantes do Papel (invariants)`** and quality-gate commands under **`Comandos de Verificação (verificationCommands)`** (rendered in terminal format `$ ...`, such as `cargo test --manifest-path src-tauri/Cargo.toml` and `bun run typecheck`)
 
+![Preset Studio Role Matrix tab showing the sidebar with Global Presets and Project Overrides alongside the Designer role editor](../assets/studio-roles-matrix.png)
+
+*`Matriz de Papéis` (Role Matrix) tab: sidebar listing `Presets Globais` and `Projetos com Override`, role list (`roles/`), and per-role model/instance routing.*
+
 #### Tab 3: `Skills & MCPs`
 
 Optionally attaches local skills and Model Context Protocol (MCP) servers configured in your environment to each role in the squad:
@@ -198,6 +214,10 @@ This tab groups two stacked sections — first **`Sessão e hardware (sessionPol
 - **`Thinking & Modelo por Tipo de Worker (workerThinkingByKind)` editor**: defines the model and `thinkingLevel` (`low`, `medium`, `high`, `xhigh`) per task kind (such as `architecture`, `backend`, `frontend`, `qa`, and `research`), lets you delete entries, or add new kinds via **`Novo tipo (ex: security)`** + **`Adicionar tipo`**.
 - **`Padrões Proibidos (forbiddenPatterns)`**: red chip list editor for negative rules compiled into `SKILL.md` (e.g., `thinking high no pai`, `continuar thread após provider_error AcpRequestError`).
 
+![Preset Studio Contention Points tab showing Session and Hardware (sessionPolicy) with laptop-8gb hardwareProfile, parentThinkingLevel, and worker caps](../assets/studio-session-policy.png)
+
+*`Pontos de Contenção` (`sessionPolicy`) tab: configure `hardwareProfile`, `parentThinkingLevel`, Antigravity/total worker caps, and parent handoff budgets.*
+
 **2. `Política de Contenção & Isolamento (contention)`**:
 
 - **`Banco de Testes Único (singleTestDb)`**: when checked, instructs the squad to serialize test suites (such as RSpec or SQLite) to avoid database locks between parallel workers
@@ -220,6 +240,10 @@ Generates and displays the deterministic compilation output before anything is w
 - **Saving**:
   - In Global Mode, click **`Salvar Preset Global`** to save `~/.config/oh-my-t3code/presets/<id>.jsonc`
   - To save and sync to the selected project, click **`Salvar & Sincronizar Projeto`**: the backend creates `settings.json.bak`, updates `settings.json` atomically, and writes only modified files to the repository
+
+![Preset Studio Preview and Diff tab showing the Target Files list and deterministic Unified Diff in Section 5 of SKILL.md](../assets/studio-preview-diff.png)
+
+*`Preview & Diff` tab: `Unified Diff` view highlighting changes to Section 5 of `SKILL.md` (`Gestão de sessão e concorrência`) before writing to disk.*
 
 ## 3. Recommended daily workflows
 
