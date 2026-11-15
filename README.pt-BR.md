@@ -13,11 +13,15 @@ Construído com **Tauri v2 (Rust)** no backend e **React 19 + TypeScript + Tailw
 
 ## O que é o oh-my-t3code
 
-O `oh-my-t3code` resolve três dores recorrentes no uso diário de múltiplos agentes e projetos no T3 Code:
+O `oh-my-t3code` resolve quatro dores recorrentes no uso diário de múltiplos agentes e projetos no T3 Code:
 
 - **Gestão centralizada de Presets Globais**: defina um preset padrão em `~/.config/oh-my-t3code/presets/*.jsonc` para aplicar o mesmo orquestrador (`defaultModelSelection`) e fallback (`fallbackModelSelection`) em todos os projetos sem override.
 - **Overrides por repositório com herança (`extends`)**: personalize apenas o que muda em um projeto específico via `<repo>/.t3code/preset.jsonc`, mantendo herança limpa de um preset global.
 - **Swap de instância em 1 clique (`⇄`) e compilação determinística**: alterne instantaneamente entre instâncias configuradas no T3 Code (como instâncias primária e secundária do mesmo provedor, ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados (como `gpt-6.1-sol` ⇄ `gpt-6.1-terra` no `codex`) quando a cota aperta, e compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` com preview de Unified Diff antes de gravar.
+- **Gestão Inteligente de Sessão, Concorrência e Saúde (`sessionPolicy`)**:
+  - **Perfis de hardware (`laptop-8gb`, `desktop-16gb`, `desktop-32gb-plus`)**: aplica rebaixamento automático de `parentThinkingLevel` para `medium` em `laptop-8gb`, nunca emitindo `high`/`xhigh` para o orquestrador no `settings.json` nem no `SKILL.md`.
+  - **Regras determinísticas na Seção 5 do `SKILL.md`**: compila `## 5. Gestão de sessão e concorrência (oh-my-t3code)` com limites de workers Antigravity/totais, thinking por tipo de worker (`workerThinkingByKind`) e handoff preventivo.
+  - **Monitoramento em tempo real no Menu Bar Popover**: exibe badges de saúde ao vivo (`OK`, `Pai gordo`, `ACP morto`, `Muitos workers` e `Alerta de RAM (8 GB)`) além do botão **`Abrir thread pai novo`** para copiar o prompt de handoff — sem escrever no `statev2.sqlite` nem reiniciar processos do T3 Code.
 
 ## Visão geral da arquitetura
 
@@ -31,7 +35,7 @@ flowchart LR
     Popover -->|15 comandos IPC| Tauri["Backend Rust / Tauri v2"]
     Studio -->|15 comandos IPC| Tauri
 
-    Tauri -->|Read-Only SQLITE_OPEN_READ_ONLY| SQLite["~/.t3/userdata/statev2.sqlite"]
+    Tauri -->|Read-Only SQLITE_OPEN_READ_ONLY + PRAGMA query_only| SQLite["~/.t3/userdata/statev2.sqlite (subagentes e saúde sessão/ACP: orchestration_v2_projection_*)"]
     Tauri -->|Backup .bak + Escrita Atômica| Settings["~/.t3/userdata/settings.json"]
     Tauri -->|Leitura e Escrita| GlobalPresets["~/.config/oh-my-t3code/ (config.jsonc + presets/*.jsonc)"]
     Tauri -->|Catálogo Read-Only| GlobalSkills["~/.config/skillshare/skills e ~/.gemini/config/skills"]
@@ -64,8 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/ins
 Para instalar uma tag específica (ou rodar a partir de um clone local):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash -s -- v0.1.1
-# ou no clone local: ./install.sh v0.1.1
+curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash -s -- v0.2.0
+# ou no clone local: ./install.sh v0.2.0
 ```
 
 ### Opção B: Homebrew Cask
@@ -157,7 +161,7 @@ Consulte os guias detalhados para operação da UI, sintaxe JSONC e arquitetura 
 
 Todas as operações de leitura e gravação obedecem a quatro invariantes arquiteturais estritas:
 
-- **Acesso estritamente Read-Only ao `statev2.sqlite`**: `~/.t3/userdata/statev2.sqlite` é aberto exclusivamente com as flags `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` e `PRAGMA query_only = true`, eliminando locks de escrita e qualquer risco de corrupção do estado do T3 Code.
+- **Acesso estritamente Read-Only ao `statev2.sqlite`**: `~/.t3/userdata/statev2.sqlite` é aberto exclusivamente com as flags `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` e `PRAGMA query_only = true` para leitura de projetos, subagentes e saúde de sessão/ACP (`orchestration_v2_projection_*`), eliminando locks de escrita e qualquer risco de corrupção do estado do T3 Code — sem nunca gravar no banco, criar threads ou encerrar processos `agy_acp_server`.
 - **Backup obrigatório e escrita atômica em `settings.json`**: antes de gravar qualquer alteração em `~/.t3/userdata/settings.json`, o backend gera um backup em `~/.t3/userdata/settings.json.bak` e grava a nova versão via arquivo temporário único + `sync_all()` + `rename`, preservando 100% das chaves não relacionadas.
 - **Compilação determinística e cache-safe**: `<repo>/.agents/skills/<slug>-squad/SKILL.md` e `roles/*.md` são gerados em ordem determinística com `BTreeMap`, sem timestamps aleatórios ou UUIDs efêmeros, e com preview obrigatório de Unified Diff no Studio antes da gravação.
 - **Paridade estrita de contrato IPC**: todos os 15 comandos Tauri expostos em `src-tauri/src/lib.rs` possuem espelhamento exato de nome, argumentos e retorno em `src/types/ipc.ts` (`IPC_COMMANDS`).

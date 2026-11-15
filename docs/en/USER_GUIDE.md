@@ -42,6 +42,15 @@ Directly below the header sits the **`Preset Global (Default)`** card, which con
   - On other providers (`claudeAgent`, `opencode`, `grok`): displays a pill with the configured instance name
 - **Settings icon (`Editar Preset Global no Studio`)**: opens the **Preset Studio** directly on the active Global Preset
 
+### `Saúde global da sessão e RAM` strip (Global Session Health & RAM)
+
+Directly below the header (and below the active subagents strip whenever workers are running), the **Popover** renders the **`Saúde global da sessão e RAM`** strip (`aria-label="Saúde global da sessão e RAM"`) to monitor memory pressure and concurrency in real time:
+
+- **Global status badge**: displays the aggregated session health state (**`OK`** in green, **`Pai gordo`** in amber, **`ACP morto`** in red, or **`Muitos workers`** in red).
+- **Concurrency counter**: displays `Agy X/Y · Z/W workers`, comparing active Antigravity workers (`X`) and total active workers (`Z`) against the configured ceilings (`Y` and `W`).
+- **`hardwareProfile` chip**: shows the active hardware profile from the Global Preset's `sessionPolicy` (such as `laptop-8gb`, `desktop-16gb`, or `desktop-32gb-plus`).
+- **Explicit `Alerta de RAM (8 GB)` banner**: whenever the safe limit for concurrent Antigravity workers or RAM on the active profile is exceeded, the strip highlights a red alert banner prefixed with `Alerta de RAM (8 GB):` and the corresponding containment advisory.
+
 ### `Projetos com Override` section
 
 T3 Code projects without customizations stay hidden from the main list because they inherit **`Preset Global (Default)`** automatically. Only projects with a local override, a detected squad, or an existing `settings.json` divergence appear under **`Projetos com Override (N)`** (Projects with Override).
@@ -53,15 +62,20 @@ To add an override to a project that currently follows the Global Default:
 3. Under **`Preset de Override`**, pick the starting preset to base the override on.
 4. Click **`Aplicar Override`** (Apply Override), or **`Cancelar`** (Cancel) to abort.
 
-When **2 or more** projects have overrides, the **`Filtrar overrides, preset ou instância…`** (`⌘K`) filter bar appears automatically. It matches project title, path (`workspaceRoot`), local preset `id` or `extends`, detected squad slug, and configured instance name (such as `antigravity`, `antigravity_2`, `Codex`, etc.).
+When **2 or more** projects have overrides, the **`Filtrar projetos, overrides ou instância…`** (`⌘K`) filter bar appears automatically. It matches project title, path (`workspaceRoot`), local preset `id` or `extends`, detected squad slug, and configured instance name (such as `antigravity`, `antigravity_2`, `Codex`, etc.).
 
-Each card in **`Projetos com Override`** displays status badges and dedicated actions:
+Each card in **`Projetos com Override`** displays status badges, session health telemetry, and dedicated actions:
 
-- **Project badges and status**:
+- **Project sync and health badges**:
+  - **Session health**: shown next to the project title with states **`OK`** (green), **`Pai gordo`** (amber, when parent thread turns or items exceed budget), **`ACP morto`** (red, when an ACP failure such as `AcpRequestError` occurs), or **`Muitos workers`** (red, when concurrency exceeds the ceiling).
+  - **Session summary**: displayed beneath the badges as `Agy X/Y · pai N turns · M itens` when a parent thread has an active warning (`Pai gordo` or `ACP morto`), `Agy X/Y · Z/W workers` when over concurrency, or `Agy X/Y · saudável` when healthy.
   - **`Sincronizado`** (green, Synced): `<repo>/.t3code/preset.jsonc` exists and the override is active
   - **`Squad s/ preset`** (amber, Squad without preset): a manual squad exists at `<repo>/.agents/skills/*-squad/` without `<repo>/.t3code/preset.jsonc`
   - **`Override`** (neutral): an override exists in `settings.json` without a local preset file in `.t3code/`
   - **`Seguindo Global Default (override pausado)`** (amber): shown when the project's individual toggle is set to `Desativado`
+- **Health alert and `Abrir thread pai novo` button**:
+  - Whenever a project has an alert (`Pai gordo`, `ACP morto`, `Muitos workers`, or `Alerta de RAM (8 GB)`), the card displays a diagnostic box with the **`Abrir thread pai novo`** button (which briefly switches to **`Handoff copiado!`** after clicking).
+  - Clicking **`Abrir thread pai novo`** builds and copies a ready-to-use handoff prompt to your clipboard — including the alert reason, affected threads, `sessionPolicy` constraints, and instructions to resume via `ai-memory` (`memory_briefing`, `memory_handoff_accept`, and `memory_query`) — **without writing to `statev2.sqlite` (`SQLite Read-Only`) or creating threads automatically**. Simply open a new parent thread in T3 Code and paste the copied prompt.
 - **Card actions**:
   - **Individual toggle (`Ativo` / `Desativado`)**: pauses or reactivates the project override without deleting `.t3code/preset.jsonc`. Pausing removes `projectSettingsOverrides[projectId]` from `settings.json`
   - **One-click Swap `⇄`**: toggles between configured instances of the same provider (e.g. `antigravity` ⇄ `antigravity_2`) or between configured models on `codex` (e.g. `gpt-6.1-sol` ⇄ `gpt-6.1-terra`), recompiles the squad, and updates `settings.json`
@@ -71,10 +85,9 @@ Each card in **`Projetos com Override`** displays status badges and dedicated ac
 
 ### Footer and subagent activity note
 
-The **Popover** footer confirms the safety guarantees with the **`SQLite Read-Only · ~/.t3`** badge and the **`Esc para fechar`** (Esc to close) reminder.
+Below the global preset and overrides sections, the **Popover** renders the collapsible **`Monitor de Subagentes`** panel (collapsed by default, with an **`N ativo`** / **`N ativos`** badge), fed in strictly read-only mode from `~/.t3/userdata/statev2.sqlite` (`orchestration_v2_projection_subagents`, exposed via `activeSubagentCount` and `subagents` on `DashboardSnapshot`). Expanding the panel lists active and recent subagents with role (`worker` by default), linked project, title, provider/instance, model, status, and relative time—or `Nenhum subagente ativo ou recente.` when none exist.
 
-> [!NOTE]
-> Reading subagent activity from `~/.t3/userdata/statev2.sqlite` (`orchestration_v2_projection_subagents`, exposed via `activeSubagentCount` and `subagents` on `DashboardSnapshot`) is already implemented in the Rust backend. In the current UI version, the **Popover** focuses exclusively on preset management and 1-Click Sync and does not render a live subagent panel.
+The **Popover** footer confirms the safety guarantees with the **`SQLite Read-Only · ~/.t3`** badge and the **`Esc para fechar`** (Esc to close) reminder.
 
 ## 2. Preset Studio (`1120×760px`)
 
@@ -166,7 +179,26 @@ Optionally attaches local skills and Model Context Protocol (MCP) servers config
 
 #### Tab 4: `Pontos de Contenção` (Contention Points)
 
-Defines operational safety rules (`contention`) compiled into the squad's `SKILL.md` to prevent collisions across parallel workers:
+This tab groups two stacked sections — first **`Sessão e hardware (sessionPolicy)`** (Session & Hardware) and, directly below it, **`Política de Contenção & Isolamento (contention)`** (Contention & Isolation Policy) — both compiled into the squad's `SKILL.md` to prevent parallel worker collisions, RAM pressure, and unstable ACP sessions:
+
+**1. `Sessão e hardware (sessionPolicy)`**:
+
+- **`Aplicar limites sugeridos (N Agy)` button**: automatically fills `Máx. Workers Antigravity` (`2` for `laptop-8gb`, `3` for `desktop-16gb`, `4` for `desktop-32gb-plus`), `Máx. Total de Workers` (`N + 1`), and resets `parentThinkingLevel` to `medium` when `laptop-8gb` is selected.
+- **`Perfil de Hardware (hardwareProfile)`**: choose `laptop-8gb — Laptop 8 GB (máx. 2 Antigravity, pai medium)`, `desktop-16gb — Desktop 16 GB (máx. 3 Antigravity)`, or `desktop-32gb-plus — Workstation 32+ GB (máx. 4 Antigravity)`.
+- **`Thinking do Thread Pai (parentThinkingLevel)`**: choose between `low`, `medium`, `high`, and `xhigh`. When `laptop-8gb` is active and you select `high` or `xhigh`, the UI shows an amber downgrade note: **`Nota laptop-8gb: o compilador rebaixa automaticamente o thinking efetivo do thread pai para medium (em vez de high/xhigh) para evitar saturação de RAM.`** (explaining that the compiler clamps the parent's effective thinking level to `medium` to avoid RAM saturation).
+- **Numeric concurrency and parent-budget limits**:
+  - **`Máx. Workers Antigravity`** (`maxConcurrentAntigravityWorkers`): simultaneous Agy instance limit before triggering an alert.
+  - **`Máx. Total de Workers`** (`maxConcurrentWorkersTotal`): maximum total parallel workers per project.
+  - **`Máx. Turns do Pai (Handoff)`** (`parentMaxTurnsBeforeHandoff`): above this threshold the parent thread is flagged as `Pai gordo`.
+  - **`Máx. Itens do Pai (Handoff)`** (`parentMaxItemsBeforeHandoff`): accumulated items before suggesting a new parent thread.
+  - **`Alerta de Input Tokens`** (`parentWarnInputTokens`): warning threshold in the orchestrator context (step `1000`).
+  - **`Limite Rígido de Input Tokens`** (`parentHardInputTokens`): hard ceiling before requiring a session handoff (step `1000`).
+- **`Modo de Delegação (delegateMode)`**: choose `async-default — Delegação assíncrona padrão (sem polling)`, `sync-only — Apenas tarefas síncronas curtas`, or `adaptive — Adapta conforme carga e perfil de hardware`.
+- **`Recuperação ACP Morto (onAcpSessionDead)`**: choose `advise-new-thread — Instruir handoff imediato em novo thread pai`, `fallback-codex — Transbordar worker para Codex quando possível`, or `halt — Interromper novas delegações até diagnóstico`.
+- **`Thinking & Modelo por Tipo de Worker (workerThinkingByKind)` editor**: defines the model and `thinkingLevel` (`low`, `medium`, `high`, `xhigh`) per task kind (such as `architecture`, `backend`, `frontend`, `qa`, and `research`), lets you delete entries, or add new kinds via **`Novo tipo (ex: security)`** + **`Adicionar tipo`**.
+- **`Padrões Proibidos (forbiddenPatterns)`**: red chip list editor for negative rules compiled into `SKILL.md` (e.g., `thinking high no pai`, `continuar thread após provider_error AcpRequestError`).
+
+**2. `Política de Contenção & Isolamento (contention)`**:
 
 - **`Banco de Testes Único (singleTestDb)`**: when checked, instructs the squad to serialize test suites (such as RSpec or SQLite) to avoid database locks between parallel workers
 - **`Isolamento Padrão (defaultIsolation)`**: choose `shared — Ondas sequenciais no mesmo workspace` (sequential waves in the same workspace) or `worktree — Git worktrees isolados para frentes paralelas` (isolated Git worktrees for parallel tracks)
@@ -179,7 +211,7 @@ Defines operational safety rules (`contention`) compiled into the squad's `SKILL
 Generates and displays the deterministic compilation output before anything is written to disk:
 
 - **`Simular no projeto`** (visible in Global Mode): select any T3 Code project to preview how the Global Preset would compile in that repository
-- **`Atualizar Diff` button**: recalculates the deterministic preview (`SKILL.md`, `roles/*.md`, `.t3code/preset.jsonc`, and `settings.json`)
+- **`Atualizar Diff` button**: recalculates the deterministic preview (`SKILL.md`, `roles/*.md`, `.t3code/preset.jsonc`, and `settings.json`). Edits made to `sessionPolicy` in the **`Pontos de Contenção`** tab update Section **`## 5. Gestão de sessão e concorrência (oh-my-t3code)`** of `SKILL.md` (and any `laptop-8gb` `thinking_level` clamp in `settings.json`) in real time before saving
 - **`Arquivos Alvo` list**:
   - Shows `settings.json (override)` (`projectSettingsOverrides`), followed by `.t3code/preset.jsonc`, `.agents/skills/<slug>-squad/SKILL.md`, and each `roles/<id>.md`
   - Each entry receives a status badge (**`Novo`** in green, **`Modificado`** in amber, or **`Idêntico`** in neutral), alongside the global **`Alterações pendentes`** or **`Em dia`** badge
@@ -191,7 +223,7 @@ Generates and displays the deterministic compilation output before anything is w
 
 ## 3. Recommended daily workflows
 
-These four workflows cover the most common tasks when operating multiple accounts and repositories in T3 Code.
+These five workflows cover the most common tasks when operating multiple accounts, session limits, and repositories in T3 Code.
 
 ### Scenario 1: Initial setup with T3 Code
 
@@ -221,3 +253,11 @@ These four workflows cover the most common tasks when operating multiple account
 2. Open `http://localhost:1420` in your browser, or jump straight to `http://localhost:1420/?view=studio` and `http://localhost:1420/?view=popover`.
 3. Experiment with new presets using `extends`, configure `fallbackChain`, test filters, and inspect the generated **Unified Diff** using the in-memory sample projects.
 4. Once satisfied with the configuration, apply it in the native app (`bun run tauri:dev`).
+
+### Scenario 5: Recovering a session after `Pai gordo`, `ACP morto` (`AcpRequestError`), or `Alerta de RAM (8 GB)`
+
+1. Open the **Popover** and check the **`Saúde global da sessão e RAM`** strip (`Agy X/Y · Z/W workers`) as well as the affected project card (`Pai gordo`, `ACP morto`, or `Muitos workers`, along with `Agy X/Y · pai N turns · M itens`).
+2. If **`Alerta de RAM (8 GB)`** or over-concurrency is active, wait for running subagents to settle before launching new waves (or adjust `sessionPolicy` under **`Pontos de Contenção`** in **Preset Studio**).
+3. Inside the project's alert box in the **Popover**, click **`Abrir thread pai novo`** (the button confirms **`Handoff copiado!`**). This only copies the structured handoff prompt to the clipboard — it does not write to `statev2.sqlite` or create threads automatically.
+4. In **T3 Code**, open a **clean new parent thread** in the same repository and paste the copied prompt.
+5. The new orchestrator thread automatically follows the prompt steps: it reads `AGENTS.md`, `README.md`, and `.agents/skills/<slug>-squad/SKILL.md`, restores consolidated context via `ai-memory` (`memory_briefing`, `memory_handoff_accept`, `memory_query`), checks `git status --short` / `git diff --stat`, and resumes work within `sessionPolicy` limits.

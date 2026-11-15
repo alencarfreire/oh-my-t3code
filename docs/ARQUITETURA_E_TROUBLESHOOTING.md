@@ -14,11 +14,11 @@ Cada módulo em `src-tauri/src/` isola uma fronteira clara entre leitura do T3 C
 
 - **[`main.rs`](../src-tauri/src/main.rs)**: ponto de entrada do binário nativo; delega imediatamente a inicialização para `oh_my_t3code_lib::run()`.
 - **[`lib.rs`](../src-tauri/src/lib.rs)**: inicializa o `tauri::Builder`, configura `ActivationPolicy::Accessory` no macOS, cria o `TrayIconBuilder` (`main-tray`) com menu de contexto (`Alternar Popover`, `Abrir Preset Studio`, `Sair`), gerencia o posicionamento e visibilidade das janelas `popover` e `studio` e expõe os 15 comandos `#[tauri::command]`.
-- **[`models.rs`](../src-tauri/src/models.rs)**: define `AppError`, `AppPaths::from_env` e todas as structs de domínio e IPC (`GlobalAppConfig`, `PresetConfig`, `RoleConfig`, `ContentionPolicy`, `DashboardSnapshot`, `ResolvedProjectPreset`, `CompilePreviewResult`, `SyncResult`) com `#[serde(rename_all = "camelCase")]`.
-- **[`preset_engine.rs`](../src-tauri/src/preset_engine.rs)**: implementa o parser JSON with Comments (JSONC) (`strip_jsonc_comments`), validação de IDs (`validate_safe_id`), herança recursiva (`extends`, limite de 16 níveis e detecção de ciclos), o preset base padrão (`default`) e presets customizados do usuário com auto-reparo, escrita atômica (`atomic_write_file`) e o lock externo `lock_config_state()`.
-- **[`compiler.rs`](../src-tauri/src/compiler.rs)**: compila deterministicamente `.t3code/preset.jsonc`, `.agents/skills/<slug>-squad/SKILL.md` e `roles/*.md` com verificação `ensure_within_workspace`, gera previews com unified diff (`compile_preset_preview`) e coordena fluxos de alto nível (`apply_preset_to_project`, `swap_project_primary_instance`, `set_global_preset_config`, `swap_global_instance`, `set_project_preset_enabled`, `remove_project_override`).
-- **[`settings_sync.rs`](../src-tauri/src/settings_sync.rs)**: executa preview de diff, backup obrigatório em `settings.json.bak` e escrita atômica em `~/.t3/userdata/settings.json` (`sync_project_settings`, `sync_global_settings`, `remove_project_settings_override`), serializados pelo lock folha `lock_settings_file()`.
-- **[`t3_reader.rs`](../src-tauri/src/t3_reader.rs)**: lê `settings.json` (instâncias de provedor, seleções globais e overrides por projeto), abre `statev2.sqlite` em modo estritamente read-only para extrair `projection_projects`, `projection_threads` e `orchestration_v2_projection_subagents`, varre raízes de skills (`skillshare` e `gemini`) e monta `DashboardSnapshot`.
+- **[`models.rs`](../src-tauri/src/models.rs)**: define `AppError`, `AppPaths::from_env`, as structs de domínio e IPC (`GlobalAppConfig`, `PresetConfig`, `RoleConfig`, `ContentionPolicy`, `SessionPolicy`, `WorkerThinkingRule`, `ParentThreadHealth`, `ProjectSessionHealth`, `GlobalSessionHealth`, `DashboardSnapshot`, `ResolvedProjectPreset`, `CompilePreviewResult`, `SyncResult`) com `#[serde(rename_all = "camelCase")]` e os helpers `default_max_antigravity_for_profile`, `effective_parent_thinking_level` e `effective_orchestrator_options`.
+- **[`preset_engine.rs`](../src-tauri/src/preset_engine.rs)**: implementa o parser JSON with Comments (JSONC) (`strip_jsonc_comments`), validação de IDs (`validate_safe_id`, `validate_worker_thinking_keys`), herança recursiva (`extends`, limite de 16 níveis e detecção de ciclos), o preset base padrão (`default`) e presets customizados do usuário com auto-reparo, escrita atômica (`atomic_write_file`) e o lock externo `lock_config_state()`.
+- **[`compiler.rs`](../src-tauri/src/compiler.rs)**: compila deterministicamente `.t3code/preset.jsonc`, `.agents/skills/<slug>-squad/SKILL.md` (incluindo a Seção 5 determinística `## 5. Gestão de sessão e concorrência (oh-my-t3code)`) e `roles/*.md` com verificação `ensure_within_workspace` e *clamp* via `effective_orchestrator_options` / `effective_parent_thinking_level`, gera previews com unified diff (`compile_preset_preview`) e coordena fluxos de alto nível (`apply_preset_to_project`, `swap_project_primary_instance`, `set_global_preset_config`, `swap_global_instance`, `set_project_preset_enabled`, `remove_project_override`).
+- **[`settings_sync.rs`](../src-tauri/src/settings_sync.rs)**: executa preview de diff, backup obrigatório em `settings.json.bak` e escrita atômica em `~/.t3/userdata/settings.json` (`sync_project_settings`, `sync_global_settings`, `remove_project_settings_override`), aplicando `effective_orchestrator_options` (para garantir o *clamp* de `laptop-8gb`) e serializando operações pelo lock folha `lock_settings_file()`.
+- **[`t3_reader.rs`](../src-tauri/src/t3_reader.rs)**: lê `settings.json` (instâncias de provedor, seleções globais e overrides por projeto), abre `statev2.sqlite` em modo estritamente read-only para extrair `projection_projects`, `projection_threads`, `orchestration_v2_projection_threads`, `orchestration_v2_projection_subagents`, `orchestration_v2_projection_runs` e `orchestration_v2_projection_turn_items`, calcula `ProjectSessionHealth` e `GlobalSessionHealth` (`compute_global_session_health`), varre raízes de skills (`skillshare` e `gemini`) e monta `DashboardSnapshot`.
 - **[`importer.rs`](../src-tauri/src/importer.rs)**: implementa o Reverse Importer (`import_existing_squad`), convertendo diretórios manuais `.agents/skills/*-squad/{SKILL.md, roles/*.md}` em arquivos `.t3code/preset.jsonc` estruturados.
 
 ### Frontend React 19 + TypeScript (`src/`)
@@ -26,19 +26,20 @@ Cada módulo em `src-tauri/src/` isola uma fronteira clara entre leitura do T3 C
 O frontend roda dentro das duas webviews Tauri ou em navegador comum via fallback de mock para desenvolvimento e testes:
 
 - **[`App.tsx`](../src/App.tsx)**: lê `?view=popover` ou `?view=studio` na URL. Fora do runtime Tauri (quando `window.__TAURI_INTERNALS__` não existe e `?view` não foi passado), renderiza uma barra superior `Browser Preview (Mock IPC ativo)` para alternar entre `Popover (380×500)` e `Preset Studio (1120×760)`.
-- **[`views/PopoverView.tsx`](../src/views/PopoverView.tsx)**: interface compacta da Menu Bar para alternar o Preset Global, filtrar projetos com `⌘K`, trocar presets por projeto com 1 clique, executar **Swap** (`⇄`), pausar/ativar overrides, reverter para Global Default e abrir o Studio.
+- **[`views/PopoverView.tsx`](../src/views/PopoverView.tsx)**: interface compacta da Menu Bar para alternar o Preset Global, monitorar a faixa `Saúde global da sessão e RAM` e badges de saúde por projeto (`OK`, `Pai gordo`, `ACP morto`, `Muitos workers`, `Alerta de RAM (8 GB)`), copiar prompt de handoff pelo botão `Abrir thread pai novo`, inspecionar o `Monitor de Subagentes`, filtrar projetos com `⌘K`, trocar presets por projeto com 1 clique, executar **Swap** (`⇄`), pausar/ativar overrides, reverter para Global Default e abrir o Studio.
 - **[`views/StudioView.tsx`](../src/views/StudioView.tsx)**: editor completo em 5 abas com cabeçalho de resumo arquitetural, barra de status/erro e ações de salvar, definir como padrão global, pausar, remover override e sincronizar.
 - **`src/components/studio/`**:
   - [`StudioSidebar.tsx`](../src/components/studio/StudioSidebar.tsx): navegação entre presets globais e projetos com override, criação de presets, fluxo **Configurar Projeto** e botão **Importar Squad Existente**.
   - [`OverviewFallbackTab.tsx`](../src/components/studio/OverviewFallbackTab.tsx): edição de metadados, `extends`, `topology`, orquestrador e cadeia ordenada `fallbackChain`.
   - [`RolesMatrixTab.tsx`](../src/components/studio/RolesMatrixTab.tsx): matriz de papéis, instância, modelo, opções (`thinking_level`, `reasoningEffort`, `serviceTier`), `allowedPaths`, `forbiddenPaths`, invariantes e comandos de verificação.
   - [`SkillsMcpsTab.tsx`](../src/components/studio/SkillsMcpsTab.tsx): seletor de skills globais descobertas e servidores Model Context Protocol (MCP) (`ai-memory`, `context7`, `playwright`, `linear`).
-  - [`ContentionTab.tsx`](../src/components/studio/ContentionTab.tsx): configuração de `ContentionPolicy` (`defaultIsolation`, `singleTestDb`, `envVars`, `gitIgnoredBuilds`, `conflictFiles`).
+  - [`ContentionTab.tsx`](../src/components/studio/ContentionTab.tsx): combina [`SessionPolicySection.tsx`](../src/components/studio/SessionPolicySection.tsx) acima da configuração de `ContentionPolicy` (`defaultIsolation`, `singleTestDb`, `envVars`, `gitIgnoredBuilds`, `conflictFiles`).
+  - [`SessionPolicySection.tsx`](../src/components/studio/SessionPolicySection.tsx): editor de `SessionPolicy` com `hardwareProfile`, `parentThinkingLevel` (incluindo aviso automático de *clamp* sob `laptop-8gb`), botão **Aplicar limites sugeridos**, limites de concorrência/turns/itens/tokens, `delegateMode`, `onAcpSessionDead`, tabela `workerThinkingByKind` e `forbiddenPatterns`.
   - [`PreviewDiffTab.tsx`](../src/components/studio/PreviewDiffTab.tsx): inspeção de unified diff e conteúdo completo dos arquivos gerados e de `settings.json` antes da gravação em disco.
 - **[`lib/ipc-client.ts`](../src/lib/ipc-client.ts)**: wrapper tipado `invokeIpc` e `listenStudioNavigate` que roteia chamadas para `@tauri-apps/api` quando em Tauri e para `MockIpcStore` quando em navegador ou Vitest.
 - **[`lib/mock-data.ts`](../src/lib/mock-data.ts)**: `MockIpcStore` em memória para preview standalone em navegador e suíte de testes Vitest.
-- **[`lib/preset-utils.ts`](../src/lib/preset-utils.ts)**: catálogos curados de modelos/opções por provedor, templates de papéis (`COMMON_ROLE_TEMPLATES`), tags visuais e sanitização/validação de IDs (`sanitizeSafeId`, `isValidSafeId`).
-- **[`types/ipc.ts`](../src/types/ipc.ts)**: definições TypeScript espelhando 1:1 [`models.rs`](../src-tauri/src/models.rs) e os 15 comandos de [`lib.rs`](../src-tauri/src/lib.rs).
+- **[`lib/preset-utils.ts`](../src/lib/preset-utils.ts)**: catálogos curados de modelos/opções por provedor, templates de papéis (`COMMON_ROLE_TEMPLATES`), tags visuais, sanitização/validação de IDs (`sanitizeSafeId`, `isValidSafeId`), helpers de política de sessão (`createDefaultSessionPolicy`, `defaultMaxAntigravityForProfile`, `effectiveParentThinkingLevel`, `effectiveOrchestratorOptions`) e helpers de saúde/handoff (`getSessionHealthMeta`, `formatProjectSessionSummary`, `buildSessionHandoffPrompt`).
+- **[`types/ipc.ts`](../src/types/ipc.ts)**: definições TypeScript espelhando 1:1 [`models.rs`](../src-tauri/src/models.rs) (incluindo `HardwareProfile`, `WorkerThinkingRule`, `SessionPolicy`, `ParentThreadHealth`, `ProjectSessionHealth` e `GlobalSessionHealth`) e os 15 comandos de [`lib.rs`](../src-tauri/src/lib.rs).
 
 ### Janelas Tauri, Menu Bar no macOS e evento `studio://navigate`
 
@@ -64,8 +65,17 @@ A função `open_sqlite_readonly` em [`t3_reader.rs`](../src-tauri/src/t3_reader
 - `OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX` (nunca cria arquivo nem abre para escrita).
 - `conn.busy_timeout(Duration::from_millis(250))` para aguardar brevemente sem travar quando o T3 Code estiver escrevendo.
 - `PRAGMA query_only = true` como trava adicional no motor SQLite.
+- Retentativa automática de até **4 tentativas** (até 3 *retries* com pausa de `50 ms`) quando o driver retorna `rusqlite::ErrorCode::DatabaseBusy` ou `DatabaseLocked`.
 
-Para tolerar diferenças entre versões do schema do T3 Code, `read_sqlite_state_with_context` consulta `PRAGMA table_info(...)` antes de montar as queries em `projection_threads`, `projection_projects` e `orchestration_v2_projection_subagents` (aceitando tanto colunas diretas quanto fallback via `payload_json`, `default_model` ou `default_model_selection_json`, `parent_thread_id` ou `thread_id`, e filtrando registros com `deleted_at IS NULL` quando a coluna existir).
+Para tolerar diferenças entre versões do schema do T3 Code com **degradação graciosa**, `read_sqlite_state_with_context_unlocked` consulta `table_columns(&conn, table)` (`PRAGMA table_info(...)`) antes de montar cada query: se uma tabela opcional ainda não existir ou estiver sem a coluna esperada, `table_columns` retorna um `HashSet` vazio e a etapa é ignorada sem falhar `get_dashboard_snapshot`. As consultas cobrem:
+
+- `projection_projects`: projetos ativos (filtrando `deleted_at IS NULL` quando a coluna existir).
+- `projection_threads` e `orchestration_v2_projection_threads`: mapeamento `thread_id → project_id`, título, `archived_at` e `deleted_at` (com prioridade da tabela v2 sobre a legada, aceitando fallback via `payload_json`, `default_model` ou `default_model_selection_json`).
+- `orchestration_v2_projection_subagents`: atividade recente/ativa de subagentes (`parent_thread_id` ou `thread_id`, `child_thread_id`, status, modelo e `payload_json`).
+- `orchestration_v2_projection_runs`: contagem de *turns* por thread (`run_counts_by_thread`), seleção do *run* mais recente via `parse_iso8601_to_epoch_ms` + sequência (`seq`), detecção de sessão ACP morta (`run_indicates_acp_dead` quando o status indica falha e `error_message` contém `AcpRequestError` ou a duração fica entre `0` e `1000 ms`) e deduplicação de workers ativos não representados em `subagents`.
+- `orchestration_v2_projection_turn_items`: agregação `COUNT(*) ... GROUP BY thread_id` (`item_counts_by_thread`, filtrando `deleted_at IS NULL` quando presente) para identificar threads pai extensas (`fat_parent`).
+
+Ao final, `compute_global_session_health` consolida `ProjectSessionHealth` e `GlobalSessionHealth` na ordem de prioridade `acp_dead` > `over_concurrency` > `fat_parent` > `ok`, ativando `ramWarning` quando `hardwareProfile == "laptop-8gb"` e `activeAntigravityWorkers > 2`.
 
 ### Backup, escrita atômica e serialização Read-Modify-Write (RMW)
 
@@ -82,9 +92,15 @@ Antes de qualquer alteração em `~/.t3/userdata/settings.json`, o backend grava
 
 ### Proteção contra path traversal e compilação determinística
 
-- Todo ID de preset, `extends` e `role` é validado por `validate_safe_id` (`[a-zA-Z0-9_-]`, `1` a `64` caracteres, proibindo `..`, `/` e `\`).
+- Todo ID de preset, `extends` e `role` (e cada chave de `workerThinkingByKind`, validada por `validate_worker_thinking_keys`) é validado por `validate_safe_id` (`[a-zA-Z0-9_-]`, `1` a `64` caracteres, proibindo `..`, `/` e `\`).
 - Todo arquivo gravado no repositório pelo compiler passa por `ensure_within_workspace(workspace_root, target)`, rejeitando qualquer `Component::ParentDir` ou caminho fora de `workspace_root` com `AppError::PathTraversal`.
-- Os mapas `roles`, `options` e `envVars` usam `BTreeMap` e zero timestamps ou UUIDs aleatórios, garantindo saídas idênticas entre compilações repetidas e cache-safety para provedores de LLM.
+- Os mapas `roles`, `options`, `envVars` e `workerThinkingByKind` usam `BTreeMap` e zero timestamps ou UUIDs aleatórios, garantindo saídas idênticas entre compilações repetidas e cache-safety para provedores de LLM.
+
+### Clamp automático `laptop-8gb` e Seção 5 determinística no `SKILL.md`
+
+- **Rebaixamento automático no perfil `laptop-8gb`**: `effective_parent_thinking_level` em [`models.rs`](../src-tauri/src/models.rs) (espelhada por `effectiveParentThinkingLevel` em [`preset-utils.ts`](../src/lib/preset-utils.ts)) força `parentThinkingLevel` de `"high"` ou `"xhigh"` para `"medium"` sempre que `hardwareProfile == "laptop-8gb"`.
+- **Normalização única para `settings.json` e `SKILL.md`**: `effective_orchestrator_options` (espelhada por `effectiveOrchestratorOptions`) converte `thinkingLevel` em `thinking_level`, aplica `effective_parent_thinking_level` em orquestradores `antigravity*` / `gemini-4-*` (ou quando `thinking_level` está presente) e limita `reasoningEffort` ao mesmo teto. Como [`settings_sync.rs`](../src-tauri/src/settings_sync.rs) (`build_project_override_value` e `sync_global_settings`) e [`compiler.rs`](../src-tauri/src/compiler.rs) (`render_squad_skill_md`) usam essa função, `high`/`xhigh` nunca são emitidos para o chat pai em `laptop-8gb`.
+- **Seção 5 determinística (`render_squad_skill_md`)**: todo `SKILL.md` compilado inclui `## 5. Gestão de sessão e concorrência (oh-my-t3code)` com o perfil de hardware, limites de workers Antigravity e totais, limiares de *turns*/itens/tokens, *thinking* efetivo vs. configurado, `delegateMode`, `onAcpSessionDead`, tabela ordenada `workerThinkingByKind`, lista `forbiddenPatterns` e 8 regras operacionais obrigatórias (incluindo a Regra 5, que força ondas sequenciais com `isolation: "shared"` quando `defaultIsolation == "worktree"` e algum limite de concorrência é `<= 1`).
 
 ## Referência dos 15 comandos IPC
 
@@ -92,7 +108,7 @@ Todos os comandos abaixo são registrados em [`src-tauri/src/lib.rs`](../src-tau
 
 | Comando | Parâmetros | Retorno | O que faz |
 | :--- | :--- | :--- | :--- |
-| `get_dashboard_snapshot` | — | `DashboardSnapshot` | Lê `config.jsonc`, presets globais, `settings.json`, `statev2.sqlite` (read-only) e raízes de skills para montar o estado completo do painel |
+| `get_dashboard_snapshot` | — | `DashboardSnapshot` | Lê `config.jsonc`, presets globais, `settings.json`, `statev2.sqlite` (read-only) e raízes de skills para montar o estado completo do painel, incluindo `sessionHealth` global e por projeto |
 | `list_global_presets` | — | `PresetConfig[]` | Garante o preset base padrão (`default`), resolve a herança de todos os presets em `~/.config/oh-my-t3code/presets/` e retorna `default` seguido pelos presets customizados do usuário |
 | `get_project_preset` | `projectId`, `workspaceRoot` | `ResolvedProjectPreset` | Resolve `.t3code/preset.jsonc` (ou fallback global / hint de instância) e detecta `.agents/skills/*-squad/` no repositório |
 | `save_global_preset` | `preset: PresetConfig` | `PresetConfig` | Delega para `save_global_preset_and_sync`: valida IDs e ciclos simples, grava `<presets_dir>/<id>.jsonc` atomicamente, sincroniza `settings.json` automaticamente quando for o `activeGlobalPresetId` com `globalConfig.enabled == true` e retorna o preset resolvido |
@@ -107,6 +123,15 @@ Todos os comandos abaixo são registrados em [`src-tauri/src/lib.rs`](../src-tau
 | `remove_project_override` | `projectId`, `workspaceRoot` | `DashboardSnapshot` | Remove `.t3code/preset.jsonc` (e `.t3code/` se ficar vazio), remove `.agents/skills/<slug>-squad/` quando gerada pelo compiler (preservando squads manuais sem a assinatura do compiler e demais skills) e remove `projectSettingsOverrides[projectId]` de `settings.json` |
 | `open_studio_window` | `projectId?`, `presetId?` | `void` | Oculta o `popover`, mostra e foca o `studio` e emite o evento `studio://navigate` com o alvo escolhido |
 | `toggle_popover_window` | — | `void` | Alterna a visibilidade da janela `popover` |
+
+### Contratos de sessão e saúde (`models.rs` ↔ `src/types/ipc.ts`)
+
+Além dos tipos base de preset e projeto, [`models.rs`](../src-tauri/src/models.rs) e [`src/types/ipc.ts`](../src/types/ipc.ts) mantêm paridade 1:1 (`camelCase`) para a governança de sessão e a telemetria de saúde:
+
+- **`HardwareProfile` e `SessionPolicy`** (`PresetConfig.sessionPolicy`): define `hardwareProfile` (`"laptop-8gb"`, `"desktop-16gb"`, `"desktop-32gb-plus"`), `maxConcurrentAntigravityWorkers` (padrão `2` / `3` / `4` via `default_max_antigravity_for_profile`), `maxConcurrentWorkersTotal` (padrão `3`), `parentMaxTurnsBeforeHandoff` (`15`), `parentMaxItemsBeforeHandoff` (`120`), `parentWarnInputTokens` (`200_000`), `parentHardInputTokens` (`700_000`), `parentThinkingLevel` (`"medium"`), `workerThinkingByKind` (`Record<string, WorkerThinkingRule>` com `{ model, thinkingLevel }`), `delegateMode` (`"async-default"`), `onAcpSessionDead` (`"advise-new-thread"`) e `forbiddenPatterns`.
+- **`ParentThreadHealth`**: resume cada thread pai sinalizada em `fatParentThreads` ou `deadAcpThreads` com `threadId`, `projectId`, `title`, `runCount`, `itemCount`, `status` (`"fat_parent"` ou `"acp_dead"`), `lastError` e `updatedAt`.
+- **`ProjectSessionHealth`** (`ProjectSummary.sessionHealth`): consolida por projeto `status` (`"ok"`, `"fat_parent"`, `"acp_dead"`, `"over_concurrency"`), contagens `activeAntigravityWorkers` / `activeWorkersTotal`, tetos `maxConcurrentAntigravityWorkers` / `maxConcurrentWorkersTotal`, `ramWarning`, listas `fatParentThreads` / `deadAcpThreads` e `advisory`.
+- **`GlobalSessionHealth`** (`DashboardSnapshot.sessionHealth`): agrega globalmente os workers ativos (incluindo subagentes ativos ainda sem `projectId` mapeado), os limites do preset global ativo, `ramWarning`, `affectedProjects` e `advisory`.
 
 ## Solução de problemas e FAQ
 
@@ -221,6 +246,22 @@ As máquinas de estado do backend (`SM-1`, `SM-2` e `SM-3`) já estão implement
 - **Ações assíncronas e timers no Popover (`SM-4`: `SM4-BUG-1`, `SM4-BUG-2`)**: concorrência entre ações globais (`config` vs `swap`), respostas *out-of-order* de `loadSnapshot`, estado `selectedPresets` obsoleto após alterações externas e timers de `"Sincronizado!"` não cancelados em retentativas.
 - **Seleção, `studio://navigate`, saves parciais e guarda de rascunho no Studio (`SM-5`: `SM5-BUG-1`..`SM5-BUG-4`)**: corridas *out-of-order* em `selectProject`/`runPreview`, descarte ou leitura obsoleta de `studio://navigate` no *cold-start*/reabertura, dessincronização após falha na etapa 2 de saves compostos e perda de rascunho `dirty` ao navegar na sidebar.
 - **Paridade do `MockIpcStore` e corrida Tray/Blur no macOS (`SM-6`: `SM6-BUG-1`, `SM6-BUG-2`)**: divergências residuais do store de mock em navegador fora do Tauri e corrida entre `Focused(false)` e `TrayIconEvent::Click` ao alternar o Popover na Menu Bar.
+
+### 11. Thread pai com erro `AcpRequestError` (`ACP morto`) ou contexto inchado (`Pai gordo`)
+
+Quando o Popover exibe o badge **`ACP morto`** (`status: "acp_dead"`, causado por `AcpRequestError` ou falha em `<= 1000 ms` no último *run* em `orchestration_v2_projection_runs`) ou **`Pai gordo`** (`status: "fat_parent"`, ao atingir `parentMaxTurnsBeforeHandoff` em *runs* ou `parentMaxItemsBeforeHandoff` em `orchestration_v2_projection_turn_items`), insistir na mesma thread prolonga falhas de sessão ACP ou degrada a janela de contexto.
+
+1. No card do projeto dentro do Popover, clique em **Abrir thread pai novo** (o botão muda para **Handoff copiado!** ao chamar `buildSessionHandoffPrompt` em [`preset-utils.ts`](../src/lib/preset-utils.ts) e copiar o resumo estruturado para a área de transferência).
+2. Abra uma nova thread no T3 Code e cole o prompt copiado; as instruções orientam o novo orquestrador a ler `AGENTS.md`, `README.md`, `.agents/skills/<slug>-squad/SKILL.md` e recuperar o contexto consolidado via `ai-memory` (`memory_briefing`, `memory_handoff_accept`, `memory_query`), além de checar `git status --short`.
+3. Se quiser ajustar os limiares (`parentMaxTurnsBeforeHandoff`, `parentMaxItemsBeforeHandoff`, `onAcpSessionDead`), edite `sessionPolicy` na aba **Contenção & Sessão** (`ContentionTab` → [`SessionPolicySection.tsx`](../src/components/studio/SessionPolicySection.tsx)). O `oh-my-t3code` **nunca** escreve, fecha ou edita threads diretamente em `statev2.sqlite` — toda detecção permanece estritamente read-only.
+
+### 12. Saturação de RAM, badge `Muitos workers` ou `Alerta de RAM (8 GB)` em máquina `laptop-8gb`
+
+Em máquinas com 8 GB de RAM (`hardwareProfile: "laptop-8gb"`), abrir mais de `2` workers Antigravity (ACP) simultâneos (`activeAntigravityWorkers > 2`) ou ultrapassar `maxConcurrentAntigravityWorkers` / `maxConcurrentWorkersTotal` dispara **`Muitos workers`** (`over_concurrency`) e o banner **`Alerta de RAM (8 GB)`** na faixa `Saúde global da sessão e RAM` do Popover.
+
+1. Aguarde a onda atual concluir ou cancele workers excedentes no T3 Code antes de disparar novas delegações; acompanhe a contagem em tempo real pelo **Monitor de Subagentes** no Popover.
+2. No **Preset Studio**, abra o preset ativo (ou o override do projeto), acesse **Contenção & Sessão** (`ContentionTab` → [`SessionPolicySection.tsx`](../src/components/studio/SessionPolicySection.tsx)), selecione `laptop-8gb` e clique em **Aplicar limites sugeridos (2 Agy)** (ajusta `maxConcurrentAntigravityWorkers: 2`, `maxConcurrentWorkersTotal: 3` e `parentThinkingLevel: "medium"`).
+3. Confira na aba **Preview & Diff** que `settings.json` e a Seção 5 do `SKILL.md` refletem os limites e o *clamp* automático de `high`/`xhigh` para `medium`, e clique em **Sincronizar** para gravar em disco.
 
 ## Guia rápido para contribuidores
 

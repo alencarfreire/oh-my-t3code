@@ -13,11 +13,15 @@ Built with **Tauri v2 (Rust)** on the backend and **React 19 + TypeScript + Tail
 
 ## What `oh-my-t3code` is
 
-`oh-my-t3code` solves three recurring pain points when running multiple agents and repositories in T3 Code:
+`oh-my-t3code` solves four recurring pain points when running multiple agents and repositories in T3 Code:
 
 - **Centralized Global Presets**: define a default preset in `~/.config/oh-my-t3code/presets/*.jsonc` to apply the same orchestrator (`defaultModelSelection`) and fallback (`fallbackModelSelection`) across every project without a local override
 - **Per-repository overrides with inheritance (`extends`)**: customize only what changes for a specific project through `<repo>/.t3code/preset.jsonc` while inheriting cleanly from a global preset
 - **One-click instance swap (`⇄`) and deterministic compilation**: switch between configured provider instances in T3 Code (such as primary and secondary accounts like `antigravity` ⇄ `antigravity_2`) or configured models (such as `codex` models `gpt-6.1-sol` ⇄ `gpt-6.1-terra`) when rate limits hit, and compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` with a Unified Diff preview before writing to disk
+- **Intelligent Session, Concurrency & Health Management (`sessionPolicy`)**:
+  - **Hardware profiles (`laptop-8gb`, `desktop-16gb`, `desktop-32gb-plus`)**: automatically downgrades `parentThinkingLevel` to `medium` on `laptop-8gb`, never emitting `high` or `xhigh` for the orchestrator in `settings.json` or `SKILL.md`
+  - **Deterministic Section 5 rules in `SKILL.md`**: compiles `## 5. Gestão de sessão e concorrência (oh-my-t3code)` with Antigravity/total worker concurrency caps, per-task-kind worker thinking (`workerThinkingByKind`), and preventive handoff thresholds
+  - **Real-time health monitoring in the Menu Bar Popover**: surfaces live session health badges (`OK`, `Pai gordo`, `ACP morto`, `Muitos workers`, and `Alerta de RAM (8 GB)`) alongside the **`Abrir thread pai novo`** handoff copy button, without writing to `statev2.sqlite` or restarting T3 Code processes
 
 ## Architecture overview
 
@@ -31,7 +35,7 @@ flowchart LR
     Popover -->|15 IPC commands| Tauri["Rust / Tauri v2 Backend"]
     Studio -->|15 IPC commands| Tauri
 
-    Tauri -->|Read-Only SQLITE_OPEN_READ_ONLY| SQLite["~/.t3/userdata/statev2.sqlite"]
+    Tauri -->|Read-Only SQLITE_OPEN_READ_ONLY + PRAGMA query_only| SQLite["~/.t3/userdata/statev2.sqlite (subagents & session/ACP health: orchestration_v2_projection_*)"]
     Tauri -->|Backup .bak + Atomic Write| Settings["~/.t3/userdata/settings.json"]
     Tauri -->|Read & Write| GlobalPresets["~/.config/oh-my-t3code/ (config.jsonc + presets/*.jsonc)"]
     Tauri -->|Read-Only Catalog| GlobalSkills["~/.config/skillshare/skills and ~/.gemini/config/skills"]
@@ -64,8 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/ins
 To install a specific release tag (or run locally from a clone):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash -s -- v0.1.1
-# or from a local clone: ./install.sh v0.1.1
+curl -fsSL https://raw.githubusercontent.com/alencarfreire/oh-my-t3code/main/install.sh | bash -s -- v0.2.0
+# or from a local clone: ./install.sh v0.2.0
 ```
 
 ### Option B: Homebrew Cask
@@ -157,7 +161,7 @@ Read the detailed guides for UI workflows, JSONC syntax, and internal architectu
 
 Every read and write operation enforces four strict architectural invariants:
 
-- **Strictly read-only `statev2.sqlite` access**: the backend opens `~/.t3/userdata/statev2.sqlite` exclusively with `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` and `PRAGMA query_only = true`, preventing write locks and any risk of corrupting T3 Code state
+- **Strictly read-only `statev2.sqlite` access**: the backend opens `~/.t3/userdata/statev2.sqlite` exclusively with `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` and `PRAGMA query_only = true` for reading projects, subagents, and session/ACP health (`orchestration_v2_projection_*`), preventing write locks and any risk of corrupting T3 Code state—without ever writing to the database, creating threads, or terminating `agy_acp_server` processes
 - **Mandatory backup and atomic writes to `settings.json`**: before writing any change to `~/.t3/userdata/settings.json`, the backend writes a backup to `~/.t3/userdata/settings.json.bak` and persists the new version through a unique temporary file + `sync_all()` + `rename`, preserving 100% of unrelated keys
 - **Deterministic, cache-safe compilation**: `<repo>/.agents/skills/<slug>-squad/SKILL.md` and `roles/*.md` are generated in deterministic `BTreeMap` order with no random timestamps or ephemeral UUIDs, and Studio requires a Unified Diff preview before saving
 - **Strict IPC contract parity**: all 15 Tauri commands exposed in `src-tauri/src/lib.rs` mirror their exact names, arguments, and return types in `src/types/ipc.ts` (`IPC_COMMANDS`)
