@@ -1,0 +1,240 @@
+import type {
+  FallbackStep,
+  PresetConfig,
+  ProviderInstanceInfo,
+  RoleConfig,
+} from "../types/ipc";
+
+export const RECOMMENDED_MCPS = [
+  {
+    id: "ai-memory",
+    label: "ai-memory",
+    description: "Wiki durável do projeto, handoffs, decisões e memória entre sessões.",
+  },
+  {
+    id: "context7",
+    label: "context7",
+    description: "Documentação atualizada de bibliotecas e frameworks (Tauri, React, Tailwind).",
+  },
+  {
+    id: "playwright",
+    label: "playwright",
+    description: "Automação de navegador, snapshots e testes E2E visuais.",
+  },
+  {
+    id: "linear",
+    label: "linear",
+    description: "Leitura e atualização de issues, projetos e status no Linear.",
+  },
+] as const;
+
+export const COMMON_ROLE_TEMPLATES: Record<string, Partial<RoleConfig>> = {
+  backend: {
+    title: "Backend",
+    description: "APIs, models, domínio, jobs, migrations e suíte de testes.",
+    whenToUse: "Implementações de domínio, persistência, regras de negócio e endpoints.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-hydrogen",
+    options: { thinkingLevel: "high" },
+    skills: ["tdd-and-testing", "systematic-debugging", "ai-memory-retrieval"],
+    mcps: ["ai-memory", "context7"],
+  },
+  frontend: {
+    title: "Frontend UI",
+    description: "Componentes React 19, Tailwind CSS v4, acessibilidade e ergonomia visual.",
+    whenToUse: "Interfaces, estados, design tokens, responsividade e testes de componente.",
+    providerInstanceId: "antigravity_2",
+    model: "gemini-4-hydrogen",
+    options: { thinkingLevel: "medium" },
+    skills: ["tailwind-v4-design", "better-accessibility", "better-ui"],
+    mcps: ["context7", "playwright", "ai-memory"],
+  },
+  "rust-core": {
+    title: "Rust Core",
+    description: "Backend nativo Tauri v2, SQLite read-only, escrita atômica e engine de presets.",
+    whenToUse: "Comandos IPC Rust, I/O seguro, compiler de presets e modelos nativos.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-hydrogen",
+    options: { thinkingLevel: "high" },
+    skills: ["systems-rust-go-crystal", "tdd-and-testing"],
+    mcps: ["ai-memory", "context7"],
+  },
+  crystal: {
+    title: "Crystal Worker",
+    description: "Serviços e CLIs em Crystal de alta performance com concorrência por fibers.",
+    whenToUse: "Serviços Crystal, parsers e workers concorrentes.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-hydrogen",
+    options: { thinkingLevel: "high" },
+    skills: ["systems-rust-go-crystal", "tdd-and-testing"],
+    mcps: ["ai-memory"],
+  },
+  "meta-sync": {
+    title: "Meta Sync",
+    description: "Sincronização de métricas, webhooks e pipelines de dados externos.",
+    whenToUse: "Integrações Meta Ads, syncs agendados e ETL.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-argon",
+    options: { thinkingLevel: "medium" },
+    skills: ["systematic-debugging", "tdd-and-testing"],
+    mcps: ["ai-memory"],
+  },
+  fixer: {
+    title: "Fixer / Debugger",
+    description: "Diagnóstico científico de regressões, falhas de CI e bugs sutis.",
+    whenToUse: "Corrigir testes quebrados, race conditions ou bugs em produção.",
+    providerInstanceId: "antigravity",
+    model: "gemini-4-argon",
+    options: { thinkingLevel: "high" },
+    skills: ["systematic-debugging", "tdd-and-testing"],
+    mcps: ["ai-memory"],
+  },
+  "qa-reviewer": {
+    title: "QA / Security Reviewer",
+    description: "Auditoria independente de segurança, invariantes, paridade IPC e testes.",
+    whenToUse: "Revisão final independente antes de concluir entrega ou PR.",
+    providerInstanceId: "antigravity_2",
+    model: "gemini-4-argon",
+    options: { thinkingLevel: "high" },
+    skills: ["code-review-and-security", "security-audit", "web-design-guidelines"],
+    mcps: ["ai-memory", "playwright"],
+  },
+  "delivery-manager": {
+    title: "Delivery Manager",
+    description: "Consolidação de PRs, releases, Linear issues e handoffs de sessão.",
+    whenToUse: "Atualizar Linear, preparar changelog/PR e registrar handoff no ai-memory.",
+    providerInstanceId: "antigravity_2",
+    model: "gemini-4-argon",
+    options: { thinkingLevel: "low" },
+    skills: ["linear-issues", "ai-memory-handoff"],
+    mcps: ["linear", "ai-memory"],
+  },
+};
+
+export function sanitizeSafeId(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+export function isValidSafeId(id: string): boolean {
+  return id.length >= 1 && id.length <= 64 && /^[a-zA-Z0-9_-]+$/.test(id);
+}
+
+export function resolveInstanceShortLabel(
+  instanceId: string | null | undefined,
+  instances: ProviderInstanceInfo[],
+): string {
+  if (!instanceId) return "Não definido";
+  const found = instances.find((i) => i.id === instanceId);
+  if (found) {
+    if (instanceId === "antigravity") return "Agy Veca";
+    if (instanceId === "antigravity_2") return "Agy Principal";
+    if (instanceId === "codex") return "Codex";
+    return found.label.replace(/\s*\([^)]+\)$/, "");
+  }
+  if (instanceId === "antigravity") return "Agy Veca";
+  if (instanceId === "antigravity_2") return "Agy Principal";
+  if (instanceId === "codex") return "Codex";
+  return instanceId;
+}
+
+export function getModelsForInstance(
+  instanceId: string,
+  instances: ProviderInstanceInfo[],
+): string[] {
+  const found = instances.find((i) => i.id === instanceId);
+  if (found && found.models.length > 0) {
+    return found.models;
+  }
+  if (instanceId.startsWith("antigravity")) {
+    return ["gemini-4-hydrogen", "gemini-4-argon"];
+  }
+  if (instanceId === "codex") {
+    return ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-luna"];
+  }
+  if (instanceId === "claudeAgent") {
+    return ["claude-sonnet-4-5", "claude-opus-4-1"];
+  }
+  return ["gemini-4-hydrogen", "gemini-4-argon"];
+}
+
+export function createEmptyRole(id: string): RoleConfig {
+  const template = COMMON_ROLE_TEMPLATES[id];
+  return {
+    id,
+    title: template?.title ?? id,
+    description: template?.description ?? "",
+    whenToUse: template?.whenToUse ?? "",
+    providerInstanceId: template?.providerInstanceId ?? "antigravity",
+    model: template?.model ?? "gemini-4-hydrogen",
+    options: template?.options ? { ...template.options } : { thinkingLevel: "medium" },
+    skills: template?.skills ? [...template.skills] : [],
+    mcps: template?.mcps ? [...template.mcps] : ["ai-memory"],
+    allowedPaths: [],
+    forbiddenPaths: [],
+    invariants: [],
+    verificationCommands: [],
+  };
+}
+
+export function createEmptyPreset(id: string, extendsId: string | null = "agy-dual"): PresetConfig {
+  return {
+    id,
+    name: id,
+    description: "",
+    extends: extendsId,
+    topology: "intra-thread-squad",
+    orchestrator: {
+      providerInstanceId: "antigravity_2",
+      model: "gemini-4-hydrogen",
+      options: { thinkingLevel: "high" },
+    },
+    fallbackChain: [
+      {
+        providerInstanceId: "antigravity",
+        model: "gemini-4-hydrogen",
+        options: { thinkingLevel: "high" },
+        reason: "Nível 1: Alternar para Agy Veca mantendo gemini-4-hydrogen",
+      },
+    ],
+    contention: {
+      singleTestDb: false,
+      envVars: {},
+      gitIgnoredBuilds: [],
+      conflictFiles: [],
+      defaultIsolation: "shared",
+    },
+    roles: {},
+  };
+}
+
+export function createDefaultFallbackStep(): FallbackStep {
+  return {
+    providerInstanceId: "antigravity",
+    model: "gemini-4-argon",
+    options: { thinkingLevel: "medium" },
+    reason: "Alternar conta/modelo quando a instância primária atingir cota",
+  };
+}
+
+export function clonePreset(preset: PresetConfig): PresetConfig {
+  return JSON.parse(JSON.stringify(preset)) as PresetConfig;
+}
+
+export function formatRelativeTime(isoDate: string | null | undefined): string {
+  if (!isoDate) return "agora";
+  const parsed = Date.parse(isoDate);
+  if (Number.isNaN(parsed)) return isoDate;
+  const diffSec = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  if (diffSec < 60) return "agora";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m atrás`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h atrás`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d atrás`;
+}
