@@ -13,13 +13,13 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-TMP_DIR="$(mktemp -d)"
+TMP_DIR="$(cd "$(mktemp -d)" && pwd -P)"
 MOUNT_DIR="${TMP_DIR}/mnt"
 mkdir -p "${MOUNT_DIR}"
 
 cleanup() {
   if mount | grep -Fq "on ${MOUNT_DIR} "; then
-    hdiutil detach "${MOUNT_DIR}" -quiet || hdiutil detach "${MOUNT_DIR}" -force -quiet || true
+    hdiutil detach "${MOUNT_DIR}" -quiet 2>/dev/null || hdiutil detach "${MOUNT_DIR}" -force -quiet 2>/dev/null || true
   fi
   rm -rf "${TMP_DIR}"
 }
