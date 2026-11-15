@@ -10,11 +10,68 @@ use models::{
     SyncResult,
 };
 use serde::Serialize;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, Rect, WindowEvent,
 };
+
+const TRAY_BLUR_DEBOUNCE: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Default)]
+struct PopoverBlurGuard {
+    last_blur_hide_at: Mutex<Option<Instant>>,
+}
+
+impl PopoverBlurGuard {
+    fn record_blur_hide(&self, at: Instant) {
+        let mut guard = self
+            .last_blur_hide_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(at);
+    }
+
+    fn clear(&self) {
+        let mut guard = self
+            .last_blur_hide_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = None;
+    }
+
+    fn consume_if_suppressed(&self, was_visible: bool, now: Instant, window: Duration) -> bool {
+        let mut guard = self
+            .last_blur_hide_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let suppress = should_suppress_tray_reopen(was_visible, *guard, now, window);
+        if suppress {
+            *guard = None;
+        }
+        suppress
+    }
+}
+
+fn should_suppress_tray_reopen(
+    was_visible: bool,
+    last_blur_hide_at: Option<Instant>,
+    now: Instant,
+    window: Duration,
+) -> bool {
+    if was_visible {
+        return false;
+    }
+
+    match last_blur_hide_at {
+        Some(last) => now
+            .checked_duration_since(last)
+            .is_some_and(|elapsed| elapsed <= window),
+        None => false,
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,7 +222,7 @@ fn open_studio_window(
 
 #[tauri::command]
 fn toggle_popover_window(app: AppHandle) -> Result<(), String> {
-    toggle_popover_window_internal(&app, None)
+    toggle_popover_window_internal(&app, None, false)
 }
 
 fn open_studio_window_internal(
@@ -173,6 +230,9 @@ fn open_studio_window_internal(
     project_id: Option<String>,
     preset_id: Option<String>,
 ) -> Result<(), String> {
+    if let Some(guard) = app.try_state::<PopoverBlurGuard>() {
+        guard.clear();
+    }
     if let Some(popover) = app.get_webview_window("popover") {
         let _ = popover.hide();
     }
@@ -227,15 +287,30 @@ fn position_popover_under_tray(
 fn toggle_popover_window_internal(
     app: &AppHandle,
     tray_rect: Option<Rect>,
+    from_tray_click: bool,
 ) -> Result<(), String> {
     let popover = app
         .get_webview_window("popover")
         .ok_or_else(|| "Popover window is not registered".to_string())?;
 
     let is_visible = popover.is_visible().unwrap_or(false);
+    if from_tray_click {
+        if let Some(guard) = app.try_state::<PopoverBlurGuard>() {
+            if guard.consume_if_suppressed(is_visible, Instant::now(), TRAY_BLUR_DEBOUNCE) {
+                return Ok(());
+            }
+        }
+    }
+
     if is_visible {
+        if let Some(guard) = app.try_state::<PopoverBlurGuard>() {
+            guard.clear();
+        }
         popover.hide().map_err(|e| e.to_string())?;
     } else {
+        if let Some(guard) = app.try_state::<PopoverBlurGuard>() {
+            guard.clear();
+        }
         position_popover_under_tray(&popover, tray_rect);
         popover.show().map_err(|e| e.to_string())?;
         popover.set_focus().map_err(|e| e.to_string())?;
@@ -246,6 +321,7 @@ fn toggle_popover_window_internal(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(PopoverBlurGuard::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -269,7 +345,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "toggle_popover" => {
-                        let _ = toggle_popover_window_internal(app, None);
+                        let _ = toggle_popover_window_internal(app, None, false);
                     }
                     "open_studio" => {
                         let _ = open_studio_window_internal(app, None, None);
@@ -287,7 +363,11 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let _ = toggle_popover_window_internal(tray.app_handle(), Some(rect));
+                        let _ = toggle_popover_window_internal(
+                            tray.app_handle(),
+                            Some(rect),
+                            true,
+                        );
                     }
                 });
 
@@ -301,7 +381,17 @@ pub fn run() {
                 let popover_handle = popover.clone();
                 popover.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
-                        let _ = popover_handle.hide();
+                        if popover_handle.is_visible().unwrap_or(false) {
+                            if let Some(guard) = popover_handle.try_state::<PopoverBlurGuard>() {
+                                guard.record_blur_hide(Instant::now());
+                            }
+                            if popover_handle.hide().is_err() {
+                                if let Some(guard) = popover_handle.try_state::<PopoverBlurGuard>()
+                                {
+                                    guard.clear();
+                                }
+                            }
+                        }
                     }
                 });
             }
@@ -337,4 +427,86 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Oh My T3Code Tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suppresses_tray_reopen_within_debounce_window_and_consumes_guard() {
+        let guard = PopoverBlurGuard::default();
+        let blur_at = Instant::now();
+        guard.record_blur_hide(blur_at);
+
+        let within_window = blur_at + Duration::from_millis(120);
+        assert!(should_suppress_tray_reopen(
+            false,
+            Some(blur_at),
+            within_window,
+            TRAY_BLUR_DEBOUNCE
+        ));
+        assert!(guard.consume_if_suppressed(false, within_window, TRAY_BLUR_DEBOUNCE));
+
+        // Second tray click right after (even still within 250ms) must open because guard was consumed.
+        let second_click = blur_at + Duration::from_millis(180);
+        assert!(!guard.consume_if_suppressed(false, second_click, TRAY_BLUR_DEBOUNCE));
+    }
+
+    #[test]
+    fn suppresses_at_exact_debounce_boundary_and_allows_after_window() {
+        let blur_at = Instant::now();
+        let at_boundary = blur_at + TRAY_BLUR_DEBOUNCE;
+        let after_window = blur_at + TRAY_BLUR_DEBOUNCE + Duration::from_millis(1);
+
+        assert!(should_suppress_tray_reopen(
+            false,
+            Some(blur_at),
+            at_boundary,
+            TRAY_BLUR_DEBOUNCE
+        ));
+        assert!(!should_suppress_tray_reopen(
+            false,
+            Some(blur_at),
+            after_window,
+            TRAY_BLUR_DEBOUNCE
+        ));
+
+        let guard = PopoverBlurGuard::default();
+        guard.record_blur_hide(blur_at);
+        assert!(!guard.consume_if_suppressed(false, after_window, TRAY_BLUR_DEBOUNCE));
+    }
+
+    #[test]
+    fn never_suppresses_when_popover_is_currently_visible_or_no_prior_blur() {
+        let blur_at = Instant::now();
+        let within_window = blur_at + Duration::from_millis(20);
+
+        assert!(!should_suppress_tray_reopen(
+            true,
+            Some(blur_at),
+            within_window,
+            TRAY_BLUR_DEBOUNCE
+        ));
+        assert!(!should_suppress_tray_reopen(
+            true,
+            None,
+            within_window,
+            TRAY_BLUR_DEBOUNCE
+        ));
+        assert!(!should_suppress_tray_reopen(
+            false,
+            None,
+            within_window,
+            TRAY_BLUR_DEBOUNCE
+        ));
+
+        // Defensive: now earlier than blur_at should never panic and should not suppress.
+        assert!(!should_suppress_tray_reopen(
+            false,
+            Some(within_window),
+            blur_at,
+            TRAY_BLUR_DEBOUNCE
+        ));
+    }
 }

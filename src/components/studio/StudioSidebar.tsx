@@ -36,6 +36,7 @@ interface StudioSidebarProps {
   onImportProjectSquad: (project: ProjectSummary) => void;
   onConfigureProjectOverride: (project: ProjectSummary, presetId: string) => void;
   importingProjectId: string | null;
+  disabled?: boolean;
 }
 
 export function StudioSidebar({
@@ -49,6 +50,7 @@ export function StudioSidebar({
   onImportProjectSquad,
   onConfigureProjectOverride,
   importingProjectId,
+  disabled = false,
 }: StudioSidebarProps) {
   const [creatingGlobal, setCreatingGlobal] = useState(false);
   const [newPresetId, setNewPresetId] = useState("");
@@ -111,6 +113,7 @@ export function StudioSidebar({
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (disabled) return;
     const cleaned = sanitizeSafeId(newPresetId);
     if (!isValidSafeId(cleaned)) {
       setCreateError("Use apenas letras, números, '-' ou '_' (1 a 64 caracteres).");
@@ -128,6 +131,7 @@ export function StudioSidebar({
 
   const handleConfigureSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (disabled) return;
     if (!selectedUnconfiguredProject) return;
     onConfigureProjectOverride(
       selectedUnconfiguredProject,
@@ -174,6 +178,7 @@ export function StudioSidebar({
             <Button
               variant="ghost"
               size="xs"
+              disabled={disabled}
               onClick={() => {
                 setCreatingGlobal((v) => !v);
                 setCreateError(null);
@@ -204,7 +209,8 @@ export function StudioSidebar({
                   onChange={(e) => setNewPresetId(e.target.value)}
                   placeholder="ex: rails-agy-squad"
                   autoFocus
-                  className="mt-1 h-8 w-full rounded-lg border border-white/15 bg-zinc-950 px-2.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  disabled={disabled}
+                  className="mt-1 h-8 w-full rounded-lg border border-white/15 bg-zinc-950 px-2.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
               <div>
@@ -220,6 +226,7 @@ export function StudioSidebar({
                   value={newPresetBase}
                   onChange={(e) => setNewPresetBase(e.target.value)}
                   wrapperClassName="mt-1"
+                  disabled={disabled}
                 >
                   <option value="">Nenhum (Base)</option>
                   {sortedGlobalPresets.map((p) => (
@@ -238,11 +245,12 @@ export function StudioSidebar({
                 <Button
                   variant="ghost"
                   size="xs"
+                  disabled={disabled}
                   onClick={() => setCreatingGlobal(false)}
                 >
                   Cancelar
                 </Button>
-                <Button type="submit" variant="primary" size="xs">
+                <Button type="submit" variant="primary" size="xs" disabled={disabled}>
                   Criar
                 </Button>
               </div>
@@ -262,11 +270,13 @@ export function StudioSidebar({
                 <li key={preset.id}>
                   <button
                     type="button"
+                    disabled={disabled}
                     onClick={() => onSelectGlobal(preset.id)}
                     aria-current={active ? "page" : undefined}
                     className={[
                       "relative flex w-full items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-out",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400",
+                      "disabled:cursor-not-allowed disabled:opacity-50",
                       active
                         ? "border-indigo-400/45 bg-indigo-500/[0.14] text-zinc-100 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]"
                         : "border-transparent bg-transparent text-zinc-300 hover:border-white/[0.06] hover:bg-white/[0.04] hover:text-zinc-100",
@@ -337,6 +347,7 @@ export function StudioSidebar({
             <Button
               variant="ghost"
               size="xs"
+              disabled={disabled}
               onClick={() => setConfiguringProject((v) => !v)}
               aria-expanded={configuringProject}
             >
@@ -356,6 +367,7 @@ export function StudioSidebar({
                   <Button
                     variant="ghost"
                     size="xs"
+                    disabled={disabled}
                     onClick={() => setConfiguringProject(false)}
                   >
                     Fechar
@@ -377,6 +389,7 @@ export function StudioSidebar({
                       value={selectedUnconfiguredId}
                       onChange={(e) => setSelectedUnconfiguredId(e.target.value)}
                       wrapperClassName="mt-1"
+                      disabled={disabled}
                     >
                       {unconfiguredProjects.map((project) => (
                         <option key={project.projectId} value={project.projectId}>
@@ -400,6 +413,7 @@ export function StudioSidebar({
                       value={selectedPresetForOverride}
                       onChange={(e) => setSelectedPresetForOverride(e.target.value)}
                       wrapperClassName="mt-1"
+                      disabled={disabled}
                     >
                       {sortedGlobalPresets.map((preset) => (
                         <option key={preset.id} value={preset.id}>
@@ -413,6 +427,7 @@ export function StudioSidebar({
                     <Button
                       variant="ghost"
                       size="xs"
+                      disabled={disabled}
                       onClick={() => setConfiguringProject(false)}
                     >
                       Cancelar
@@ -422,6 +437,7 @@ export function StudioSidebar({
                         variant="secondary"
                         size="xs"
                         disabled={
+                          disabled ||
                           importingProjectId === selectedUnconfiguredProject.projectId
                         }
                         onClick={() => {
@@ -433,7 +449,7 @@ export function StudioSidebar({
                         Importar Squad
                       </Button>
                     ) : null}
-                    <Button type="submit" variant="primary" size="xs">
+                    <Button type="submit" variant="primary" size="xs" disabled={disabled}>
                       Criar Override
                     </Button>
                   </div>
@@ -477,9 +493,10 @@ export function StudioSidebar({
                     ) : null}
                     <button
                       type="button"
+                      disabled={disabled}
                       onClick={() => onSelectProject(project)}
                       aria-current={active ? "page" : undefined}
-                      className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                      className="flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <FolderGit2
                         className={`mt-0.5 size-3.5 shrink-0 ${
@@ -519,7 +536,7 @@ export function StudioSidebar({
                           variant={project.hasLocalPreset ? "ghost" : "secondary"}
                           size="xs"
                           className="w-full justify-start text-[11px]"
-                          disabled={isImporting}
+                          disabled={disabled || isImporting}
                           onClick={() => onImportProjectSquad(project)}
                         >
                           <Download

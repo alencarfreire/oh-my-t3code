@@ -63,6 +63,18 @@ const STUDIO_TABS: ReadonlyArray<{
   { id: "preview", label: "Preview & Diff", icon: FileDiff },
 ];
 
+type PendingSwitchAction =
+  | { kind: "global"; presetId: string }
+  | { kind: "project"; project: ProjectSummary }
+  | { kind: "create-global"; id: string; extendsId: string | null }
+  | { kind: "configure-override"; project: ProjectSummary; presetId: string }
+  | { kind: "import-squad"; project: ProjectSummary }
+  | {
+      kind: "navigate";
+      payload: StudioNavigatePayload;
+      snapshot: DashboardSnapshot;
+    };
+
 interface StudioViewProps {
   initialProjectId?: string | null;
   initialPresetId?: string | null;
@@ -87,6 +99,7 @@ export function StudioView({
 
   const [saving, setSaving] = useState(false);
   const [importingProjectId, setImportingProjectId] = useState<string | null>(null);
+  const [pendingSwitch, setPendingSwitch] = useState<PendingSwitchAction | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -100,10 +113,69 @@ export function StudioView({
 
   const snapshotRef = useRef<DashboardSnapshot | null>(null);
   snapshotRef.current = snapshot;
+  const selectionRef = useRef<StudioSelection | null>(null);
+  selectionRef.current = selection;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+  const savingRef = useRef(false);
+  savingRef.current = saving;
+
   const selectionSeqRef = useRef(0);
   const previewSeqRef = useRef(0);
   const pendingNavigateRef = useRef<StudioNavigatePayload | null>(null);
+  const deferredNavigateDuringSaveRef = useRef<StudioNavigatePayload | null>(null);
   const navigateSeqRef = useRef(0);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  const updateSelection = useCallback((next: StudioSelection | null) => {
+    selectionRef.current = next;
+    setSelection(next);
+  }, []);
+
+  const updateDirty = useCallback((next: boolean) => {
+    dirtyRef.current = next;
+    setDirty(next);
+  }, []);
+
+  const updateSaving = useCallback((next: boolean) => {
+    savingRef.current = next;
+    setSaving(next);
+  }, []);
+
+  const openDirtyDialog = useCallback((action: PendingSwitchAction) => {
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPendingSwitch(action);
+  }, []);
+
+  const cancelPendingSwitch = useCallback(() => {
+    setPendingSwitch(null);
+    const prev = previousFocusRef.current;
+    previousFocusRef.current = null;
+    if (prev && prev.isConnected) {
+      prev.focus();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pendingSwitch) return;
+    const cancelBtn = dialogRef.current?.querySelector<HTMLButtonElement>(
+      '[data-dialog-cancel="true"]',
+    );
+    cancelBtn?.focus();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelPendingSwitch();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [cancelPendingSwitch, pendingSwitch]);
 
   const selectGlobalPreset = useCallback(
     (presetId: string, sourceSnapshot?: DashboardSnapshot | null) => {
@@ -118,43 +190,46 @@ export function StudioView({
       if (found.id === snap.globalConfig.activeGlobalPresetId) {
         nextDraft.enabled = snap.globalConfig.enabled;
       }
-      setSelection({ kind: "global", presetId: found.id });
+      updateSelection({ kind: "global", presetId: found.id });
       setProjectMeta(null);
       setDraftPreset(nextDraft);
       const firstRole = Object.keys(found.roles).sort()[0] ?? null;
       setSelectedRoleId(firstRole);
-      setDirty(false);
+      updateDirty(false);
       setPreviewResult(null);
       setPreviewTargetProjectId(snap.projects[0]?.projectId ?? null);
     },
-    [],
+    [updateDirty, updateSelection],
   );
 
-  const selectProject = useCallback(async (project: ProjectSummary) => {
-    const seq = ++selectionSeqRef.current;
-    previewSeqRef.current += 1;
-    setPreviewLoading(false);
-    setErrorMsg(null);
-    setSelection({ kind: "project", projectId: project.projectId });
-    setPreviewTargetProjectId(project.projectId);
-    setPreviewResult(null);
-    try {
-      const resolved = await invokeIpc("get_project_preset", {
-        projectId: project.projectId,
-        workspaceRoot: project.workspaceRoot,
-      });
-      if (seq !== selectionSeqRef.current) return;
-      setProjectMeta(resolved);
-      setDraftPreset(clonePreset(resolved.resolvedPreset));
-      const firstRole =
-        Object.keys(resolved.resolvedPreset.roles).sort()[0] ?? null;
-      setSelectedRoleId(firstRole);
-      setDirty(false);
-    } catch (err) {
-      if (seq !== selectionSeqRef.current) return;
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
+  const selectProject = useCallback(
+    async (project: ProjectSummary) => {
+      const seq = ++selectionSeqRef.current;
+      previewSeqRef.current += 1;
+      setPreviewLoading(false);
+      setErrorMsg(null);
+      updateSelection({ kind: "project", projectId: project.projectId });
+      setPreviewTargetProjectId(project.projectId);
+      setPreviewResult(null);
+      try {
+        const resolved = await invokeIpc("get_project_preset", {
+          projectId: project.projectId,
+          workspaceRoot: project.workspaceRoot,
+        });
+        if (seq !== selectionSeqRef.current) return;
+        setProjectMeta(resolved);
+        setDraftPreset(clonePreset(resolved.resolvedPreset));
+        const firstRole =
+          Object.keys(resolved.resolvedPreset.roles).sort()[0] ?? null;
+        setSelectedRoleId(firstRole);
+        updateDirty(false);
+      } catch (err) {
+        if (seq !== selectionSeqRef.current) return;
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [updateDirty, updateSelection],
+  );
 
   const applyNavigationPayload = useCallback(
     async (payload: StudioNavigatePayload, snap: DashboardSnapshot) => {
@@ -236,29 +311,59 @@ export function StudioView({
     void loadInitial();
   }, [loadInitial]);
 
+  const handleNavigationEvent = useCallback(
+    async (payload: StudioNavigatePayload, isCancelled: () => boolean) => {
+      if (!snapshotRef.current) {
+        pendingNavigateRef.current = payload;
+        return;
+      }
+      if (savingRef.current) {
+        deferredNavigateDuringSaveRef.current = payload;
+        return;
+      }
+      const navSeq = ++navigateSeqRef.current;
+      try {
+        const freshSnap = await invokeIpc("get_dashboard_snapshot");
+        if (isCancelled() || navSeq !== navigateSeqRef.current) return;
+        if (savingRef.current) {
+          deferredNavigateDuringSaveRef.current = payload;
+          return;
+        }
+        snapshotRef.current = freshSnap;
+        setSnapshot(freshSnap);
+
+        const hasTarget = Boolean(
+          (payload.projectId &&
+            freshSnap.projects.some((p) => p.projectId === payload.projectId)) ||
+            (payload.presetId &&
+              freshSnap.globalPresets.some((p) => p.id === payload.presetId)),
+        );
+        if (!hasTarget) return;
+
+        if (dirtyRef.current) {
+          openDirtyDialog({
+            kind: "navigate",
+            payload,
+            snapshot: freshSnap,
+          });
+          return;
+        }
+        await applyNavigationPayload(payload, freshSnap);
+      } catch (err) {
+        if (isCancelled() || navSeq !== navigateSeqRef.current) return;
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [applyNavigationPayload, openDirtyDialog],
+  );
+
   // Listen for `studio://navigate` events emitted from Rust when Popover opens Studio for a project
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listenStudioNavigate((payload) => {
       if (cancelled) return;
-      if (!snapshotRef.current) {
-        pendingNavigateRef.current = payload;
-        return;
-      }
-      const navSeq = ++navigateSeqRef.current;
-      void (async () => {
-        try {
-          const freshSnap = await invokeIpc("get_dashboard_snapshot");
-          if (cancelled || navSeq !== navigateSeqRef.current) return;
-          snapshotRef.current = freshSnap;
-          setSnapshot(freshSnap);
-          await applyNavigationPayload(payload, freshSnap);
-        } catch (err) {
-          if (cancelled || navSeq !== navigateSeqRef.current) return;
-          setErrorMsg(err instanceof Error ? err.message : String(err));
-        }
-      })();
+      void handleNavigationEvent(payload, () => cancelled);
     }).then((fn) => {
       if (cancelled) {
         fn();
@@ -270,7 +375,16 @@ export function StudioView({
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, [applyNavigationPayload]);
+  }, [handleNavigationEvent]);
+
+  // Drain deferred `studio://navigate` received while saving was in flight
+  useEffect(() => {
+    if (saving) return;
+    const deferred = deferredNavigateDuringSaveRef.current;
+    if (!deferred) return;
+    deferredNavigateDuringSaveRef.current = null;
+    void handleNavigationEvent(deferred, () => false);
+  }, [handleNavigationEvent, saving]);
 
   const activePreviewProject = useMemo(() => {
     if (!snapshot || !previewTargetProjectId) return null;
@@ -325,10 +439,10 @@ export function StudioView({
 
   const handleDraftChange = (next: PresetConfig) => {
     setDraftPreset(next);
-    setDirty(true);
+    updateDirty(true);
   };
 
-  const handleCreateGlobalPreset = (id: string, extendsId: string | null) => {
+  const executeCreateGlobalPreset = (id: string, extendsId: string | null) => {
     selectionSeqRef.current += 1;
     previewSeqRef.current += 1;
     setPreviewLoading(false);
@@ -346,18 +460,18 @@ export function StudioView({
         }
       : createEmptyPreset(id, extendsId);
 
-    setSelection({ kind: "global", presetId: id });
+    updateSelection({ kind: "global", presetId: id });
     setProjectMeta(null);
     setDraftPreset(created);
     setSelectedRoleId(Object.keys(created.roles).sort()[0] ?? null);
-    setDirty(true);
+    updateDirty(true);
     setActiveTab("overview");
     setStatusMessage(`Novo preset global '${id}' criado em rascunho. Salve para gravar.`);
   };
 
   const handleSaveGlobalPreset = async () => {
-    if (!draftPreset) return;
-    setSaving(true);
+    if (!draftPreset || savingRef.current) return;
+    updateSaving(true);
     setErrorMsg(null);
     try {
       const saved = await invokeIpc("save_global_preset", { preset: draftPreset });
@@ -372,7 +486,7 @@ export function StudioView({
       snapshotRef.current = refreshed;
       setSnapshot(refreshed);
       setDraftPreset(nextDraft);
-      setDirty(false);
+      updateDirty(false);
       setStatusMessage(
         isSyncedGlobal
           ? `Preset global '${saved.id}' salvo e sincronizado com settings.json.`
@@ -381,17 +495,17 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
   const handleToggleGlobalPresetStatus = async () => {
-    if (!draftPreset || !snapshot) return;
+    if (!draftPreset || !snapshot || savingRef.current) return;
     const isActiveGlobalDefault =
       snapshot.globalConfig.activeGlobalPresetId === draftPreset.id;
     if (isActiveGlobalDefault) {
       const nextEnabled = !snapshot.globalConfig.enabled;
-      setSaving(true);
+      updateSaving(true);
       setErrorMsg(null);
       try {
         const updatedConfigSnap = await invokeIpc(
@@ -406,7 +520,7 @@ export function StudioView({
         const updatedDraft = { ...clonePreset(draftPreset), enabled: nextEnabled };
         setDraftPreset(updatedDraft);
 
-        if (!dirty) {
+        if (!dirtyRef.current) {
           const saved = await invokeIpc(IPC_COMMANDS.saveGlobalPreset, {
             preset: updatedDraft,
           });
@@ -426,7 +540,7 @@ export function StudioView({
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : String(err));
       } finally {
-        setSaving(false);
+        updateSaving(false);
       }
       return;
     }
@@ -435,8 +549,8 @@ export function StudioView({
   };
 
   const handleSetAsGlobalDefault = async () => {
-    if (!draftPreset) return;
-    setSaving(true);
+    if (!draftPreset || savingRef.current) return;
+    updateSaving(true);
     setErrorMsg(null);
     try {
       const presetToActivate = { ...draftPreset, enabled: true };
@@ -444,7 +558,7 @@ export function StudioView({
         preset: presetToActivate,
       });
       setDraftPreset(clonePreset(saved));
-      setDirty(false);
+      updateDirty(false);
 
       try {
         const updated = await invokeIpc(IPC_COMMANDS.setGlobalPresetConfig, {
@@ -472,13 +586,13 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
   const handleSaveProjectOverride = async () => {
-    if (!draftPreset || !projectMeta) return;
-    setSaving(true);
+    if (!draftPreset || !projectMeta || savingRef.current) return;
+    updateSaving(true);
     setErrorMsg(null);
     try {
       const saved = await invokeIpc("save_project_preset", {
@@ -488,7 +602,7 @@ export function StudioView({
       });
       setProjectMeta(saved);
       setDraftPreset(clonePreset(saved.resolvedPreset));
-      setDirty(false);
+      updateDirty(false);
 
       let nextStatusMessage = `Override local salvo em ${saved.localPresetPath} (pausado).`;
       if (draftPreset.enabled !== false) {
@@ -530,19 +644,19 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
   const handleToggleProjectEnabled = async () => {
-    if (!draftPreset || !projectMeta || !snapshot) return;
+    if (!draftPreset || !projectMeta || !snapshot || savingRef.current) return;
     const activeProject = snapshot.projects.find(
       (p) => p.projectId === projectMeta.projectId,
     );
     const currentEnabled = activeProject?.presetEnabled ?? draftPreset.enabled;
     const nextEnabled = !currentEnabled;
 
-    setSaving(true);
+    updateSaving(true);
     setErrorMsg(null);
     try {
       await invokeIpc(IPC_COMMANDS.setProjectPresetEnabled, {
@@ -562,13 +676,13 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
   const handleRemoveProjectOverride = async () => {
-    if (!projectMeta) return;
-    setSaving(true);
+    if (!projectMeta || savingRef.current) return;
+    updateSaving(true);
     setErrorMsg(null);
     try {
       const refreshed = await invokeIpc(IPC_COMMANDS.removeProjectOverride, {
@@ -584,15 +698,16 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
-  const handleConfigureProjectOverride = async (
+  const executeConfigureProjectOverride = async (
     project: ProjectSummary,
     presetId: string,
   ) => {
-    setSaving(true);
+    if (savingRef.current) return;
+    updateSaving(true);
     setErrorMsg(null);
     try {
       await invokeIpc(IPC_COMMANDS.applyPresetSync, {
@@ -613,17 +728,17 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
   const handleApplyProjectSync = async () => {
-    if (!draftPreset || !activePreviewProject) return;
-    setSaving(true);
+    if (!draftPreset || !activePreviewProject || savingRef.current) return;
+    updateSaving(true);
     setErrorMsg(null);
     try {
       let savedProjectPreset: ResolvedProjectPreset | null = null;
-      if (selection?.kind === "project" && projectMeta) {
+      if (selectionRef.current?.kind === "project" && projectMeta) {
         savedProjectPreset = await invokeIpc("save_project_preset", {
           projectId: projectMeta.projectId,
           workspaceRoot: projectMeta.workspaceRoot,
@@ -631,7 +746,7 @@ export function StudioView({
         });
         setProjectMeta(savedProjectPreset);
         setDraftPreset(clonePreset(savedProjectPreset.resolvedPreset));
-        setDirty(false);
+        updateDirty(false);
       }
 
       const presetForSync = savedProjectPreset?.resolvedPreset ?? draftPreset;
@@ -668,7 +783,7 @@ export function StudioView({
       } catch {
         // Keep current snapshot if refresh fails
       }
-      setDirty(false);
+      updateDirty(false);
       setStatusMessage(
         `Sincronizado! ${res.writtenFiles.length} arquivos gravados e settings.json atualizado (${res.activeInstanceId} · ${res.activeModel}).`,
       );
@@ -676,11 +791,12 @@ export function StudioView({
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      updateSaving(false);
     }
   };
 
-  const handleImportSquad = async (project: ProjectSummary) => {
+  const executeImportSquad = async (project: ProjectSummary) => {
+    if (savingRef.current) return;
     const seq = ++selectionSeqRef.current;
     setImportingProjectId(project.projectId);
     setErrorMsg(null);
@@ -696,14 +812,14 @@ export function StudioView({
       previewSeqRef.current += 1;
       setPreviewLoading(false);
       setPreviewResult(null);
-      setSelection({ kind: "project", projectId: project.projectId });
+      updateSelection({ kind: "project", projectId: project.projectId });
       setProjectMeta(imported);
       setDraftPreset(clonePreset(imported.resolvedPreset));
       setPreviewTargetProjectId(project.projectId);
       setSelectedRoleId(
         Object.keys(imported.resolvedPreset.roles).sort()[0] ?? null,
       );
-      setDirty(false);
+      updateDirty(false);
       setStatusMessage(
         `Squad importada de ${project.title} para ${imported.localPresetPath}.`,
       );
@@ -711,6 +827,115 @@ export function StudioView({
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setImportingProjectId(null);
+    }
+  };
+
+  const requestSelectGlobal = (presetId: string) => {
+    if (savingRef.current) return;
+    if (
+      selectionRef.current?.kind === "global" &&
+      selectionRef.current.presetId === presetId
+    ) {
+      return;
+    }
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "global", presetId });
+      return;
+    }
+    selectGlobalPreset(presetId);
+  };
+
+  const requestSelectProject = (project: ProjectSummary) => {
+    if (savingRef.current) return;
+    if (
+      selectionRef.current?.kind === "project" &&
+      selectionRef.current.projectId === project.projectId
+    ) {
+      return;
+    }
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "project", project });
+      return;
+    }
+    void selectProject(project);
+  };
+
+  const requestCreateGlobalPreset = (id: string, extendsId: string | null) => {
+    if (savingRef.current) return;
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "create-global", id, extendsId });
+      return;
+    }
+    executeCreateGlobalPreset(id, extendsId);
+  };
+
+  const requestConfigureProjectOverride = (
+    project: ProjectSummary,
+    presetId: string,
+  ) => {
+    if (savingRef.current) return;
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "configure-override", project, presetId });
+      return;
+    }
+    void executeConfigureProjectOverride(project, presetId);
+  };
+
+  const requestImportSquad = (project: ProjectSummary) => {
+    if (savingRef.current) return;
+    if (dirtyRef.current) {
+      openDirtyDialog({ kind: "import-squad", project });
+      return;
+    }
+    void executeImportSquad(project);
+  };
+
+  const confirmPendingSwitch = async () => {
+    if (savingRef.current) return;
+    const action = pendingSwitch;
+    if (!action) return;
+    setPendingSwitch(null);
+    previousFocusRef.current = null;
+    switch (action.kind) {
+      case "global":
+        selectGlobalPreset(action.presetId);
+        break;
+      case "project":
+        await selectProject(action.project);
+        break;
+      case "create-global":
+        executeCreateGlobalPreset(action.id, action.extendsId);
+        break;
+      case "configure-override":
+        await executeConfigureProjectOverride(action.project, action.presetId);
+        break;
+      case "import-squad":
+        await executeImportSquad(action.project);
+        break;
+      case "navigate":
+        await applyNavigationPayload(action.payload, action.snapshot);
+        break;
+    }
+  };
+
+  const handleDialogKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Tab" || !dialogRef.current) return;
+    const focusables = Array.from(
+      dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first || document.activeElement === dialogRef.current) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
     }
   };
 
@@ -804,14 +1029,13 @@ export function StudioView({
         globalPresets={snapshot?.globalPresets ?? []}
         projects={snapshot?.projects ?? []}
         selection={selection}
-        onSelectGlobal={(id) => selectGlobalPreset(id)}
-        onSelectProject={(proj) => void selectProject(proj)}
-        onCreateGlobalPreset={handleCreateGlobalPreset}
-        onImportProjectSquad={(proj) => void handleImportSquad(proj)}
-        onConfigureProjectOverride={(proj, presetId) =>
-          void handleConfigureProjectOverride(proj, presetId)
-        }
+        onSelectGlobal={requestSelectGlobal}
+        onSelectProject={requestSelectProject}
+        onCreateGlobalPreset={requestCreateGlobalPreset}
+        onImportProjectSquad={requestImportSquad}
+        onConfigureProjectOverride={requestConfigureProjectOverride}
         importingProjectId={importingProjectId}
+        disabled={saving}
       />
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1136,6 +1360,65 @@ export function StudioView({
           )}
         </main>
       </div>
+
+      {pendingSwitch ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={cancelPendingSwitch}
+        >
+          <div
+            ref={dialogRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="studio-dirty-dialog-title"
+            aria-describedby="studio-dirty-dialog-desc"
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={handleDialogKeyDown}
+            className="surface-card w-full max-w-md rounded-2xl border border-amber-400/30 bg-zinc-950 p-5 shadow-2xl space-y-4 focus:outline-none"
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-amber-400/25 bg-amber-500/15 text-amber-300">
+                <AlertCircle className="size-4.5" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 space-y-1">
+                <h2
+                  id="studio-dirty-dialog-title"
+                  className="text-sm font-semibold tracking-tight text-zinc-100"
+                >
+                  Alterações não salvas
+                </h2>
+                <p
+                  id="studio-dirty-dialog-desc"
+                  className="text-xs leading-relaxed text-zinc-300"
+                >
+                  Você tem edições não salvas no preset atual. Se continuar, essas
+                  alterações serão descartadas.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                data-dialog-cancel="true"
+                onClick={cancelPendingSwitch}
+              >
+                Continuar editando
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                data-dialog-confirm="true"
+                onClick={() => void confirmPendingSwitch()}
+              >
+                Descartar alterações e continuar
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

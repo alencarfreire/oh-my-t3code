@@ -13,7 +13,7 @@ import type {
   SyncResult,
   T3ModelSelection,
 } from "../types/ipc";
-import { normalizeDisabledRoles } from "./preset-utils";
+import { isValidSafeId, normalizeDisabledRoles } from "./preset-utils";
 
 function deriveProjectSlug(workspaceRoot: string): string {
   const parts = workspaceRoot.split("/").filter(Boolean);
@@ -1170,6 +1170,12 @@ export class MockIpcStore {
 
     const codexPreset = this.globalPresets.find((p) => p.id === "codex-squad");
     if (codexPreset) {
+      this.localPresetsByProject.set("proj-dashboard-meta", {
+        ...structuredClone(codexPreset),
+        id: "dashboard-meta",
+        name: "dashboard-meta",
+        extends: "codex-squad",
+      });
       this.projectSettingsOverrides.set(
         "proj-dashboard-meta",
         selectionFromPreset(codexPreset),
@@ -1185,10 +1191,33 @@ export class MockIpcStore {
     return this.projectSettingsOverrides.has(projectId);
   }
 
+  private assertValidPresetStructure(preset: PresetConfig): void {
+    if (!isValidSafeId(preset.id)) {
+      throw new Error(`Invalid preset id '${preset.id}'`);
+    }
+    if (preset.extends !== null && preset.extends !== undefined && preset.extends !== "") {
+      if (!isValidSafeId(preset.extends)) {
+        throw new Error(`Invalid extends preset id '${preset.extends}'`);
+      }
+      if (preset.extends === preset.id) {
+        throw new Error(`Preset '${preset.id}' cannot extend itself`);
+      }
+    }
+    for (const [roleId, role] of Object.entries(preset.roles)) {
+      if (!isValidSafeId(roleId)) {
+        throw new Error(`Invalid role id '${roleId}'`);
+      }
+      if (!role.id) {
+        role.id = roleId;
+      }
+    }
+  }
+
   private resolvePresetInheritance(
     preset: PresetConfig,
     visited: Set<string> = new Set(),
     depth = 0,
+    catalog: PresetConfig[] = this.globalPresets,
   ): PresetConfig {
     const normalized = stripDisabledRoles(preset);
     if (!normalized.extends) {
@@ -1203,13 +1232,18 @@ export class MockIpcStore {
     if (visited.has(normalized.extends)) {
       throw new Error(`Preset '${normalized.extends}' participates in an inheritance cycle`);
     }
-    const parentRaw = this.globalPresets.find((p) => p.id === normalized.extends);
+    const parentRaw = catalog.find((p) => p.id === normalized.extends);
     if (!parentRaw) {
       throw new Error(`Global preset '${normalized.extends}' not found`);
     }
     const nextVisited = new Set(visited);
     nextVisited.add(normalized.id);
-    const resolvedParent = this.resolvePresetInheritance(parentRaw, nextVisited, depth + 1);
+    const resolvedParent = this.resolvePresetInheritance(
+      parentRaw,
+      nextVisited,
+      depth + 1,
+      catalog,
+    );
     return mergePresetPatch(resolvedParent, normalized);
   }
 
@@ -1218,11 +1252,42 @@ export class MockIpcStore {
     return found ? this.resolvePresetInheritance(found) : null;
   }
 
+  private resolveGlobalFallbackPreset(): PresetConfig {
+    const candidates = [
+      this.globalConfig.activeGlobalPresetId,
+      "default",
+      "agy-dual",
+    ];
+    let lastError: unknown = null;
+    for (const candidateId of candidates) {
+      const found = this.globalPresets.find((p) => p.id === candidateId);
+      if (!found) continue;
+      try {
+        return this.resolvePresetInheritance(found);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (this.globalPresets[0]) {
+      return this.resolvePresetInheritance(this.globalPresets[0]);
+    }
+    if (lastError) {
+      throw lastError;
+    }
+    throw new Error("No global presets available");
+  }
+
   private applyGlobalFallbackToProject(proj: ProjectSummary): void {
+    if (!this.globalConfig.enabled) {
+      proj.activeInstanceId = null;
+      proj.activeModel = proj.defaultModel;
+      return;
+    }
     const activeGlobal =
       this.resolveGlobalPresetById(this.globalConfig.activeGlobalPresetId) ??
-      this.resolveGlobalPresetById(this.globalPresets[0]?.id ?? "default");
-    if (this.globalConfig.enabled && activeGlobal) {
+      this.resolveGlobalPresetById("default") ??
+      this.resolveGlobalPresetById(this.globalPresets[0]?.id ?? "agy-dual");
+    if (activeGlobal) {
       proj.activeInstanceId = activeGlobal.orchestrator.providerInstanceId;
       proj.activeModel = activeGlobal.orchestrator.model;
     } else {
@@ -1286,18 +1351,9 @@ export class MockIpcStore {
     const localPreset = this.localPresetsByProject.get(projectId) ?? null;
     const project = this.projects.find((p) => p.projectId === projectId);
 
-    let resolved: PresetConfig;
-    if (localPreset) {
-      resolved = this.resolvePresetInheritance(localPreset);
-    } else if (project?.activeInstanceId === "codex") {
-      resolved =
-        this.resolveGlobalPresetById("codex-squad") ??
-        this.resolvePresetInheritance(this.globalPresets[0]);
-    } else {
-      resolved =
-        this.resolveGlobalPresetById(this.globalConfig.activeGlobalPresetId) ??
-        this.resolvePresetInheritance(this.globalPresets[0]);
-    }
+    const resolved = localPreset
+      ? this.resolvePresetInheritance(localPreset)
+      : this.resolveGlobalFallbackPreset();
 
     return {
       projectId,
@@ -1313,13 +1369,26 @@ export class MockIpcStore {
 
   saveGlobalPreset(preset: PresetConfig): PresetConfig {
     const saved = stripDisabledRoles(preset);
+    this.assertValidPresetStructure(saved);
     const idx = this.globalPresets.findIndex((p) => p.id === saved.id);
+    const candidateCatalog =
+      idx >= 0
+        ? this.globalPresets.map((p, i) => (i === idx ? saved : p))
+        : [...this.globalPresets, saved];
+    const resolved = this.resolvePresetInheritance(saved, new Set(), 0, candidateCatalog);
     if (idx >= 0) {
       this.globalPresets[idx] = saved;
     } else {
       this.globalPresets.push(saved);
     }
-    return this.resolvePresetInheritance(saved);
+    if (saved.id === this.globalConfig.activeGlobalPresetId) {
+      for (const proj of this.projects) {
+        if (!proj.presetEnabled || !proj.hasCustomOverride) {
+          this.applyGlobalFallbackToProject(proj);
+        }
+      }
+    }
+    return resolved;
   }
 
   saveProjectPreset(
@@ -1328,6 +1397,8 @@ export class MockIpcStore {
     preset: PresetConfig,
   ): ResolvedProjectPreset {
     const saved = stripDisabledRoles(preset);
+    this.assertValidPresetStructure(saved);
+    this.resolvePresetInheritance(saved);
     this.localPresetsByProject.set(projectId, saved);
     const proj = this.projects.find((p) => p.projectId === projectId);
     if (proj) {
@@ -1428,23 +1499,23 @@ export class MockIpcStore {
   ): SyncResult {
     let targetPreset: PresetConfig;
     if (customPreset) {
+      this.assertValidPresetStructure(customPreset);
       targetPreset = stripDisabledRoles(customPreset);
-    } else if (presetIdOrCustom === "custom") {
-      targetPreset = stripDisabledRoles(
-        this.localPresetsByProject.get(projectId) ?? this.globalPresets[0],
-      );
-    } else if (presetIdOrCustom) {
-      targetPreset = stripDisabledRoles(
-        this.globalPresets.find((p) => p.id === presetIdOrCustom) ??
-          this.localPresetsByProject.get(projectId) ??
-          this.globalPresets[0],
-      );
+    } else if (presetIdOrCustom && presetIdOrCustom !== "custom") {
+      if (!isValidSafeId(presetIdOrCustom)) {
+        throw new Error(`Invalid preset id '${presetIdOrCustom}'`);
+      }
+      const foundGlobal = this.globalPresets.find((p) => p.id === presetIdOrCustom);
+      if (!foundGlobal) {
+        throw new Error(`Global preset '${presetIdOrCustom}' not found`);
+      }
+      targetPreset = stripDisabledRoles(foundGlobal);
     } else {
-      targetPreset = stripDisabledRoles(
-        this.localPresetsByProject.get(projectId) ?? this.globalPresets[0],
-      );
+      const current = this.getProjectPreset(projectId, workspaceRoot);
+      targetPreset = stripDisabledRoles(current.rawLocalPreset ?? current.resolvedPreset);
     }
 
+    this.assertValidPresetStructure(targetPreset);
     const resolved = this.resolvePresetInheritance(targetPreset);
     const preview = this.previewPresetSync(projectId, workspaceRoot, targetPreset);
     const writtenFiles: string[] = [];
@@ -1528,6 +1599,7 @@ export class MockIpcStore {
     }
 
     const local = this.localPresetsByProject.get(projectId);
+    const candidateLocal = local ? structuredClone(local) : null;
     const current =
       this.projectSettingsOverrides.get(projectId)?.instanceId ??
       proj?.activeInstanceId ??
@@ -1545,13 +1617,13 @@ export class MockIpcStore {
     if (current === "codex") {
       nextInstance = "codex";
       nextModel = currentModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
-      if (local) {
-        local.orchestrator.providerInstanceId = "codex";
-        local.orchestrator.model = nextModel;
-        delete local.orchestrator.options.thinkingLevel;
-        delete local.orchestrator.options.thinking_level;
-        local.orchestrator.options.reasoningEffort ??= "medium";
-        local.orchestrator.options.serviceTier ??= "default";
+      if (candidateLocal) {
+        candidateLocal.orchestrator.providerInstanceId = "codex";
+        candidateLocal.orchestrator.model = nextModel;
+        delete candidateLocal.orchestrator.options.thinkingLevel;
+        delete candidateLocal.orchestrator.options.thinking_level;
+        candidateLocal.orchestrator.options.reasoningEffort ??= "medium";
+        candidateLocal.orchestrator.options.serviceTier ??= "default";
       }
     } else {
       nextInstance = current === "antigravity" ? "antigravity_2" : "antigravity";
@@ -1559,14 +1631,19 @@ export class MockIpcStore {
         currentModel && currentModel.startsWith("gemini-")
           ? currentModel
           : "gemini-4-hydrogen";
-      if (local) {
-        local.orchestrator.providerInstanceId = nextInstance;
-        local.orchestrator.model = nextModel;
+      if (candidateLocal) {
+        candidateLocal.orchestrator.providerInstanceId = nextInstance;
+        candidateLocal.orchestrator.model = nextModel;
+        if (candidateLocal.orchestrator.options.thinkingLevel && !candidateLocal.orchestrator.options.thinking_level) {
+          candidateLocal.orchestrator.options.thinking_level =
+            candidateLocal.orchestrator.options.thinkingLevel;
+        }
+        delete candidateLocal.orchestrator.options.thinkingLevel;
       }
     }
 
-    if (local) {
-      return this.applyPresetSync(projectId, workspaceRoot, null, local);
+    if (candidateLocal) {
+      return this.applyPresetSync(projectId, workspaceRoot, null, candidateLocal);
     }
 
     this.projectSettingsOverrides.set(projectId, {
@@ -1620,8 +1697,16 @@ export class MockIpcStore {
   }
 
   setGlobalPresetConfig(activePresetId: string, enabled: boolean): DashboardSnapshot {
+    if (!isValidSafeId(activePresetId)) {
+      throw new Error(`Invalid active_preset_id '${activePresetId}'`);
+    }
+    const found = this.globalPresets.find((p) => p.id === activePresetId);
+    if (!found) {
+      throw new Error(`Global preset '${activePresetId}' not found`);
+    }
+    const resolved = this.resolvePresetInheritance(found);
     this.globalConfig = {
-      activeGlobalPresetId: activePresetId,
+      activeGlobalPresetId: resolved.id,
       enabled,
     };
     for (const proj of this.projects) {
@@ -1638,43 +1723,71 @@ export class MockIpcStore {
         "Preset global está desativado. Reative-o antes de inverter a instância.",
       );
     }
-    const active =
-      this.globalPresets.find((p) => p.id === this.globalConfig.activeGlobalPresetId) ??
-      this.globalPresets[0];
-    if (active) {
-      if (active.orchestrator.providerInstanceId === "codex") {
-        const nextModel =
-          active.orchestrator.model === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
-        const oppositeModel =
-          nextModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
-        active.orchestrator.model = nextModel;
-        delete active.orchestrator.options.thinkingLevel;
-        delete active.orchestrator.options.thinking_level;
-        active.orchestrator.options.reasoningEffort ??= "medium";
-        active.orchestrator.options.serviceTier ??= "default";
-        if (
-          active.fallbackChain[0]?.providerInstanceId === "codex" &&
-          active.fallbackChain[0].model === nextModel
-        ) {
-          active.fallbackChain[0].model = oppositeModel;
-        }
-      } else {
-        const nextInstance =
-          active.orchestrator.providerInstanceId === "antigravity_2"
-            ? "antigravity"
-            : "antigravity_2";
-        const oppositeInstance =
-          nextInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
-        active.orchestrator.providerInstanceId = nextInstance;
-        if (!active.orchestrator.model.startsWith("gemini-4-")) {
-          active.orchestrator.model = "gemini-4-hydrogen";
-          active.orchestrator.options = { thinking_level: "high" };
-        }
-        if (active.fallbackChain[0]?.providerInstanceId === nextInstance) {
-          active.fallbackChain[0].providerInstanceId = oppositeInstance;
-        }
+    const idx = this.globalPresets.findIndex(
+      (p) => p.id === this.globalConfig.activeGlobalPresetId,
+    );
+    if (idx < 0) {
+      throw new Error(
+        `Global preset '${this.globalConfig.activeGlobalPresetId}' not found`,
+      );
+    }
+
+    const rawActive = this.globalPresets[idx];
+    const resolvedActive = this.resolvePresetInheritance(rawActive);
+    const candidate = structuredClone(resolvedActive);
+    candidate.extends = rawActive.extends;
+
+    if (candidate.orchestrator.providerInstanceId === "codex") {
+      const nextModel =
+        candidate.orchestrator.model === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+      const oppositeModel =
+        nextModel === "gpt-6.1-sol" ? "gpt-6.1-terra" : "gpt-6.1-sol";
+      candidate.orchestrator.model = nextModel;
+      delete candidate.orchestrator.options.thinkingLevel;
+      delete candidate.orchestrator.options.thinking_level;
+      candidate.orchestrator.options.reasoningEffort ??= "medium";
+      candidate.orchestrator.options.serviceTier ??= "default";
+      if (
+        candidate.fallbackChain[0]?.providerInstanceId === "codex" &&
+        candidate.fallbackChain[0].model === nextModel
+      ) {
+        candidate.fallbackChain[0].model = oppositeModel;
+      }
+    } else {
+      const nextInstance =
+        candidate.orchestrator.providerInstanceId === "antigravity_2"
+          ? "antigravity"
+          : "antigravity_2";
+      const oppositeInstance =
+        nextInstance === "antigravity_2" ? "antigravity" : "antigravity_2";
+      candidate.orchestrator.providerInstanceId = nextInstance;
+      if (
+        candidate.orchestrator.options.thinkingLevel &&
+        !candidate.orchestrator.options.thinking_level
+      ) {
+        candidate.orchestrator.options.thinking_level =
+          candidate.orchestrator.options.thinkingLevel;
+      }
+      delete candidate.orchestrator.options.thinkingLevel;
+      if (!candidate.orchestrator.model.startsWith("gemini-4-")) {
+        candidate.orchestrator.model = "gemini-4-hydrogen";
+        candidate.orchestrator.options = { thinking_level: "high" };
+      }
+      if (candidate.fallbackChain[0]?.providerInstanceId === nextInstance) {
+        candidate.fallbackChain[0].providerInstanceId = oppositeInstance;
       }
     }
+
+    const candidateCatalog = this.globalPresets.map((p, i) => (i === idx ? candidate : p));
+    this.resolvePresetInheritance(candidate, new Set(), 0, candidateCatalog);
+    this.globalPresets[idx] = candidate;
+
+    for (const proj of this.projects) {
+      if (!proj.presetEnabled || !proj.hasCustomOverride) {
+        this.applyGlobalFallbackToProject(proj);
+      }
+    }
+
     return this.getDashboardSnapshot();
   }
 
@@ -1688,25 +1801,25 @@ export class MockIpcStore {
       ...structuredClone(current.rawLocalPreset ?? current.resolvedPreset),
       enabled,
     };
+    this.assertValidPresetStructure(updated);
+    const resolved = this.resolvePresetInheritance(updated);
+
+    if (enabled) {
+      return this.applyPresetSync(projectId, workspaceRoot, null, updated);
+    }
+
     this.localPresetsByProject.set(projectId, updated);
+    this.projectSettingsOverrides.delete(projectId);
     const proj = this.projects.find((p) => p.projectId === projectId);
     if (proj) {
       proj.hasLocalPreset = true;
       proj.localPresetId = updated.id;
       proj.localPresetExtends = updated.extends;
-      proj.presetEnabled = enabled;
+      proj.presetEnabled = false;
       proj.hasCustomOverride = true;
       proj.updatedAt = new Date().toISOString();
-    }
-    if (enabled) {
-      return this.applyPresetSync(projectId, workspaceRoot, null, updated);
-    }
-
-    this.projectSettingsOverrides.delete(projectId);
-    if (proj) {
       this.applyGlobalFallbackToProject(proj);
     }
-    const resolved = this.resolvePresetInheritance(updated);
     return {
       projectId,
       workspaceRoot,
