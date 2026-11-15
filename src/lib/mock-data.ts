@@ -1418,10 +1418,41 @@ export class MockIpcStore {
     preset: PresetConfig,
   ): CompilePreviewResult {
     const projectSlug = deriveProjectSlug(workspaceRoot);
-    const resolved = this.resolvePresetInheritance(preset);
+    const normalizedPreset = stripDisabledRoles(preset);
+    const resolved = this.resolvePresetInheritance(normalizedPreset);
     const squadRelDir = `.agents/skills/${projectSlug}-squad`;
     const files: CompiledFilePreview[] = [];
 
+    // 1. .t3code/preset.jsonc (matches compiler.rs:367-376)
+    const localPresetRelative = ".t3code/preset.jsonc";
+    const localPresetAbs = `${workspaceRoot}/${localPresetRelative}`;
+    const existingLocalPreset = this.localPresetsByProject.get(projectId) ?? null;
+    const existingLocalContent = existingLocalPreset
+      ? `// Oh My T3Code project preset\n${JSON.stringify(
+          stripDisabledRoles(existingLocalPreset),
+          null,
+          2,
+        )}\n`
+      : null;
+    const newLocalContent = `// Oh My T3Code project preset\n${JSON.stringify(
+      normalizedPreset,
+      null,
+      2,
+    )}\n`;
+    files.push({
+      path: localPresetAbs,
+      relativePath: localPresetRelative,
+      existingContent: existingLocalContent,
+      newContent: newLocalContent,
+      unifiedDiff: computeSimpleUnifiedDiff(
+        localPresetRelative,
+        existingLocalContent,
+        newLocalContent,
+      ),
+      changed: existingLocalContent !== newLocalContent,
+    });
+
+    // 2. SKILL.md
     const skillRelative = `${squadRelDir}/SKILL.md`;
     const skillAbs = `${workspaceRoot}/${skillRelative}`;
     const existingSkill = this.compiledFilesByPath.get(skillAbs) ?? null;
@@ -1435,6 +1466,7 @@ export class MockIpcStore {
       changed: existingSkill !== newSkill,
     });
 
+    // 3. roles/*.md
     const sortedRoles = Object.entries(resolved.roles).sort(([a], [b]) => a.localeCompare(b));
     for (const [roleId, role] of sortedRoles) {
       const roleRelative = `${squadRelDir}/roles/${roleId}.md`;
@@ -1456,14 +1488,15 @@ export class MockIpcStore {
       ? { defaultModelSelection: structuredClone(existingSelection) }
       : null;
 
-    const newOverride: Record<string, unknown> = resolved.enabled
+    const newOverride: Record<string, unknown> | null = resolved.enabled
       ? {
           defaultModelSelection: selectionFromPreset(resolved),
         }
-      : {};
+      : null;
 
     const oldSettingsJson = existingOverride ? JSON.stringify(existingOverride, null, 2) : null;
-    const newSettingsJson = resolved.enabled ? JSON.stringify(newOverride, null, 2) : "";
+    const newSettingsJson =
+      resolved.enabled && newOverride !== null ? JSON.stringify(newOverride, null, 2) : "";
     const settingsDiff = computeSimpleUnifiedDiff(
       "settings.json",
       oldSettingsJson,
@@ -1521,9 +1554,14 @@ export class MockIpcStore {
     const writtenFiles: string[] = [];
     for (const file of preview.files) {
       if (file.changed) {
-        this.compiledFilesByPath.set(file.path, file.newContent);
+        if (file.relativePath !== ".t3code/preset.jsonc") {
+          this.compiledFilesByPath.set(file.path, file.newContent);
+        }
         writtenFiles.push(file.path);
-      } else if (!this.compiledFilesByPath.has(file.path)) {
+      } else if (
+        file.relativePath !== ".t3code/preset.jsonc" &&
+        !this.compiledFilesByPath.has(file.path)
+      ) {
         this.compiledFilesByPath.set(file.path, file.newContent);
       }
     }

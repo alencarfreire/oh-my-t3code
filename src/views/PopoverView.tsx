@@ -94,6 +94,7 @@ export function PopoverView() {
   const snapshotRef = useRef<DashboardSnapshot | null>(null);
   snapshotRef.current = snapshot;
   const busyGlobalRef = useRef<"config" | "swap" | null>(null);
+  const busyProjectRef = useRef<Set<string>>(new Set());
   const snapshotSeqRef = useRef(0);
   const loadSeqRef = useRef(0);
   const lastSyncedPresetRef = useRef<Record<string, string>>({});
@@ -389,7 +390,8 @@ export function PopoverView() {
   };
 
   const handleToggleProjectEnabled = async (project: ProjectSummary) => {
-    if (!snapshotRef.current) return;
+    if (!snapshotRef.current || busyProjectRef.current.has(project.projectId)) return;
+    busyProjectRef.current.add(project.projectId);
     const nextEnabled = !project.presetEnabled;
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "toggle" }));
     setErrorMsg(null);
@@ -408,6 +410,7 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyProjectRef.current.delete(project.projectId);
       setBusyProjectAction((prev) => {
         const next = { ...prev };
         delete next[project.projectId];
@@ -417,6 +420,8 @@ export function PopoverView() {
   };
 
   const handleRemoveProjectOverride = async (project: ProjectSummary) => {
+    if (busyProjectRef.current.has(project.projectId)) return;
+    busyProjectRef.current.add(project.projectId);
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "remove" }));
     setErrorMsg(null);
     try {
@@ -434,6 +439,7 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyProjectRef.current.delete(project.projectId);
       setBusyProjectAction((prev) => {
         const next = { ...prev };
         delete next[project.projectId];
@@ -485,7 +491,8 @@ export function PopoverView() {
 
   const handleSyncProject = async (project: ProjectSummary) => {
     const currentSnapshot = snapshotRef.current;
-    if (!currentSnapshot) return;
+    if (!currentSnapshot || busyProjectRef.current.has(project.projectId)) return;
+    busyProjectRef.current.add(project.projectId);
     const presetId =
       selectedPresets[project.projectId] ??
       defaultPresetForProject(project, currentSnapshot);
@@ -534,6 +541,7 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyProjectRef.current.delete(project.projectId);
       setBusyProjectAction((prev) => {
         const next = { ...prev };
         delete next[project.projectId];
@@ -544,7 +552,14 @@ export function PopoverView() {
 
   const handleSwapInstance = async (project: ProjectSummary) => {
     const currentSnapshot = snapshotRef.current;
-    if (!currentSnapshot || !project.presetEnabled) return;
+    if (
+      !currentSnapshot ||
+      !project.presetEnabled ||
+      busyProjectRef.current.has(project.projectId)
+    ) {
+      return;
+    }
+    busyProjectRef.current.add(project.projectId);
     setBusyProjectAction((prev) => ({ ...prev, [project.projectId]: "swap" }));
     setErrorMsg(null);
     try {
@@ -566,6 +581,7 @@ export function PopoverView() {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
+      busyProjectRef.current.delete(project.projectId);
       setBusyProjectAction((prev) => {
         const next = { ...prev };
         delete next[project.projectId];
@@ -1134,6 +1150,7 @@ export function PopoverView() {
                             id={`preset-select-${project.projectId}`}
                             sizeVariant="xs"
                             value={selectedPresetId}
+                            disabled={Boolean(busy)}
                             onChange={(e) =>
                               setSelectedPresets((prev) => ({
                                 ...prev,

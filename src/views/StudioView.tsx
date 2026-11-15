@@ -363,7 +363,7 @@ export function StudioView({
     let unlisten: (() => void) | undefined;
     void listenStudioNavigate((payload) => {
       if (cancelled) return;
-      void handleNavigationEvent(payload, () => cancelled);
+      return handleNavigationEvent(payload, () => cancelled);
     }).then((fn) => {
       if (cancelled) {
         fn();

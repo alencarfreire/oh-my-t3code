@@ -8,7 +8,7 @@ export interface StudioNavigatePayload {
   presetId?: string | null;
 }
 
-type NavigateListener = (payload: StudioNavigatePayload) => void;
+type NavigateListener = (payload: StudioNavigatePayload) => void | Promise<void>;
 
 const mockStore = new MockIpcStore();
 const mockNavigateListeners = new Set<NavigateListener>();
@@ -44,7 +44,7 @@ export async function listenStudioNavigate(
 ): Promise<UnlistenFn> {
   if (isTauriRuntime()) {
     return listen<StudioNavigatePayload>("studio://navigate", (event) => {
-      handler(event.payload ?? {});
+      void handler(event.payload ?? {});
     });
   }
   return subscribeMockStudioNavigate(handler);

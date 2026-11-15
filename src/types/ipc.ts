@@ -162,7 +162,7 @@ export interface SettingsOverridePreview {
   settingsPath: string;
   projectId: string;
   existingOverride: Record<string, unknown> | null;
-  newOverride: Record<string, unknown>;
+  newOverride: Record<string, unknown> | null;
   unifiedDiff: string;
   changed: boolean;
 }

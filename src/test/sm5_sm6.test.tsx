@@ -253,7 +253,7 @@ describe("SM5-BUG-4 & SM6-BUG-1: Guarda de dirty/saving no Studio e Paridade do 
 
     const saveDeferred = createDeferred<IpcCommandReturns["save_global_preset"]>();
     let registeredNavigateHandler:
-      | ((payload: ipcClient.StudioNavigatePayload) => void)
+      | ((payload: ipcClient.StudioNavigatePayload) => void | Promise<void>)
       | null = null;
 
     vi.spyOn(ipcClient, "listenStudioNavigate").mockImplementation(
@@ -281,14 +281,15 @@ describe("SM5-BUG-4 & SM6-BUG-1: Guarda de dirty/saving no Studio e Paridade do 
       }),
     ).toBeInTheDocument();
 
-    // Edita preset para ficar dirty=true
+    // Edita preset para ficar dirty=true e sai do campo para concluir blur/change antes do evento IPC
     const nameInput = screen.getByLabelText("Nome do Preset") as HTMLInputElement;
     await user.clear(nameInput);
     await user.type(nameInput, "Default Não Salvo");
+    await user.tab();
 
     // 1. Emite studio://navigate enquanto dirty=true -> deve abrir alertdialog
     await act(async () => {
-      registeredNavigateHandler?.({ projectId: "proj-oh-my-t3code", presetId: null });
+      await registeredNavigateHandler?.({ projectId: "proj-oh-my-t3code", presetId: null });
     });
 
     const navDialog = await screen.findByRole("alertdialog");
@@ -331,7 +332,7 @@ describe("SM5-BUG-4 & SM6-BUG-1: Guarda de dirty/saving no Studio e Paridade do 
 
     // Emite studio://navigate durante saving=true -> deve ser adiado até saving terminar
     await act(async () => {
-      registeredNavigateHandler?.({ projectId: "proj-cabrito", presetId: null });
+      await registeredNavigateHandler?.({ projectId: "proj-cabrito", presetId: null });
     });
     expect(
       screen.getByRole("heading", { level: 1, name: "Default Não Salvo" }),
@@ -462,5 +463,34 @@ describe("SM5-BUG-4 & SM6-BUG-1: Guarda de dirty/saving no Studio e Paridade do 
     expect(cabritoAfterSwap).toBeDefined();
     expect(landingAfterSwap?.activeInstanceId).toBe("codex");
     expect(landingAfterSwap?.activeModel).toBe("gpt-6.1-terra");
+
+    // 8. previewPresetSync inclui .t3code/preset.jsonc como 1º item e retorna newOverride=null quando enabled=false
+    const agyDual = store.listGlobalPresets().find((p) => p.id === "agy-dual")!;
+    const beforePreview = store.previewPresetSync(
+      "proj-cabrito",
+      cabritoRoot,
+      agyDual,
+    );
+    expect(beforePreview.files[0]?.relativePath).toBe(".t3code/preset.jsonc");
+    expect(beforePreview.files[0]?.existingContent).toBeNull();
+    expect(beforePreview.files[0]?.changed).toBe(true);
+
+    store.applyPresetSync("proj-cabrito", cabritoRoot, null, agyDual);
+    const cleanPreview = store.previewPresetSync(
+      "proj-cabrito",
+      cabritoRoot,
+      agyDual,
+    );
+    expect(cleanPreview.files[0]?.relativePath).toBe(".t3code/preset.jsonc");
+    expect(cleanPreview.files[0]?.existingContent).not.toBeNull();
+    expect(cleanPreview.files[0]?.changed).toBe(false);
+    expect(cleanPreview.hasChanges).toBe(false);
+
+    const disabledPreview = store.previewPresetSync("proj-cabrito", cabritoRoot, {
+      ...clonePreset(agyDual),
+      enabled: false,
+    });
+    expect(disabledPreview.settingsPreview.newOverride).toBeNull();
+    expect(disabledPreview.settingsPreview.changed).toBe(true);
   });
 });

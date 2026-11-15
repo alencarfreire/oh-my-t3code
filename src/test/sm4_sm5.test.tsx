@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -494,7 +494,7 @@ describe("SM-4 & SM-5: Concorrência, Navegação e Falhas Parciais", () => {
 
     // Para emitir eventos studio://navigate sem depender do mock wrapper, capturamos o handler
     let registeredNavigateHandler:
-      | ((payload: ipcClient.StudioNavigatePayload) => void)
+      | ((payload: ipcClient.StudioNavigatePayload) => void | Promise<void>)
       | null = null;
     vi.spyOn(ipcClient, "listenStudioNavigate").mockImplementation(
       async (handler) => {
@@ -513,7 +513,7 @@ describe("SM-4 & SM-5: Concorrência, Navegação e Falhas Parciais", () => {
 
     // 1. Cold-start: studio://navigate chega ANTES de get_dashboard_snapshot resolver
     await act(async () => {
-      registeredNavigateHandler?.({ projectId: "proj-cabrito", presetId: null });
+      await registeredNavigateHandler?.({ projectId: "proj-cabrito", presetId: null });
     });
 
     // Agora resolve o cold-start snapshot -> deve navegar para 'cabrito' (não 'default')
@@ -537,7 +537,7 @@ describe("SM-4 & SM-5: Concorrência, Navegação e Falhas Parciais", () => {
 
     // Re-emissão de studio://navigate deve fazer refresh do snapshot e selecionar landing-page
     await act(async () => {
-      registeredNavigateHandler?.({
+      await registeredNavigateHandler?.({
         projectId: "proj-landing-page",
         presetId: null,
       });
@@ -657,5 +657,212 @@ describe("SM-4 & SM-5: Concorrência, Navegação e Falhas Parciais", () => {
     expect(screen.getByLabelText("Descrição")).toHaveValue(
       "Agy Dual salvo antes de falhar ativação",
     );
+  });
+
+  it("SM4-BUG-1 / VTECH-118 (PopoverView): guard síncrono busyProjectRef bloqueia Sync + Swap/Toggle no mesmo tick e desabilita <Select> do projeto durante busy", async () => {
+    const store = new MockIpcStore();
+    setLocationSearch("?view=popover");
+
+    const syncDeferred = createDeferred<IpcCommandReturns["apply_preset_sync"]>();
+    const invokeSpy = vi
+      .spyOn(ipcClient, "invokeIpc")
+      .mockImplementation(async (command, args) => {
+        if (command === IPC_COMMANDS.applyPresetSync) {
+          return syncDeferred.promise;
+        }
+        return dispatchMockCommand(store, command, args);
+      });
+
+    render(<App />);
+
+    const syncBtn = await screen.findByRole("button", {
+      name: "Sync oh-my-t3code",
+    });
+    const swapBtn = screen.getByRole("button", {
+      name: "Alternar instância Agy em oh-my-t3code",
+    });
+    const toggleBtn = screen.getByRole("button", {
+      name: "Alternar preset de oh-my-t3code",
+    });
+    const projectSelect = screen.getByLabelText(
+      "Preset para oh-my-t3code",
+    ) as HTMLSelectElement;
+
+    expect(projectSelect).not.toBeDisabled();
+
+    // Dispara Sync + Swap + Toggle no mesmo tick síncrono antes de React commitar `disabled`
+    await act(async () => {
+      fireEvent.click(syncBtn);
+      fireEvent.click(swapBtn);
+      fireEvent.click(toggleBtn);
+    });
+
+    // Apenas a primeira operação IPC (apply_preset_sync) foi disparada; Swap e Toggle foram bloqueados por busyProjectRef
+    expect(
+      invokeSpy.mock.calls.filter(([cmd]) => cmd === IPC_COMMANDS.applyPresetSync),
+    ).toHaveLength(1);
+    expect(
+      invokeSpy.mock.calls.filter(([cmd]) => cmd === IPC_COMMANDS.swapProjectInstance),
+    ).toHaveLength(0);
+    expect(
+      invokeSpy.mock.calls.filter(([cmd]) => cmd === IPC_COMMANDS.setProjectPresetEnabled),
+    ).toHaveLength(0);
+
+    // Select e botões do projeto ficam desabilitados durante o estado busy
+    expect(projectSelect).toBeDisabled();
+    expect(syncBtn).toBeDisabled();
+    expect(swapBtn).toBeDisabled();
+    expect(toggleBtn).toBeDisabled();
+
+    const syncResult = store.applyPresetSync(
+      "proj-oh-my-t3code",
+      "/Users/alencarfreire/.t3/projects/oh-my-t3code",
+      "agy-dual",
+      null,
+    );
+    await act(async () => {
+      syncDeferred.resolve(syncResult);
+    });
+
+    await waitFor(() => {
+      expect(projectSelect).not.toBeDisabled();
+      expect(swapBtn).not.toBeDisabled();
+      expect(toggleBtn).not.toBeDisabled();
+    });
+  });
+
+  it("SM4-BUG-2 / VTECH-118 (PopoverView): unmount antes dos 2600ms executa clearTimeout e evita callbacks tardios após desmontagem", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const store = new MockIpcStore();
+    setLocationSearch("?view=popover");
+
+    vi.spyOn(ipcClient, "invokeIpc").mockImplementation(async (command, args) =>
+      dispatchMockCommand(store, command, args),
+    );
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { unmount } = render(<App />);
+
+    const syncCabritoBtn = await screen.findByRole("button", {
+      name: "Sync cabrito",
+    });
+    await user.click(syncCabritoBtn);
+
+    await waitFor(() => {
+      expect(syncCabritoBtn).toHaveTextContent("Sincronizado!");
+    });
+
+    clearTimeoutSpy.mockClear();
+    unmount();
+
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("SM5-BUG-2 / VTECH-118 (StudioView): corrida studio://navigate out-of-order preserva último destino e reflete mutações do Popover", async () => {
+    const store = new MockIpcStore();
+    setLocationSearch("?view=studio");
+
+    const nav1SnapDeferred =
+      createDeferred<IpcCommandReturns["get_dashboard_snapshot"]>();
+    const nav2SnapDeferred =
+      createDeferred<IpcCommandReturns["get_dashboard_snapshot"]>();
+    let snapshotCallCount = 0;
+
+    vi.spyOn(ipcClient, "invokeIpc").mockImplementation(async (command, args) => {
+      if (command === IPC_COMMANDS.getDashboardSnapshot) {
+        snapshotCallCount += 1;
+        if (snapshotCallCount === 1) return store.getDashboardSnapshot();
+        if (snapshotCallCount === 2) return nav1SnapDeferred.promise;
+        if (snapshotCallCount === 3) return nav2SnapDeferred.promise;
+      }
+      return dispatchMockCommand(store, command, args);
+    });
+
+    let registeredNavigateHandler:
+      | ((payload: ipcClient.StudioNavigatePayload) => void | Promise<void>)
+      | null = null;
+    vi.spyOn(ipcClient, "listenStudioNavigate").mockImplementation(
+      async (handler) => {
+        registeredNavigateHandler = handler;
+        return () => {
+          registeredNavigateHandler = null;
+        };
+      },
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Default (OMOS Standard)",
+      }),
+    ).toBeInTheDocument();
+    expect(registeredNavigateHandler).not.toBeNull();
+
+    // Captura snapshot antes da mutação do Popover para o nav1 lento
+    const staleNav1Snapshot = store.getDashboardSnapshot();
+
+    // Popover atualiza cabrito para codex-squad enquanto Studio está aberto
+    store.applyPresetSync(
+      "proj-cabrito",
+      "/Users/alencarfreire/Workspace/cabrito",
+      "codex-squad",
+      null,
+    );
+    const freshNav2Snapshot = store.getDashboardSnapshot();
+
+    // Dispara nav1 (lento -> oh-my-t3code) e imediatamente nav2 (rápido -> cabrito)
+    let nav1Promise: void | Promise<void>;
+    let nav2Promise: void | Promise<void>;
+    await act(async () => {
+      nav1Promise = registeredNavigateHandler?.({
+        projectId: "proj-oh-my-t3code",
+        presetId: null,
+      });
+      nav2Promise = registeredNavigateHandler?.({
+        projectId: "proj-cabrito",
+        presetId: null,
+      });
+    });
+
+    expect(snapshotCallCount).toBe(3);
+
+    // nav2 (cabrito com snapshot atualizado pelo Popover) resolve primeiro
+    await act(async () => {
+      nav2SnapDeferred.resolve(freshNav2Snapshot);
+      await nav2Promise;
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { level: 1, name: "cabrito" }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Orquestrador: Codex/i)).toHaveTextContent(
+      /gpt-6\.1-sol/i,
+    );
+
+    // nav1 (oh-my-t3code atrasado) resolve depois -> não deve sobrescrever o Studio!
+    await act(async () => {
+      nav1SnapDeferred.resolve(staleNav1Snapshot);
+      await nav1Promise;
+    });
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "cabrito" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 1, name: "oh-my-t3code" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
