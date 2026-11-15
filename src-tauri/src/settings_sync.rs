@@ -88,9 +88,17 @@ pub fn build_project_override_value(preset: &PresetConfig) -> Value {
     );
 
     if !preset.orchestrator.options.is_empty() {
-        let opts: Vec<Value> = preset
-            .orchestrator
-            .options
+        let mut normalized = std::collections::BTreeMap::new();
+        for (k, v) in &preset.orchestrator.options {
+            if k == "thinkingLevel" {
+                normalized
+                    .entry("thinking_level".to_string())
+                    .or_insert_with(|| v.clone());
+            } else {
+                normalized.insert(k.clone(), v.clone());
+            }
+        }
+        let opts: Vec<Value> = normalized
             .iter()
             .map(|(k, v)| {
                 let mut entry = Map::new();

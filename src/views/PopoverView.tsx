@@ -9,7 +9,6 @@ import {
   FolderGit2,
   RefreshCw,
   SlidersHorizontal,
-  Sparkles,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -287,11 +286,12 @@ export function PopoverView() {
       {/* Compact macOS Menu Bar Header */}
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-zinc-950 px-3.5 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <div
-            className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-indigo-400/25 bg-indigo-500/15 text-indigo-300"
-            aria-hidden="true"
-          >
-            <Sparkles className="size-4" />
+          <div className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-amber-400/25 bg-zinc-900/90 p-0.5">
+            <img
+              src="/logo.png"
+              alt="Oh My T3Code"
+              className="size-full object-contain"
+            />
           </div>
           <div className="min-w-0">
             <h1 className="truncate text-xs font-semibold tracking-tight text-zinc-100">

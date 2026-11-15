@@ -32,11 +32,26 @@ fn ensure_within_workspace(workspace_root: &Path, target: &Path) -> AppResult<()
     Ok(())
 }
 
+fn normalize_options(options: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut normalized = BTreeMap::new();
+    for (k, v) in options {
+        if k == "thinkingLevel" {
+            normalized
+                .entry("thinking_level".to_string())
+                .or_insert_with(|| v.clone());
+        } else {
+            normalized.insert(k.clone(), v.clone());
+        }
+    }
+    normalized
+}
+
 fn format_options_inline(options: &BTreeMap<String, String>) -> String {
-    if options.is_empty() {
+    let normalized = normalize_options(options);
+    if normalized.is_empty() {
         return "default".to_string();
     }
-    options
+    normalized
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
@@ -457,12 +472,19 @@ pub fn swap_project_primary_instance(
         .raw_local_preset
         .unwrap_or(current_resolved.resolved_preset);
     updated.orchestrator.provider_instance_id = next_instance.clone();
+    if let Some(legacy_val) = updated.orchestrator.options.remove("thinkingLevel") {
+        updated
+            .orchestrator
+            .options
+            .entry("thinking_level".to_string())
+            .or_insert(legacy_val);
+    }
     if !updated.orchestrator.model.starts_with("gemini-4-") {
         updated.orchestrator.model = "gemini-4-hydrogen".to_string();
         updated
             .orchestrator
             .options
-            .insert("thinkingLevel".to_string(), "high".to_string());
+            .insert("thinking_level".to_string(), "high".to_string());
     }
 
     apply_preset_to_project(paths, project_id, workspace_root, None, Some(updated))

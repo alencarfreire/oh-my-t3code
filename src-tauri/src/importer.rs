@@ -36,6 +36,7 @@ fn parse_role_markdown(role_id: &str, raw: &str, default_instance: &str, default
     let mut when_to_use = String::new();
     let mut provider_instance_id = default_instance.to_string();
     let mut model = default_model.to_string();
+    let mut options = BTreeMap::new();
     let mut skills = Vec::new();
     let mut mcps = Vec::new();
     let mut allowed_paths = Vec::new();
@@ -98,6 +99,25 @@ fn parse_role_markdown(role_id: &str, raw: &str, default_instance: &str, default
                 } else if trimmed.contains("Modelo:") {
                     if let Some(tok) = extract_backtick_tokens(trimmed).into_iter().next() {
                         model = tok;
+                    }
+                } else if trimmed.contains("Opções:") || trimmed.contains("Opcoes:") {
+                    if let Some(tok) = extract_backtick_tokens(trimmed).into_iter().next() {
+                        if tok != "default" {
+                            for pair in tok.split(',') {
+                                if let Some((k, v)) = pair.split_once('=') {
+                                    let key = k.trim();
+                                    let val = v.trim();
+                                    if !key.is_empty() && !val.is_empty() {
+                                        let norm_key = if key == "thinkingLevel" {
+                                            "thinking_level"
+                                        } else {
+                                            key
+                                        };
+                                        options.insert(norm_key.to_string(), val.to_string());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -179,7 +199,7 @@ fn parse_role_markdown(role_id: &str, raw: &str, default_instance: &str, default
         when_to_use,
         provider_instance_id,
         model,
-        options: BTreeMap::new(),
+        options,
         skills,
         mcps,
         allowed_paths,

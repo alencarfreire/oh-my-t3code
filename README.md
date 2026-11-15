@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/icon.svg" alt="oh-my-t3code icon" width="72" height="72" />
+  <img src="assets/logo.png" alt="oh-my-t3code logo" width="96" height="96" />
   <h1>oh-my-t3code</h1>
   <p><strong>Native macOS Menu Bar Companion, Preset Studio & Deterministic Squad Compiler for T3 Code</strong></p>
   <p>Inspired by <code>oh-my-opencode-slim</code> and <code>oh-my-opencode-companion</code>.</p>

@@ -254,7 +254,7 @@ export function OverviewFallbackTab({
         </div>
 
         <KeyValueEditor
-          label="Opções do Orquestrador (ex: thinkingLevel, reasoningEffort)"
+          label="Opções do Orquestrador (ex: thinking_level, reasoningEffort)"
           entries={preset.orchestrator.options}
           onChange={(options) => updateOrchestrator({ options })}
         />

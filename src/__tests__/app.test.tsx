@@ -19,8 +19,9 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
 
       render(<App />);
 
-      // Header live status badge & subagent list
+      // Header live status badge, logo & subagent list
       expect(await screen.findByText("Oh My T3Code")).toBeInTheDocument();
+      expect(screen.getByAltText("Oh My T3Code")).toHaveAttribute("src", "/logo.png");
       expect(screen.getByText("2 ativos")).toBeInTheDocument();
       expect(
         screen.getByText("Implementar Popover & Preset Studio (Onda 2)"),
@@ -79,10 +80,14 @@ describe("Oh My T3Code — Popover & Preset Studio", () => {
 
       render(<App />);
 
-      // Sidebar renders Global Presets and T3 Code Projects
+      // Sidebar renders logo, Global Presets and T3 Code Projects
       const sidebar = await screen.findByRole("complementary", {
         name: "Navegação de Presets e Projetos",
       });
+      expect(within(sidebar).getByAltText("Oh My T3Code")).toHaveAttribute(
+        "src",
+        "/logo.png",
+      );
       expect(
         within(sidebar).getByText("Agy Dual (Veca + Principal)"),
       ).toBeInTheDocument();

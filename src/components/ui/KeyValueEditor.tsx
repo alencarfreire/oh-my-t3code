@@ -13,7 +13,7 @@ interface KeyValueEditorProps {
 export function KeyValueEditor({
   label,
   entries,
-  keyPlaceholder = "Chave (ex: thinkingLevel)",
+  keyPlaceholder = "Chave (ex: thinking_level)",
   valuePlaceholder = "Valor (ex: high)",
   onChange,
 }: KeyValueEditorProps) {

@@ -23,10 +23,14 @@ struct StudioNavigatePayload {
     preset_id: Option<String>,
 }
 
+pub fn get_dashboard_snapshot_from_paths(paths: &AppPaths) -> models::AppResult<DashboardSnapshot> {
+    t3_reader::build_dashboard_snapshot(paths)
+}
+
 #[tauri::command]
 fn get_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
     let paths = AppPaths::from_env().map_err(String::from)?;
-    t3_reader::build_dashboard_snapshot(&paths).map_err(String::from)
+    get_dashboard_snapshot_from_paths(&paths).map_err(String::from)
 }
 
 #[tauri::command]
@@ -253,7 +257,7 @@ pub fn run() {
                 });
 
             if let Some(icon) = app.default_window_icon().cloned() {
-                tray_builder = tray_builder.icon(icon);
+                tray_builder = tray_builder.icon(icon).icon_as_template(false);
             }
 
             let _tray = tray_builder.build(app)?;

@@ -60,15 +60,12 @@ pub fn derive_project_slug(workspace_root: &str) -> String {
 
 /// Strips `//` line comments, `/* ... */` block comments, and trailing commas outside JSON strings.
 pub fn strip_jsonc_comments(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut no_comments = String::with_capacity(len);
-    let mut i = 0;
+    let mut no_comments = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
     let mut in_string = false;
     let mut escaped = false;
 
-    while i < len {
-        let ch = bytes[i] as char;
+    while let Some(ch) = chars.next() {
         if in_string {
             no_comments.push(ch);
             if escaped {
@@ -78,41 +75,32 @@ pub fn strip_jsonc_comments(input: &str) -> String {
             } else if ch == '"' {
                 in_string = false;
             }
-            i += 1;
             continue;
         }
 
         if ch == '"' {
             in_string = true;
             no_comments.push(ch);
-            i += 1;
-        } else if ch == '/' && i + 1 < len && bytes[i + 1] as char == '/' {
-            i += 2;
-            while i < len && bytes[i] as char != '\n' {
-                i += 1;
-            }
-        } else if ch == '/' && i + 1 < len && bytes[i + 1] as char == '*' {
-            i += 2;
-            while i + 1 < len && !(bytes[i] as char == '*' && bytes[i + 1] as char == '/') {
-                if bytes[i] as char == '\n' {
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c == '\n' {
                     no_comments.push('\n');
+                    break;
                 }
-                i += 1;
             }
-            if i + 1 < len {
-                i += 2;
-            } else {
-                i = len;
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                if c == '\n' {
+                    no_comments.push('\n');
+                } else if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    break;
+                }
             }
         } else {
-            // Handle multi-byte UTF-8 characters safely
-            let rest = &input[i..];
-            if let Some(c) = rest.chars().next() {
-                no_comments.push(c);
-                i += c.len_utf8();
-            } else {
-                break;
-            }
+            no_comments.push(ch);
         }
     }
 
@@ -496,7 +484,7 @@ fn build_agy_dual_preset() -> PresetConfig {
             when_to_use: "Implementações de domínio, regras de negócio, SQL/persistência, CLIs e endpoints.".to_string(),
             provider_instance_id: "antigravity".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
             skills: vec![
                 "tdd-and-testing".to_string(),
                 "systematic-debugging".to_string(),
@@ -524,7 +512,7 @@ fn build_agy_dual_preset() -> PresetConfig {
             when_to_use: "Telas, estados vazios, interações, estilos Tailwind v4 e tipagem de UI.".to_string(),
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "medium".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "medium".to_string())]),
             skills: vec![
                 "tailwind-v4-design".to_string(),
                 "better-accessibility".to_string(),
@@ -554,7 +542,7 @@ fn build_agy_dual_preset() -> PresetConfig {
             when_to_use: "Revisão final após implementação ou antes de encerrar entrega/PR.".to_string(),
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-argon".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
             skills: vec![
                 "code-review-and-security".to_string(),
                 "security-audit".to_string(),
@@ -584,25 +572,25 @@ fn build_agy_dual_preset() -> PresetConfig {
         orchestrator: OrchestratorSelection {
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
         },
         fallback_chain: vec![
             FallbackStep {
                 provider_instance_id: "antigravity".to_string(),
                 model: "gemini-4-hydrogen".to_string(),
-                options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+                options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
                 reason: "Nível 1: Troca de instância mantendo gemini-4-hydrogen (Agy Principal ↔ Agy Veca)".to_string(),
             },
             FallbackStep {
                 provider_instance_id: "antigravity_2".to_string(),
                 model: "gemini-4-argon".to_string(),
-                options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+                options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
                 reason: "Nível 2: Troca para gemini-4-argon quando hydrogen esgotar nas duas contas".to_string(),
             },
             FallbackStep {
                 provider_instance_id: "antigravity".to_string(),
                 model: "gemini-4-argon".to_string(),
-                options: BTreeMap::from([("thinkingLevel".to_string(), "medium".to_string())]),
+                options: BTreeMap::from([("thinking_level".to_string(), "medium".to_string())]),
                 reason: "Nível 3: Último recurso entre contas Agy antes de pausar e consultar o usuário".to_string(),
             },
         ],
@@ -824,7 +812,7 @@ fn build_hybrid_preset() -> PresetConfig {
             when_to_use: "Componentes visuais, CSS, responsividade e exploração rápida.".to_string(),
             provider_instance_id: "antigravity".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
             skills: vec![
                 "tailwind-v4-design".to_string(),
                 "vercel-react-best-practices".to_string(),
@@ -846,7 +834,7 @@ fn build_hybrid_preset() -> PresetConfig {
             when_to_use: "Validação final após integração entre Backend Codex e Frontend Agy.".to_string(),
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-argon".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
             skills: vec!["code-review-and-security".to_string(), "security-audit".to_string()],
             mcps: vec!["ai-memory".to_string(), "playwright".to_string()],
             allowed_paths: vec!["**/* (read-only audit)".to_string()],
@@ -865,13 +853,13 @@ fn build_hybrid_preset() -> PresetConfig {
         orchestrator: OrchestratorSelection {
             provider_instance_id: "antigravity_2".to_string(),
             model: "gemini-4-hydrogen".to_string(),
-            options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+            options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
         },
         fallback_chain: vec![
             FallbackStep {
                 provider_instance_id: "antigravity".to_string(),
                 model: "gemini-4-hydrogen".to_string(),
-                options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+                options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
                 reason: "Alternar instância Agy Veca mantendo velocidade de coordenação".to_string(),
             },
             FallbackStep {
@@ -886,7 +874,7 @@ fn build_hybrid_preset() -> PresetConfig {
             FallbackStep {
                 provider_instance_id: "antigravity_2".to_string(),
                 model: "gemini-4-argon".to_string(),
-                options: BTreeMap::from([("thinkingLevel".to_string(), "high".to_string())]),
+                options: BTreeMap::from([("thinking_level".to_string(), "high".to_string())]),
                 reason: "Fallback para Argon em análise crítica".to_string(),
             },
         ],
@@ -901,19 +889,62 @@ fn build_hybrid_preset() -> PresetConfig {
     }
 }
 
-/// Ensures the 3 built-in global presets exist in `presets_dir` without overwriting user edits.
+/// Detects classic UTF-8-decoded-as-Latin-1 mojibake sequences (e.g. `NÃvel`, `instÃ¢ncia`, `â\u{86}\u{94}`).
+pub fn looks_like_mojibake(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if matches!(c, 'Ã' | 'Â' | 'â') {
+            if let Some(&next) = chars.peek() {
+                if ('\u{0080}'..='\u{00BF}').contains(&next) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Ensures the 3 built-in global presets exist in `presets_dir` without overwriting user edits,
+/// while automatically repairing/migrating legacy seed files containing `"thinkingLevel"` or UTF-8 mojibake.
 pub fn ensure_seed_presets(presets_dir: &Path) -> AppResult<()> {
     fs::create_dir_all(presets_dir)?;
     for preset in default_seed_presets() {
         let jsonc_path = presets_dir.join(format!("{}.jsonc", preset.id));
         let json_path = presets_dir.join(format!("{}.json", preset.id));
-        if !jsonc_path.exists() && !json_path.exists() {
-            let body = format!(
-                "// Oh My T3Code built-in preset: {}\n{}\n",
-                preset.name,
-                serde_json::to_string_pretty(&preset)?
-            );
-            atomic_write_file(&jsonc_path, body.as_bytes())?;
+
+        let existing_path = if jsonc_path.exists() {
+            Some((&jsonc_path, true))
+        } else if json_path.exists() {
+            Some((&json_path, false))
+        } else {
+            None
+        };
+
+        let needs_write = match existing_path {
+            None => Some((&jsonc_path, true)),
+            Some((path, is_jsonc)) => match fs::read_to_string(path) {
+                Ok(raw) => {
+                    if raw.contains("\"thinkingLevel\"") || looks_like_mojibake(&raw) {
+                        Some((path, is_jsonc))
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => Some((path, is_jsonc)),
+            },
+        };
+
+        if let Some((target_path, is_jsonc)) = needs_write {
+            let body = if is_jsonc {
+                format!(
+                    "// Oh My T3Code built-in preset: {}\n{}\n",
+                    preset.name,
+                    serde_json::to_string_pretty(&preset)?
+                )
+            } else {
+                format!("{}\n", serde_json::to_string_pretty(&preset)?)
+            };
+            atomic_write_file(target_path, body.as_bytes())?;
         }
     }
     Ok(())
@@ -1183,5 +1214,149 @@ mod tests {
         assert!(!resolved.roles.get("backend").unwrap().skills.is_empty());
         // Inherited frontend role untouched
         assert!(resolved.roles.contains_key("frontend"));
+    }
+
+    #[test]
+    fn jsonc_preserves_utf8_accents_and_unicode_symbols() {
+        let raw = r#"{
+            // Comentário com acentuação: ç ã é í ó ú — ↔ 🚀
+            "id": "utf8-check",
+            "name": "Nível 1: Troca de instância — ç ã ✅",
+            /* Bloco multilinha com Unicode: ↔ — 🚀
+               "ignored": "valor" */
+            "description": "Configuração avançada (Agy Principal ↔ Agy Veca) com emojis 🚀 e ✅ — prevenção de regressões.",
+            "fallbackChain": [
+                {
+                    "providerInstanceId": "antigravity",
+                    "model": "gemini-4-hydrogen",
+                    "options": {
+                        "thinking_level": "high" // comentário inline após string
+                    },
+                    "reason": "Nível 1: Troca de instância mantendo gemini-4-hydrogen (Agy Principal ↔ Agy Veca)",
+                },
+            ],
+            "roles": {
+                "revisor": {
+                    "id": "revisor",
+                    "title": "Revisor Técnico — Atenção & Qualidade",
+                    "description": "Validação de acentuação: ç, ã, õ, é, ê, í, ó, ú, ↔, —, 🚀.",
+                    "providerInstanceId": "antigravity_2",
+                    "model": "gemini-4-argon",
+                    "options": {
+                        "thinking_level": "medium",
+                    },
+                },
+            },
+        }"#;
+
+        let parsed = parse_jsonc_preset(raw).expect("valid UTF-8 jsonc");
+        assert_eq!(parsed.name, "Nível 1: Troca de instância — ç ã ✅");
+        assert_eq!(
+            parsed.description,
+            "Configuração avançada (Agy Principal ↔ Agy Veca) com emojis 🚀 e ✅ — prevenção de regressões."
+        );
+        assert_eq!(
+            parsed.fallback_chain[0].reason,
+            "Nível 1: Troca de instância mantendo gemini-4-hydrogen (Agy Principal ↔ Agy Veca)"
+        );
+        assert_eq!(
+            parsed.roles["revisor"].title,
+            "Revisor Técnico — Atenção & Qualidade"
+        );
+        assert_eq!(
+            parsed.roles["revisor"].description,
+            "Validação de acentuação: ç, ã, õ, é, ê, í, ó, ú, ↔, —, 🚀."
+        );
+        assert!(!looks_like_mojibake(&parsed.name));
+        assert!(!looks_like_mojibake(&parsed.description));
+        assert!(!looks_like_mojibake(&parsed.fallback_chain[0].reason));
+    }
+
+    #[test]
+    fn seed_presets_roundtrip_preserve_utf8_and_thinking_level() {
+        let seeds = default_seed_presets();
+        assert_eq!(seeds.len(), 3);
+
+        for seed in &seeds {
+            let jsonc = format!(
+                "// Built-in preset: {}\n{}\n",
+                seed.name,
+                serde_json::to_string_pretty(seed).unwrap()
+            );
+            assert!(
+                !jsonc.contains("\"thinkingLevel\""),
+                "seed {} should not contain legacy thinkingLevel",
+                seed.id
+            );
+
+            let parsed = parse_jsonc_preset(&jsonc).expect("seed preset must parse cleanly");
+            assert_eq!(&parsed, seed, "seed {} changed during JSONC roundtrip", seed.id);
+            assert!(!looks_like_mojibake(&parsed.name));
+            assert!(!looks_like_mojibake(&parsed.description));
+
+            for step in &parsed.fallback_chain {
+                assert!(!looks_like_mojibake(&step.reason));
+                assert!(!step.reason.contains('Ã'), "mojibake found in {}", step.reason);
+            }
+        }
+
+        let agy_dual = seeds.iter().find(|p| p.id == "agy-dual").unwrap();
+        assert_eq!(
+            agy_dual.fallback_chain[0].reason,
+            "Nível 1: Troca de instância mantendo gemini-4-hydrogen (Agy Principal ↔ Agy Veca)"
+        );
+        assert_eq!(
+            agy_dual.orchestrator.options.get("thinking_level").map(String::as_str),
+            Some("high")
+        );
+        assert!(!agy_dual.orchestrator.options.contains_key("thinkingLevel"));
+        for role in agy_dual.roles.values() {
+            assert!(role.options.contains_key("thinking_level"));
+            assert!(!role.options.contains_key("thinkingLevel"));
+        }
+
+        let hybrid = seeds.iter().find(|p| p.id == "hybrid-agy-codex").unwrap();
+        assert_eq!(
+            hybrid.orchestrator.options.get("thinking_level").map(String::as_str),
+            Some("high")
+        );
+        assert!(!hybrid.orchestrator.options.contains_key("thinkingLevel"));
+        assert!(hybrid.roles["frontend"].options.contains_key("thinking_level"));
+        assert!(hybrid.roles["qa-reviewer"].options.contains_key("thinking_level"));
+    }
+
+    #[test]
+    fn ensure_seed_presets_upgrades_legacy_thinking_level_and_mojibake() {
+        let dir = tempdir().unwrap();
+        let presets_dir = dir.path();
+
+        // Simulate legacy agy-dual with thinkingLevel and mojibake ("Nível" decoded byte-by-byte as Latin-1)
+        fs::write(
+            presets_dir.join("agy-dual.jsonc"),
+            "{\"id\":\"agy-dual\",\"name\":\"Agy Dual\",\"description\":\"NÃ\u{00AD}vel 1\",\"orchestrator\":{\"providerInstanceId\":\"antigravity_2\",\"model\":\"gemini-4-hydrogen\",\"options\":{\"thinkingLevel\":\"high\"}}}",
+        )
+        .unwrap();
+
+        // Simulate a clean custom user edit on codex-squad (no thinkingLevel, no mojibake)
+        let mut custom_codex = build_codex_squad_preset();
+        custom_codex.name = "Codex Customizado".to_string();
+        fs::write(
+            presets_dir.join("codex-squad.jsonc"),
+            serde_json::to_string_pretty(&custom_codex).unwrap(),
+        )
+        .unwrap();
+
+        ensure_seed_presets(presets_dir).unwrap();
+
+        let upgraded_agy = resolve_global_preset(presets_dir, "agy-dual").unwrap();
+        assert_eq!(
+            upgraded_agy.orchestrator.options.get("thinking_level").map(String::as_str),
+            Some("high")
+        );
+        assert!(!upgraded_agy.orchestrator.options.contains_key("thinkingLevel"));
+        assert!(!looks_like_mojibake(&upgraded_agy.description));
+
+        let kept_codex = resolve_global_preset(presets_dir, "codex-squad").unwrap();
+        assert_eq!(kept_codex.name, "Codex Customizado");
     }
 }

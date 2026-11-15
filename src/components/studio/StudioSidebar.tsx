@@ -4,7 +4,6 @@ import {
   FolderGit2,
   Layers,
   Plus,
-  Sparkles,
 } from "lucide-react";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -64,11 +63,12 @@ export function StudioSidebar({
       className="flex h-full w-72 shrink-0 flex-col border-r border-white/10 bg-zinc-950/90"
     >
       <div className="flex items-center gap-2.5 border-b border-white/10 px-4 py-3">
-        <div
-          className="flex size-8 items-center justify-center rounded-lg border border-indigo-400/25 bg-indigo-500/15 text-indigo-300"
-          aria-hidden="true"
-        >
-          <Sparkles className="size-4" />
+        <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-amber-400/25 bg-zinc-900/90 p-0.5">
+          <img
+            src="/logo.png"
+            alt="Oh My T3Code"
+            className="size-full object-contain"
+          />
         </div>
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold text-zinc-100">

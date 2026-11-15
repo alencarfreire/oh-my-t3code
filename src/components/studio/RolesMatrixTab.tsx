@@ -373,7 +373,7 @@ export function RolesMatrixTab({
             </div>
 
             <KeyValueEditor
-              label="Opções do Modelo (`thinkingLevel` / `reasoningEffort`)"
+              label="Opções do Modelo (`thinking_level` / `reasoningEffort`)"
               entries={activeRole.options}
               onChange={(options) => updateRole(activeRole.id, { options })}
             />

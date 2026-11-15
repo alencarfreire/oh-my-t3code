@@ -33,27 +33,27 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     orchestrator: {
       providerInstanceId: "antigravity_2",
       model: "gemini-4-hydrogen",
-      options: { thinkingLevel: "high" },
+      options: { thinking_level: "high" },
     },
     fallbackChain: [
       {
         providerInstanceId: "antigravity",
         model: "gemini-4-hydrogen",
-        options: { thinkingLevel: "high" },
+        options: { thinking_level: "high" },
         reason:
           "Nível 1: Troca de instância mantendo gemini-4-hydrogen (Agy Principal ↔ Agy Veca)",
       },
       {
         providerInstanceId: "antigravity_2",
         model: "gemini-4-argon",
-        options: { thinkingLevel: "high" },
+        options: { thinking_level: "high" },
         reason:
           "Nível 2: Troca para gemini-4-argon quando hydrogen esgotar nas duas contas",
       },
       {
         providerInstanceId: "antigravity",
         model: "gemini-4-argon",
-        options: { thinkingLevel: "medium" },
+        options: { thinking_level: "medium" },
         reason:
           "Nível 3: Último recurso entre contas Agy antes de pausar e consultar o usuário",
       },
@@ -75,7 +75,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
           "Implementações de domínio, regras de negócio, SQL/persistência, CLIs e endpoints.",
         providerInstanceId: "antigravity",
         model: "gemini-4-hydrogen",
-        options: { thinkingLevel: "high" },
+        options: { thinking_level: "high" },
         skills: ["tdd-and-testing", "systematic-debugging", "ai-memory-retrieval"],
         mcps: ["ai-memory", "context7"],
         allowedPaths: ["src-tauri/**", "app/**", "db/**"],
@@ -98,7 +98,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
           "Telas, estados vazios, interações, estilos Tailwind v4 e tipagem de UI.",
         providerInstanceId: "antigravity_2",
         model: "gemini-4-hydrogen",
-        options: { thinkingLevel: "medium" },
+        options: { thinking_level: "medium" },
         skills: ["tailwind-v4-design", "better-accessibility", "better-ui"],
         mcps: ["context7", "playwright", "ai-memory"],
         allowedPaths: ["src/**", "app/views/**", "app/javascript/**"],
@@ -117,7 +117,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
         whenToUse: "Revisão final após implementação ou antes de encerrar entrega/PR.",
         providerInstanceId: "antigravity_2",
         model: "gemini-4-argon",
-        options: { thinkingLevel: "high" },
+        options: { thinking_level: "high" },
         skills: [
           "code-review-and-security",
           "security-audit",
@@ -161,7 +161,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       {
         providerInstanceId: "antigravity_2",
         model: "gemini-4-hydrogen",
-        options: { thinkingLevel: "high" },
+        options: { thinking_level: "high" },
         reason: "Nível 2: Transbordo para Agy Principal em caso de limite de uso",
       },
     ],
@@ -233,7 +233,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
     orchestrator: {
       providerInstanceId: "antigravity_2",
       model: "gemini-4-hydrogen",
-      options: { thinkingLevel: "high" },
+      options: { thinking_level: "high" },
     },
     fallbackChain: [
       {
@@ -245,7 +245,7 @@ function buildSeedGlobalPresets(): PresetConfig[] {
       {
         providerInstanceId: "antigravity",
         model: "gemini-4-argon",
-        options: { thinkingLevel: "medium" },
+        options: { thinking_level: "medium" },
         reason: "Nível 2: Reserva econômica em Agy Veca Argon",
       },
     ],
@@ -556,8 +556,21 @@ function buildSeedSubagents(): SubagentActivity[] {
   ];
 }
 
+function normalizeOptionsRecord(options: Record<string, string>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [k, v] of Object.entries(options)) {
+    const key = k === "thinkingLevel" ? "thinking_level" : k;
+    if (!(key in normalized) || k === "thinking_level") {
+      normalized[key] = v;
+    }
+  }
+  return normalized;
+}
+
 function formatOptionsInline(options: Record<string, string>): string {
-  const entries = Object.entries(options).sort(([a], [b]) => a.localeCompare(b));
+  const entries = Object.entries(normalizeOptionsRecord(options)).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
   if (entries.length === 0) return "default";
   return entries.map(([k, v]) => `${k}=${v}`).join(", ");
 }
@@ -762,12 +775,12 @@ export class MockIpcStore {
       defaultModelSelection: {
         instanceId: "antigravity_2",
         model: "gemini-4-hydrogen",
-        options: [{ id: "thinkingLevel", value: "high" }],
+        options: [{ id: "thinking_level", value: "high" }],
       },
       fallbackModelSelection: {
         instanceId: "antigravity",
         model: "gemini-4-hydrogen",
-        options: [{ id: "thinkingLevel", value: "high" }],
+        options: [{ id: "thinking_level", value: "high" }],
       },
       sqliteAvailable: true,
       settingsAvailable: true,
@@ -886,7 +899,9 @@ export class MockIpcStore {
       defaultModelSelection: {
         instanceId: preset.orchestrator.providerInstanceId,
         model: preset.orchestrator.model,
-        options: Object.entries(preset.orchestrator.options).map(([id, value]) => ({
+        options: Object.entries(
+          normalizeOptionsRecord(preset.orchestrator.options),
+        ).map(([id, value]) => ({
           id,
           value,
         })),
