@@ -17,7 +17,7 @@ Built with **Tauri v2 (Rust)** on the backend and **React 19 + TypeScript + Tail
 
 - **Centralized Global Presets**: define a default preset in `~/.config/oh-my-t3code/presets/*.jsonc` to apply the same orchestrator (`defaultModelSelection`) and fallback (`fallbackModelSelection`) across every project without a local override
 - **Per-repository overrides with inheritance (`extends`)**: customize only what changes for a specific project through `<repo>/.t3code/preset.jsonc` while inheriting cleanly from a global preset
-- **One-click instance swap (`⇄`) and deterministic compilation**: switch between accounts (`Agy Veca` `antigravity` ⇄ `Agy Principal` `antigravity_2`) or Codex models (`gpt-6.1-sol` ⇄ `gpt-6.1-terra`) when rate limits hit, and compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` with a Unified Diff preview before writing to disk
+- **One-click instance swap (`⇄`) and deterministic compilation**: switch between configured provider instances in T3 Code (such as primary and secondary accounts like `antigravity` ⇄ `antigravity_2`) or configured models (such as `codex` models `gpt-6.1-sol` ⇄ `gpt-6.1-terra`) when rate limits hit, and compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` with a Unified Diff preview before writing to disk
 
 ## Architecture overview
 
@@ -89,23 +89,20 @@ Start only the web UI through Vite on port `1420` (`strictPort: true`), which ac
 bun run dev
 ```
 
-When opened outside the Tauri runtime at `http://localhost:1420`, the app displays the `Browser Preview (Mock IPC ativo)` top bar to switch between `Popover (380×500)` and `Preset Studio (1120×760)` using 4 in-memory sample projects (`oh-my-t3code`, `cabrito`, `dashboard-meta`, and `landing-page`). You can also open either window directly at `http://localhost:1420/?view=popover` and `http://localhost:1420/?view=studio` (with optional `projectId` and `presetId` query parameters in Studio).
+When opened outside the Tauri runtime at `http://localhost:1420`, the app displays the `Browser Preview (Mock IPC ativo)` top bar to switch between `Popover (380×500)` and `Preset Studio (1120×760)` using in-memory sample projects. You can also open either window directly at `http://localhost:1420/?view=popover` and `http://localhost:1420/?view=studio` (with optional `projectId` and `presetId` query parameters in Studio).
 
 ## 5-minute quickstart
 
-On the first boot of the native backend (or when loading the in-memory mock), `ensure_seed_presets` initializes `~/.config/oh-my-t3code/config.jsonc` with `activeGlobalPresetId: "default"` and `enabled: true`, and creates 4 seed presets in `~/.config/oh-my-t3code/presets/`:
+On the first boot of the native backend (or when loading the in-memory mock), `ensure_seed_presets` initializes `~/.config/oh-my-t3code/config.jsonc` with `activeGlobalPresetId: "default"` and `enabled: true`, and provisions the **`default` (`Default (OMOS Standard)`)** preset in `~/.config/oh-my-t3code/presets/`:
 
-- **`default` (`Default (OMOS Standard)`)**: default installation preset on the universal `codex` provider, using `gpt-6.1-sol` for the orchestrator, `oracle`, and `fixer`, `gpt-6-luna` for `explorer` and `designer`, and `gpt-6-astra` for `qa-reviewer`
-- **`agy-dual` (`Agy Dual (Veca + Principal)`)**: balances `antigravity` (`Agy Veca`) and `antigravity_2` (`Agy Principal`) using `gemini-4-hydrogen` and `gemini-4-argon`
-- **`codex-squad` (`Codex Squad (Issue Threads)`)**: uses the `issue-thread-orchestrator` topology on `codex` with `singleTestDb: true` and contention rules tailored for concurrent test suites
-- **`hybrid-agy-codex` (`Hybrid (Agy + Codex)`)**: combines `antigravity_2` / `antigravity` for orchestration, `explorer`, and `designer` with `codex` (`gpt-6.1-sol`) for `oracle` and `fixer`, using `worktree` isolation
+- **`default` (`Default (OMOS Standard)`)**: default installation preset pre-configured with the 5 canonical `oh-my-opencode-slim` roles (`explorer`, `oracle`, `designer`, `fixer`, and `qa-reviewer`) on the universal `codex` provider (`gpt-6.1-sol` for the orchestrator, `oracle`, and `fixer`; `gpt-6-luna` for `explorer` and `designer`; `gpt-6-astra` for `qa-reviewer`).
 
-All 4 seed presets include the 5 canonical `oh-my-opencode-slim` roles (`explorer`, `oracle`, `designer`, `fixer`, and `qa-reviewer`). Follow these steps for your daily workflow:
+From there, you can create your own global presets in **Preset Studio** (**`+ Novo Preset Global`**) and per-project overrides using any providers and models configured in your T3 Code environment. Follow these steps for your daily workflow:
 
-1. **Set the Global Preset**: open the **Popover** from the menu bar, select a preset under **Preset Global Default** (such as `agy-dual` or `default`), and confirm the toggle is set to **Ativo** (Active).
+1. **Set the Global Preset**: open the **Popover** from the menu bar, select `default` or a custom preset under **Preset Global Default**, and confirm the toggle is set to **Ativo** (Active).
 2. **Add an override only where needed**: projects without an override follow the Global Default automatically and stay hidden from the main list; click **`+ Configurar Projeto`** (Configure Project) to create a local override on a specific repository.
-3. **Use the one-click swap (`⇄`) when quota tightens**: click the instance/model pill on the global card or a project card to flip `Agy Veca` ⇄ `Agy Principal` (or toggle `gpt-6.1-sol` ⇄ `gpt-6.1-terra` on Codex) in one click.
-4. **Customize in Preset Studio (`⌘,`)**: press `⌘,` (or click **Studio**) to edit roles, fallback chains, skills, MCPs, and contention rules, then inspect the Unified Diff before writing to disk.
+3. **Use the one-click swap (`⇄`) when quota tightens**: click the instance/model pill on the global card or a project card to switch between configured provider instances (such as primary ⇄ secondary instances like `antigravity` ⇄ `antigravity_2`) or toggle between configured models (such as `gpt-6.1-sol` ⇄ `gpt-6.1-terra` on `codex`) in one click.
+4. **Customize in Preset Studio (`⌘,`)**: press `⌘,` (or click **Studio**) to create global presets (`+ Novo Preset Global`), edit roles, fallback chains, optional skills, MCPs, and contention rules, then inspect the Unified Diff before writing to disk.
 
 ## Documentation map
 

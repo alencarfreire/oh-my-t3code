@@ -2,7 +2,7 @@
 
 🌐 [English](en/JSONC_PRESETS_REFERENCE.md) | **Português (Brasil)** · [Voltar ao README](../README.pt-BR.md)
 
-Esta referência documenta o formato completo de configuração do `oh-my-t3code`: variáveis de ambiente, hierarquia de arquivos em disco, sintaxe JSON with Comments (JSONC), esquema de tipos, regras exatas de herança (`extends`), catálogo dos quatro presets seed e funcionamento do Preset Compiler, da sincronização de `settings.json` e do Reverse Importer.
+Esta referência documenta o formato completo de configuração do `oh-my-t3code`: variáveis de ambiente, hierarquia de arquivos em disco, sintaxe JSON with Comments (JSONC), esquema de tipos, regras exatas de herança (`extends`), o preset integrado padrão (`default`) e presets customizados, além do funcionamento do Preset Compiler, da sincronização de `settings.json` e do Reverse Importer.
 
 ## Mapa de arquivos e variáveis de ambiente
 
@@ -183,28 +183,30 @@ Ao combinar o preset pai (`base`) com o arquivo filho (`patch`), o algoritmo apl
 
 ### Exemplo prático comentado de `.t3code/preset.jsonc`
 
-O arquivo abaixo demonstra um override de projeto herdando de `hybrid-agy-codex` que mantém `explorer`, `oracle`, `designer` e `qa-reviewer` intactos e personaliza apenas o papel `fixer` e a política de contenção:
+O arquivo abaixo demonstra um override de projeto herdando de `default` que mantém `explorer`, `oracle`, `designer` e `qa-reviewer` intactos e personaliza apenas o papel `fixer` e a política de contenção:
 
 ```jsonc
 // Salve em <workspace_root>/.t3code/preset.jsonc
 {
-  "id": "meu-servico-api",
-  "name": "Meu Serviço API (Hybrid Custom)",
-  "description": "Herda de hybrid-agy-codex e ajusta banco único de testes e comandos do fixer.",
-  "extends": "hybrid-agy-codex",
+  "id": "meu-projeto",
+  "name": "Meu Projeto (Custom)",
+  "description": "Herda de default e ajusta banco único de testes e comandos de verificação do fixer.",
+  "extends": "default",
   "enabled": true,
   "orchestrator": {
-    // Mantém model "gemini-4-hydrogen" e options do pai, trocando apenas a conta primária
-    "providerInstanceId": "antigravity",
+    // Mantém providerInstanceId ("codex") e model ("gpt-6.1-sol") do pai; merge chave a chave em options
+    "options": {
+      "reasoningEffort": "high",
+    },
   },
   "contention": {
     "singleTestDb": true,
-    // Merge chave a chave: adiciona PARALLEL_WORKERS mantendo defaultIsolation do pai
+    // Merge chave a chave: adiciona PARALLEL_WORKERS mantendo defaultIsolation ("shared") do pai
     "envVars": {
       "PARALLEL_WORKERS": "1",
     },
     // Substitui conflictFiles herdado do pai
-    "conflictFiles": ["Cargo.toml", "package.json", "db/schema.rb"],
+    "conflictFiles": ["Cargo.toml", "package.json", "Makefile"],
   },
   "roles": {
     "fixer": {
@@ -223,32 +225,31 @@ O arquivo abaixo demonstra um override de projeto herdando de `hybrid-agy-codex`
 }
 ```
 
-## Catálogo completo dos 4 presets seed
+## Preset integrado padrão (`default`) e presets customizados
 
-Na inicialização (ou ao listar presets), `ensure_seed_presets` garante a presença de quatro presets globais em `~/.config/oh-my-t3code/presets/`, todos com os cinco papéis canônicos inspirados no `oh-my-opencode-slim` (OMOS): `explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`.
+Na inicialização (ou ao listar presets), `ensure_seed_presets` garante a presença do preset base **`default` (`Default (OMOS Standard)`)** em `~/.config/oh-my-t3code/presets/default.jsonc`, populado com os cinco papéis canônicos inspirados no `oh-my-opencode-slim` (OMOS): `explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`.
 
-### Visão geral e estratégia de fallback
+Além do `default`, o diretório `~/.config/oh-my-t3code/presets/` aceita qualquer preset customizado criado pelo usuário (via Preset Studio ou arquivos `.jsonc` editados manualmente), permitindo definir outras combinações de provedores/modelos ou estender `default` com `"extends": "default"`.
+
+### Visão geral e estratégia de fallback do preset `default`
 
 | Preset (`id`) | Nome | Orquestrador | Topologia | `ContentionPolicy` | Fallback Chain (ordem 1 → 2 → 3) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `default` | `Default (OMOS Standard)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=medium`, `serviceTier=default`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, builds `target/`, `dist/`, conflitos `package.json`, `Cargo.toml`, `tauri.conf.json` | 1. `codex` / `gpt-6.1-terra` (`high`)<br>2. `codex` / `gpt-6-astra` (`high`)<br>3. `codex` / `gpt-6-luna` (`medium`) |
-| `agy-dual` | `Agy Dual (Veca + Principal)` | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=high`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "shared"`, builds `target/`, `dist/`, conflitos `package.json`, `Cargo.toml`, `tauri.conf.json` | 1. `antigravity` / `gemini-4-hydrogen` (`high`)<br>2. `antigravity_2` / `gemini-4-argon` (`high`)<br>3. `antigravity` / `gemini-4-argon` (`medium`) |
-| `codex-squad` | `Codex Squad (Issue Threads)` | `codex` / `gpt-6.1-sol` (`reasoningEffort=high`, `serviceTier=default`) | `issue-thread-orchestrator` | `singleTestDb: true`, `PARALLEL_WORKERS=1`, `defaultIsolation: "shared"`, builds `app/assets/builds/`, conflitos `db/schema.rb`, `config/routes.rb`, `Gemfile.lock`, `package.json` | 1. `codex` / `gpt-6.1-sol` (`medium`)<br>2. `codex` / `gpt-6.1-terra` (`medium`)<br>3. `codex` / `gpt-6-astra` (`high`) |
-| `hybrid-agy-codex` | `Hybrid (Agy + Codex)` | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=high`) | `intra-thread-squad` | `singleTestDb: false`, `defaultIsolation: "worktree"`, builds `target/`, `dist/`, conflitos `package.json`, `Cargo.toml` | 1. `antigravity` / `gemini-4-hydrogen` (`high`)<br>2. `codex` / `gpt-6.1-sol` (`high`)<br>3. `antigravity_2` / `gemini-4-argon` (`high`) |
 
-### Matriz de modelos dos 5 papéis canônicos OMOS
+### Os 5 papéis canônicos OMOS no preset `default`
 
-| Papel (`id`) | `default` | `agy-dual` | `codex-squad` | `hybrid-agy-codex` |
-| :--- | :--- | :--- | :--- | :--- |
-| `explorer` | `codex` / `gpt-6-luna` (`low`) | `antigravity` / `gemini-4-hydrogen` (`thinking_level=low`) | `codex` / `gpt-6-luna` (`low`) | `antigravity` / `gemini-4-hydrogen` (`thinking_level=low`) |
-| `oracle` | `codex` / `gpt-6.1-sol` (`high`) | `antigravity_2` / `gemini-4-argon` (`thinking_level=high`) | `codex` / `gpt-6.1-sol` (`xhigh`) | `codex` / `gpt-6.1-sol` (`xhigh`) |
-| `designer` | `codex` / `gpt-6-luna` (`medium`) | `antigravity_2` / `gemini-4-hydrogen` (`thinking_level=medium`) | `codex` / `gpt-6.1-terra` (`medium`) | `antigravity` / `gemini-4-hydrogen` (`thinking_level=high`) |
-| `fixer` | `codex` / `gpt-6.1-sol` (`low`) | `antigravity` / `gemini-4-hydrogen` (`thinking_level=high`) | `codex` / `gpt-6.1-sol` (`high`) | `codex` / `gpt-6.1-sol` (`high`) |
-| `qa-reviewer` | `codex` / `gpt-6-astra` (`high`) | `antigravity_2` / `gemini-4-argon` (`thinking_level=high`) | `codex` / `gpt-6-astra` (`high`) | `antigravity_2` / `gemini-4-argon` (`thinking_level=high`) |
+| Papel (`id`) | Provedor / Modelo padrão | Opção de raciocínio | Foco do papel |
+| :--- | :--- | :--- | :--- |
+| `explorer` | `codex` / `gpt-6-luna` | `low` | Mapeamento rápido e leitura de contexto do repositório |
+| `oracle` | `codex` / `gpt-6.1-sol` | `high` | Decisões arquiteturais, planejamento e revisão de contratos |
+| `designer` | `codex` / `gpt-6-luna` | `medium` | Interface, componentes visuais e fluxos de UX |
+| `fixer` | `codex` / `gpt-6.1-sol` | `low` | Implementação focada, correções e verificação local |
+| `qa-reviewer` | `codex` / `gpt-6-astra` | `high` | Auditoria de qualidade, segurança e execução de testes |
 
-### Regra de auto-reparo e migração dos seeds
+### Regra de auto-reparo e migração do preset integrado
 
-A função `ensure_seed_presets` em [`preset_engine.rs`](../src-tauri/src/preset_engine.rs) preserva edições do usuário nos presets seed, mas regrava automaticamente o arquivo se detectar qualquer uma das três condições de legado ou corrupção:
+A função `ensure_seed_presets` em [`preset_engine.rs`](../src-tauri/src/preset_engine.rs) preserva edições do usuário no preset `default`, mas regrava automaticamente o arquivo se detectar qualquer uma das três condições de legado ou corrupção:
 
 1. Presença da chave legada `"thinkingLevel"` em camelCase.
 2. Sequências de mojibake UTF-8 decodificadas como Latin-1 detectadas por `looks_like_mojibake` (por exemplo `NÃvel`, `instÃ¢ncia`, `â↔`).
@@ -285,7 +286,7 @@ Em `settings.json`, o objeto `options` de cada `ModelSelection` é convertido de
 Quando um projeto já possui uma squad manual em `<workspace>/.agents/skills/*-squad/` sem `.t3code/preset.jsonc`, o comando `import_project_squad` executa `import_existing_squad`:
 
 1. Localiza o primeiro diretório `*-squad` em `.agents/skills/` em ordem alfabética que contenha `SKILL.md`.
-2. Infere o preset base pelo conteúdo de `SKILL.md`: seleciona `codex-squad` se encontrar `"codex"` acompanhado de `"gpt-6"` ou na ausência de `"antigravity_2"`; caso contrário, adota `agy-dual`.
+2. Infere o preset base pelo conteúdo de `SKILL.md`: detecta o provedor predominante declarado na squad existente (por exemplo, `codex`, `antigravity` ou outro provedor configurado) para definir o `extends` inicial (como `default` ou um preset compatível) e importa os papéis encontrados em `roles/*.md`.
 3. Percorre `roles/*.md` validando os nomes de arquivo com `validate_safe_id` e extrai título, descrição, `whenToUse`, instância, modelo, opções (`thinkingLevel` normalizado para `thinking_level`), skills, MCPs, `allowedPaths`, `forbiddenPaths`, `invariants` e `verificationCommands`.
 4. Detecta heurísticas de modelo no corpo do Markdown (`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gemini-4-argon`, `gemini-4-hydrogen`) e pistas de contenção no `SKILL.md` (`parallel_workers=1` ou `banco único` ativam `singleTestDb: true`; `isolation: "worktree"` sem `isolation: "shared"` define `defaultIsolation: "worktree"`).
 5. Grava `.t3code/preset.jsonc` com `id: <project_slug>` e `extends: <base_preset_id>`.

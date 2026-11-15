@@ -17,7 +17,7 @@ O `oh-my-t3code` resolve três dores recorrentes no uso diário de múltiplos ag
 
 - **Gestão centralizada de Presets Globais**: defina um preset padrão em `~/.config/oh-my-t3code/presets/*.jsonc` para aplicar o mesmo orquestrador (`defaultModelSelection`) e fallback (`fallbackModelSelection`) em todos os projetos sem override.
 - **Overrides por repositório com herança (`extends`)**: personalize apenas o que muda em um projeto específico via `<repo>/.t3code/preset.jsonc`, mantendo herança limpa de um preset global.
-- **Swap de instância em 1 clique (`⇄`) e compilação determinística**: alterne instantaneamente entre contas (`Agy Veca` `antigravity` ⇄ `Agy Principal` `antigravity_2`) ou modelos Codex (`gpt-6.1-sol` ⇄ `gpt-6.1-terra`) quando a cota aperta, e compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` com preview de Unified Diff antes de gravar.
+- **Swap de instância em 1 clique (`⇄`) e compilação determinística**: alterne instantaneamente entre instâncias configuradas no T3 Code (como instâncias primária e secundária do mesmo provedor, ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados (como `gpt-6.1-sol` ⇄ `gpt-6.1-terra` no `codex`) quando a cota aperta, e compile `.agents/skills/<slug>-squad/{SKILL.md, roles/*.md}` com preview de Unified Diff antes de gravar.
 
 ## Visão geral da arquitetura
 
@@ -89,23 +89,20 @@ Inicia apenas a interface web via Vite na porta `1420` (`strictPort: true`), ati
 bun run dev
 ```
 
-Quando aberto fora do runtime Tauri em `http://localhost:1420`, o aplicativo exibe a barra superior `Browser Preview (Mock IPC ativo)` para alternar entre `Popover (380×500)` e `Preset Studio (1120×760)` usando 4 projetos de exemplo em memória (`oh-my-t3code`, `cabrito`, `dashboard-meta` e `landing-page`). Você também pode abrir cada janela diretamente pelas URLs `http://localhost:1420/?view=popover` e `http://localhost:1420/?view=studio` (com suporte opcional aos parâmetros `projectId` e `presetId` no Studio).
+Quando aberto fora do runtime Tauri em `http://localhost:1420`, o aplicativo exibe a barra superior `Browser Preview (Mock IPC ativo)` para alternar entre `Popover (380×500)` e `Preset Studio (1120×760)` usando projetos de exemplo em memória (`in-memory sample projects`). Você também pode abrir cada janela diretamente pelas URLs `http://localhost:1420/?view=popover` e `http://localhost:1420/?view=studio` (com suporte opcional aos parâmetros `projectId` e `presetId` no Studio).
 
 ## Primeiros passos em 5 minutos
 
-No primeiro boot do backend nativo (ou no carregamento do mock em memória), a rotina `ensure_seed_presets` inicializa `~/.config/oh-my-t3code/config.jsonc` com `activeGlobalPresetId: "default"` e `enabled: true`, além de criar 4 presets seed em `~/.config/oh-my-t3code/presets/`:
+No primeiro boot do backend nativo (ou no carregamento do mock em memória), a rotina `ensure_seed_presets` inicializa `~/.config/oh-my-t3code/config.jsonc` com `activeGlobalPresetId: "default"` e `enabled: true`, e cria o preset padrão **`default` (`Default (OMOS Standard)`)** em `~/.config/oh-my-t3code/presets/`:
 
-- **`default` (`Default (OMOS Standard)`)**: preset padrão de instalação no provedor universal `codex`, com orquestrador, `oracle` e `fixer` em `gpt-6.1-sol`, `explorer` e `designer` em `gpt-6-luna` e `qa-reviewer` em `gpt-6-astra`.
-- **`agy-dual` (`Agy Dual (Veca + Principal)`)**: balanceia `antigravity` (`Agy Veca`) e `antigravity_2` (`Agy Principal`) com `gemini-4-hydrogen` e `gemini-4-argon`.
-- **`codex-squad` (`Codex Squad (Issue Threads)`)**: usa topologia `issue-thread-orchestrator` no `codex` com `singleTestDb: true` e política de contenção voltada para suítes concorrentes.
-- **`hybrid-agy-codex` (`Hybrid (Agy + Codex)`)**: combina `antigravity_2` / `antigravity` para orquestração, `explorer` e `designer` com `codex` (`gpt-6.1-sol`) para `oracle` e `fixer`, usando isolamento `worktree`.
+- **`default` (`Default (OMOS Standard)`)**: preset padrão de instalação com os 5 papéis canônicos do `oh-my-opencode-slim` (`explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`) no provedor universal `codex`, com orquestrador, `oracle` e `fixer` em `gpt-6.1-sol`, `explorer` e `designer` em `gpt-6-luna` e `qa-reviewer` em `gpt-6-astra`.
 
-Todos os 4 presets seed trazem os 5 papéis canônicos do `oh-my-opencode-slim` (`explorer`, `oracle`, `designer`, `fixer` e `qa-reviewer`). Para começar a operar no dia a dia:
+A partir dele, você pode criar seus próprios presets globais no **Preset Studio** (**`+ Novo Preset Global`**) e overrides por projeto com os provedores e modelos configurados no seu ambiente T3 Code. Para começar a operar no dia a dia:
 
-1. **Defina o Preset Global**: abra o **Popover** na barra de menus, selecione o preset desejado em **Preset Global Default** (por exemplo `agy-dual` ou `default`) e confirme que o toggle está em **Ativo**.
+1. **Defina o Preset Global**: abra o **Popover** na barra de menus, selecione `default` ou um preset criado por você em **Preset Global Default** e confirme que o toggle está em **Ativo**.
 2. **Adicione um Override apenas onde precisar**: projetos sem override seguem o Global Default automaticamente e ficam ocultos da lista principal; clique em **+ Configurar Projeto** para criar um override em um repositório específico.
-3. **Use o Swap rápido (`⇄`) quando a cota apertar**: clique no pill de instância/modelo no card global ou no card do projeto para inverter `Agy Veca` ⇄ `Agy Principal` (ou alternar `gpt-6.1-sol` ⇄ `gpt-6.1-terra` no Codex) em 1 clique.
-4. **Personalize no Preset Studio (`⌘,`)**: pressione `⌘,` (ou clique em **Studio**) para editar papéis, cadeias de fallback, skills, MCPs, regras de contenção e revisar o Unified Diff antes de gravar no disco.
+3. **Use o Swap rápido (`⇄`) quando a cota apertar**: clique no pill de instância/modelo no card global ou no card do projeto para alternar entre instâncias configuradas do mesmo provedor (como instância primária ⇄ secundária, ex.: `antigravity` ⇄ `antigravity_2`) ou alternar modelos configurados (como `gpt-6.1-sol` ⇄ `gpt-6.1-terra` no `codex`) em 1 clique.
+4. **Personalize no Preset Studio (`⌘,`)**: pressione `⌘,` (ou clique em **Studio**) para criar presets globais (**`+ Novo Preset Global`**), editar papéis, cadeias de fallback, skills opcionais, MCPs, regras de contenção e revisar o Unified Diff antes de gravar no disco.
 
 ## Mapa da documentação
 

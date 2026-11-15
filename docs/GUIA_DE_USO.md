@@ -35,11 +35,11 @@ Logo abaixo fica o card em destaque **Preset Global (Default)**, que controla o 
 
 - **Badges de estado**: **Global Ativo** / **Global Pausado** no cabeçalho e **Instalado por padrão** (badge azul quando o preset ativo é o `default`).
 - **Toggle `Ativo` / `Desativado`**: ativa ou pausa o Preset Global. Quando ativo, exibe `Padrão para todos os projetos · <modelo>` e sincroniza `defaultModelSelection` e `fallbackModelSelection` em `~/.t3/userdata/settings.json`. Quando desativado, exibe `Desativado — projetos sem override usam config padrão do T3 Code`.
-- **Dropdown `Preset Global Default`**: escolhe qual preset global em `~/.config/oh-my-t3code/presets/*.jsonc` é o padrão (`default`, `agy-dual`, `codex-squad`, `hybrid-agy-codex` ou presets criados por você).
-- **Botão Swap `⇄`**: alterna em 1 clique quando a cota aperta:
-  - Em presets Antigravity (`antigravity` / `antigravity_2`): exibe `Agy Veca` ou `Agy Principal` e inverte entre as duas contas (`Inverter instância global (Agy Veca ⇄ Agy Principal)`).
-  - Em presets Codex (`codex`): exibe `Codex · <modelo>` e alterna entre `gpt-6.1-sol` ⇄ `gpt-6.1-terra`.
-  - Em outros provedores (`claudeAgent`, `opencode`, `grok`), exibe apenas uma pílula estática com o nome da instância.
+- **Dropdown `Preset Global Default`**: escolhe qual preset global em `~/.config/oh-my-t3code/presets/*.jsonc` é o padrão (`default` ou presets globais criados por você).
+- **Botão Swap `⇄`**: alterna em 1 clique entre múltiplas instâncias/contas ou modelos configurados no T3 Code quando a cota aperta:
+  - Quando há instâncias primária e secundária configuradas do mesmo provedor (por exemplo, `antigravity` ⇄ `antigravity_2`): exibe a instância ativa e inverte entre as duas instâncias configuradas (`Inverter instância global`).
+  - Em presets Codex (`codex`): exibe `Codex · <modelo>` e alterna entre os modelos configurados (como `gpt-6.1-sol` ⇄ `gpt-6.1-terra`).
+  - Em outros provedores (`claudeAgent`, `opencode`, `grok`), exibe uma pílula com o nome da instância configurada.
 - **Ícone de configurações (`Editar Preset Global no Studio`)**: abre o **Preset Studio** já posicionado no Preset Global ativo.
 
 ### Seção `Projetos com Override`
@@ -53,7 +53,7 @@ Para criar um override em um projeto que hoje segue o Global Default:
 3. Em **Preset de Override**, escolha o preset inicial que servirá de base.
 4. Clique em **Aplicar Override** (ou **Cancelar** para desistir).
 
-Quando houver **2 ou mais** projetos com override, o campo **Filtrar overrides, preset ou instância…** (`⌘K`) é exibido automaticamente e busca por título do projeto, caminho (`workspaceRoot`), `id` ou `extends` do preset local, slug da squad detectada ou nome curto da instância (`Agy Veca`, `Agy Principal`, `Codex`).
+Quando houver **2 ou mais** projetos com override, o campo **Filtrar overrides, preset ou instância…** (`⌘K`) é exibido automaticamente e busca por título do projeto, caminho (`workspaceRoot`), `id` ou `extends` do preset local, slug da squad detectada ou nome da instância configurada (como `antigravity`, `antigravity_2`, `Codex`, etc.).
 
 Cada card na lista **Projetos com Override** exibe badges e ações dedicadas:
 
@@ -64,7 +64,7 @@ Cada card na lista **Projetos com Override** exibe badges e ações dedicadas:
   - **Seguindo Global Default (override pausado)** (âmbar): exibido quando o toggle individual do projeto está em `Desativado`.
 - **Ações do card**:
   - **Toggle individual (`Ativo` / `Desativado`)**: pausa ou reativa o override do projeto sem apagar `.t3code/preset.jsonc`. Ao pausar, remove `projectSettingsOverrides[projectId]` de `settings.json`.
-  - **Swap `⇄` em 1 clique**: alterna `Agy Veca` ⇄ `Agy Principal` (ou `gpt-6.1-sol` ⇄ `gpt-6.1-terra` no Codex), recompila a squad e atualiza `settings.json`.
+  - **Swap `⇄` em 1 clique**: alterna entre instâncias configuradas do mesmo provedor (ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados no `codex` (ex.: `gpt-6.1-sol` ⇄ `gpt-6.1-terra`), recompila a squad e atualiza `settings.json`.
   - **Botão `Global`**: remove o override (`.t3code/preset.jsonc` e `projectSettingsOverrides[projectId]`) e devolve o projeto ao **Global Default**.
   - **Dropdown de preset + botão `Sync`**: aplica o preset escolhido ao projeto (`Sync…` durante a gravação e `Sincronizado!` ao concluir).
   - **Ícone de configurações (`Editar no Preset Studio`)**: abre o **Preset Studio** diretamente no projeto selecionado.
@@ -89,7 +89,7 @@ Ao fechar a janela do **Preset Studio**, ela é apenas ocultada para preservar o
 A barra lateral esquerda divide a navegação em dois grupos:
 
 1. **Presets Globais**:
-   - Lista todos os presets de `~/.config/oh-my-t3code/presets/*.jsonc`, exibindo badges como **Default · Ativo** / **Default · Pausado**, **Desativado**, **Instalado por padrão**, família (`OMOS Standard`, `Dual Agy`, `Codex`, `Hybrid`, `Custom`), contagem de papéis (`N roles`) e herança (`↳ <parent>`).
+   - Lista todos os presets de `~/.config/oh-my-t3code/presets/*.jsonc`, exibindo badges como **Default · Ativo** / **Default · Pausado**, **Desativado**, **Instalado por padrão**, família do preset (`OMOS Standard`, `Codex`, `Custom`, etc.), contagem de papéis (`N roles`) e herança (`↳ <parent>`).
    - Clique em **+ Novo Preset Global** para abrir o formulário de criação: informe o **ID do Preset (`~/.config/.../presets/*.jsonc`)** (letras, números, `-` ou `_`) e escolha em **Herdar de (`extends`)** a opção **Nenhum (Base)** para criar do zero ou um preset existente para clonar/estender suas configurações.
 2. **Projetos com Override**:
    - Lista apenas os projetos com override ou squad detectada, mostrando badge **Ativo** / **Desativado** e a referência de herança (`extends: ...`, `preset: ...` ou `override local`).
@@ -125,7 +125,7 @@ Centraliza metadados, herança, modelo do orquestrador e cadeia de transbordo:
   - **Descrição**: resumo do propósito do preset.
 - **Orquestrador Primário (`settings.json` Override)**:
   - Usa o componente `ModelRoutingFields` para definir o `defaultModelSelection` gravado no T3 Code:
-  - **Instância (`providerInstanceId`)**: dropdown completo mais chips rápidos de 1 clique (`Agy Veca`, `Agy Principal`, `Codex`, etc.).
+  - **Instância (`providerInstanceId`)**: dropdown completo mais chips rápidos de 1 clique para as instâncias configuradas no T3 Code (como instâncias primária e secundária `antigravity` / `antigravity_2`, `Codex`, etc.).
   - **Modelo (`model`)**: dropdown + chips rápidos de modelos conhecidos, além do botão **Custom** (que alterna para campo de texto livre; clique em **Usar lista** para voltar ao seletor).
   - **Opções do Orquestrador (1-clique)**: pílulas rápidas adaptadas ao provedor:
     - Antigravity (`antigravity`, `antigravity_2`): `thinking_level` (`low`, `medium`, `high`, `xhigh`).
@@ -151,19 +151,19 @@ Permite configurar cada worker especializado que será compilado em `<repo>/.age
 
 #### Aba 3: `Skills & MCPs`
 
-Associa skills locais e servidores MCP a cada papel da squad:
+Associa opcionalmente skills locais e servidores MCP configurados no seu ambiente a cada papel da squad:
 
 - **Seletor superior (`Papel:`)**: alterne rapidamente entre os papéis existentes no preset sem sair da aba.
 - **Skills Globais**:
-  - Catálogo lido automaticamente de `~/.config/skillshare/skills` e `~/.gemini/config/skills`.
-  - Alterne entre **Todas** e **Apenas Selecionadas**, busque por nome ou descrição em **Buscar skill (ex: tailwind, tdd, security)…** e filtre por origem (**Todas origens**, `skillshare`, `gemini`, etc.).
-  - Marque ou desmarque o checkbox de cada skill; itens ativos recebem o badge **Ativa**.
+  - Diretórios padrão escaneados para skills locais: `~/.config/skillshare/skills` e `~/.gemini/config/skills` (opcional; caso não existam no seu ambiente, você pode criar e usar presets normalmente sem skills locais).
+  - Alterne entre **Todas** e **Apenas Selecionadas**, busque por nome ou descrição em **Buscar skill (ex: tailwind, tdd, security)…** e filtre por origem (**Todas origens** ou pelo diretório de origem detectado).
+  - Marque ou desmarque o checkbox de cada skill que desejar associar; itens ativos recebem o badge **Ativa**.
 - **MCPs Recomendados**:
-  - Cards interativos para os 4 servidores MCP recomendados:
+  - Todos os MCPs são opcionais e configuráveis conforme o ambiente de cada usuário. O Studio oferece sugestões pré-listadas para servidores MCP comuns caso você os utilize no seu ambiente:
     - **`ai-memory`** (`Memória & Handoffs`): memória durável do projeto, decisões de arquitetura e handoffs entre sessões.
     - **`context7`** (`Docs Atualizadas`): documentação atualizada de bibliotecas e frameworks (Tauri, React, Tailwind).
     - **`playwright`** (`E2E & Visual`): automação de navegador, snapshots de acessibilidade e testes E2E visuais.
-    - **`linear`** (`Issues & Status`): leitura e atualização de issues, projetos, ciclos e status no Linear.
+    - **`linear`** (`Issues & Status`): integração opcional para leitura e atualização de issues, projetos, ciclos e status no Linear.
   - Use **Adicionar MCP customizado** (botão **Add**) para incluir qualquer outro servidor MCP configurado no seu ambiente (marcado com badge `custom`).
 
 #### Aba 4: `Pontos de Contenção`
@@ -199,9 +199,9 @@ Os quatro fluxos abaixo cobrem as situações mais comuns ao trabalhar com múlt
 
 ### Cenário 1: Primeiro setup com o T3 Code
 
-1. Abra o `oh-my-t3code` (`bun run tauri:dev` ou app instalado) para inicializar os 4 presets seed em `~/.config/oh-my-t3code/presets/`.
+1. Abra o `oh-my-t3code` (`bun run tauri:dev` ou app instalado) para inicializar o preset padrão `default` em `~/.config/oh-my-t3code/presets/`.
 2. Clique no ícone da barra de menus para abrir o **Popover**.
-3. Em **Preset Global (Default)**, escolha o preset padrão da sua rotina (por exemplo `agy-dual` se usar duas contas Antigravity, ou mantenha `default` para Codex) e garanta que o toggle está em **Ativo**.
+3. Em **Preset Global (Default)**, mantenha o preset `default` ou selecione um preset global personalizado criado por você no Studio (`+ Novo Preset Global`) com os provedores e modelos de sua preferência, e garanta que o toggle está em **Ativo**.
 4. A partir desse momento, todos os projetos sem override passam a seguir esse padrão global em `~/.t3/userdata/settings.json`.
 
 ### Cenário 2: Projeto com squad manual existente (`.agents/skills/*-squad/`)
@@ -215,7 +215,7 @@ Os quatro fluxos abaixo cobrem as situações mais comuns ao trabalhar com múlt
 ### Cenário 3: Atingiu rate limit ou cota durante uma sessão
 
 1. Abra o **Popover** na barra de menus com um clique esquerdo.
-2. Se o problema afetou um projeto com override específico, clique diretamente no pill **⇄** do card desse projeto (ex.: `Agy Veca` ⇄ `Agy Principal` ou `Codex · gpt-6.1-sol` ⇄ `gpt-6.1-terra`).
+2. Se o problema afetou um projeto com override específico, clique diretamente no pill **⇄** do card desse projeto para alternar entre instâncias configuradas do mesmo provedor (ex.: `antigravity` ⇄ `antigravity_2`) ou entre modelos configurados (ex.: `Codex · gpt-6.1-sol` ⇄ `gpt-6.1-terra`).
 3. Se o projeto segue o padrão global, clique no pill **⇄** dentro do card **Preset Global (Default)**.
 4. Em segundos o `settings.json` é atualizado com backup `.bak` e a squad do projeto passa a usar a instância ou modelo alternativo.
 
@@ -223,5 +223,5 @@ Os quatro fluxos abaixo cobrem as situações mais comuns ao trabalhar com múlt
 
 1. No diretório do projeto, execute `bun run dev` para subir o frontend na porta `1420` com `MockIpcStore` ativo (nenhum arquivo real em `~/.t3` ou `~/.config/oh-my-t3code` é tocado).
 2. Acesse `http://localhost:1420` (ou diretamente `http://localhost:1420/?view=studio` e `http://localhost:1420/?view=popover`).
-3. Experimente criar novos presets com `extends`, montar `fallbackChain`, testar filtros e inspecionar o **Unified Diff** gerado contra os 4 projetos simulados (`oh-my-t3code`, `cabrito`, `dashboard-meta`, `landing-page`).
+3. Experimente criar novos presets com `extends`, montar `fallbackChain`, testar filtros e inspecionar o **Unified Diff** gerado usando os projetos de exemplo em memória (`in-memory sample projects`).
 4. Quando estiver satisfeito com a estrutura, reproduza ou aplique no app nativo (`bun run tauri:dev`).
